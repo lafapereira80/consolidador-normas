@@ -44,9 +44,9 @@ with col2:
 # Estrutura Avançada Pydantic
 class Dispositivo(BaseModel):
     tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', ou 'tabela'")
-    texto_alterada: str = Field(description="SE HOUVER TABELA: APENAS o texto antigo tachado (o texto novo vai no campo pós-tabela). SE NÃO HOUVER TABELA: texto antigo tachado + <br/><br/> + texto novo.")
-    texto_novo_pos_tabela: Optional[str] = Field(default=None, description="EXCLUSIVO PARA QUANDO HÁ TABELA ALTERADA/APAGADA: Coloque a NOVA redação do dispositivo aqui (com nota). Será impresso após a tabela antiga.")
-    texto_consolidado: str = Field(description="Texto limpo da versão consolidada. SE REVOGADO: apenas o identificador (ex: <b>Art. 9º</b>) + nota remissiva. NUNCA exiba texto tachado na consolidada.")
+    texto_alterada: str = Field(description="O texto antigo tachado em vermelho. OBRIGATÓRIO: Adicione a nota remissiva em vermelho no final (ex: <font color='red'>(Alterado...)</font>). Mantenha negritos e itálicos originais.")
+    texto_novo_pos_tabela: Optional[str] = Field(default=None, description="APENAS PARA TABELAS SUBSTITUÍDAS: A NOVA redação do dispositivo aqui. OBRIGATÓRIO conter a nota remissiva em vermelho.")
+    texto_consolidado: str = Field(description="Texto limpo da versão consolidada. SE REVOGADO: apenas o identificador (ex: <b>Art. 9º</b>) + nota remissiva. OBRIGATÓRIO: A nota remissiva final em vermelho <font color='red'>...</font>.")
     is_tabela: bool = Field(description="Verdadeiro (true) SE possuir matriz de tabela associada.")
     tabela_linhas_alterada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela. Se foi alterada/revogada, envolver TODAS as células com <font color='red'><strike>...</strike></font>.")
     tabela_linhas_consolidada: Optional[List[List[str]]] = Field(default=None, description="Matriz limpa. SE A TABELA FOI APAGADA/SUBSTITUÍDA por texto na alteração, DEVE SER UMA LISTA VAZIA [].")
@@ -76,7 +76,6 @@ def analisar_arquivos_multimodal(arquivo_orig, arquivo_alt, key):
         path_alt = tmp_alt.name
 
     try:
-        # CORREÇÃO: Removido o display_name que estava causando o erro no novo SDK
         gemini_file_orig = client.files.upload(file=path_orig)
         gemini_file_alt = client.files.upload(file=path_alt)
         
@@ -84,28 +83,24 @@ def analisar_arquivos_multimodal(arquivo_orig, arquivo_alt, key):
         Atue como um especialista em técnica legislativa.
         Você recebeu a Norma Original e a Norma Alteradora. Analise visualmente e gere o JSON.
 
-        REGRAS CRÍTICAS DE ESTRUTURAÇÃO (LEIA COM ATENÇÃO):
-        1. PROIBIDO LaTeX. Use "1º", "2º", "§", etc.
-        2. ARTIGOS COM TABELA QUE FORAM SUBSTITUÍDOS POR TEXTO CORRIDO (Ex: Art. 1º):
-           - Na Versão Alterada, o fluxo visual DEVE ser: (1) Intro antiga tachada, (2) Tabela antiga tachada, (3) Texto novo limpo.
-           - PARA GARANTIR ISSO, preencha os campos EXATAMENTE assim:
-             * `texto_alterada`: APENAS a introdução antiga tachada (ex: <font color='red'><strike>Art. 1º Fixar...</strike></font>). NÃO PONHA O TEXTO NOVO AQUI.
-             * `tabela_linhas_alterada`: Matriz completa com as células tachadas.
-             * `texto_novo_pos_tabela`: O TEXTO NOVO (ex: <b>Art. 1º</b> Os Assessores... <font color='red'>(Alterado...)</font>).
-             * `texto_consolidado`: APENAS o TEXTO NOVO.
-             * `tabela_linhas_consolidada`: DEIXE COMO UMA LISTA VAZIA [].
-        3. VERSÃO CONSOLIDADA RIGOROSA (`texto_consolidado`):
-           - Dispositivo ALTERADO: mostre APENAS a nova redação + nota.
-           - Dispositivo REVOGADO: mostre APENAS o identificador original (ex: <b>Art. 9º</b>) e a nota. NUNCA mostre o texto antigo tachado na consolidada.
-        4. ARTIGOS SEM TABELA ALTERADOS:
-           - Em `texto_alterada`: Texto antigo tachado + <br/><br/> + Texto novo.
-        5. NOTAS REMISSIVAS OBRIGATÓRIAS:
-           - DEVERÃO constar no final de itens alterados/revogados, inteiramente em vermelho: <font color='red'>(Alterado pelo art. Xº da Portaria...)</font>.
-        6. NEGRITOS E LIMPEZA: Preserve os negritos originais (<b>...</b>). Não crie quebras de linha artificiais.
+        REGRAS CRÍTICAS DE ESTRUTURAÇÃO E FORMATAÇÃO (LEIA COM ATENÇÃO):
+        1. FORMATAÇÃO E ESTRUTURA DO TEXTO ORIGINAL:
+           - Preserve RIGOROSAMENTE as palavras em negrito usando <b>...</b> e em itálico usando <i>...</i>.
+           - Preserve as quebras de linha originais. Se houver incisos (I, II) ou alíneas (a, b), insira a tag <br/> para forçar a quebra estrutural. NÃO aglutine itens de lista na mesma linha.
+        2. NOTAS REMISSIVAS (OBRIGATÓRIO E INEGOCIÁVEL):
+           - É OBRIGATÓRIO adicionar a nota remissiva ao final de TODO dispositivo alterado ou revogado.
+           - A nota DEVE ser escrita inteiramente na cor vermelha: <font color='red'>(Alterado pelo art. Xº da Portaria...)</font> ou <font color='red'>(Revogado pelo art. Xº...)</font>.
+        3. ARTIGOS COM TABELA QUE FORAM SUBSTITUÍDOS POR TEXTO CORRIDO:
+           - Na Versão Alterada: `texto_alterada` recebe APENAS a introdução antiga tachada; `tabela_linhas_alterada` recebe a matriz tachada; `texto_novo_pos_tabela` recebe a nova redação + NOTA REMISSIVA.
+        4. VERSÃO CONSOLIDADA RIGOROSA (`texto_consolidado`):
+           - Dispositivo ALTERADO: mostre APENAS a nova redação + NOTA REMISSIVA em vermelho.
+           - Dispositivo REVOGADO: mostre APENAS o identificador original (ex: <b>Art. 9º</b>) + NOTA REMISSIVA em vermelho.
+        5. ARTIGOS SEM TABELA ALTERADOS:
+           - Em `texto_alterada`: Texto antigo tachado + <br/><br/> + Texto novo + NOTA REMISSIVA em vermelho.
         """
         
         response = client.models.generate_content(
-            model='gemini-3.5-flash',
+            model='gemini-2.0-flash',
             contents=[
                 "Documento 1 (Norma Original):", gemini_file_orig,
                 "Documento 2 (Norma Alteradora):", gemini_file_alt,
@@ -128,6 +123,8 @@ def analisar_arquivos_multimodal(arquivo_orig, arquivo_alt, key):
         if os.path.exists(path_alt): os.remove(path_alt)
 
 def renderizar_paragrafos_pdf(story, texto_html, estilo):
+    # Traduz as tags de itálico para o padrão que o ReportLab aceita
+    texto_html = texto_html.replace('<em>', '<i>').replace('</em>', '</i>')
     partes = re.split(r'(?:<br\s*/?>\s*)+', texto_html)
     for parte in partes:
         texto_limpo = parte.strip()
@@ -139,14 +136,17 @@ def aplicar_html_no_docx(p, texto_html):
     is_bold = False
     is_strike = False
     is_red = False
+    is_italic = False
     
     for token in tokens:
         if not token: continue
         t_lower = token.lower()
-        if t_lower == '<b>': is_bold = True
-        elif t_lower == '</b>': is_bold = False
-        elif t_lower == '<strike>': is_strike = True
-        elif t_lower == '</strike>': is_strike = False
+        if t_lower in ['<b>', '<strong>']: is_bold = True
+        elif t_lower in ['</b>', '</strong>']: is_bold = False
+        elif t_lower in ['<i>', '<em>']: is_italic = True
+        elif t_lower in ['</i>', '</em>']: is_italic = False
+        elif t_lower in ['<strike>', '<s>']: is_strike = True
+        elif t_lower in ['</strike>', '</s>']: is_strike = False
         elif "font color" in t_lower and ("red" in t_lower or "'red'" in t_lower or '"red"' in t_lower): is_red = True
         elif t_lower == '</font>': is_red = False
         elif token.startswith('<'): pass
@@ -155,6 +155,7 @@ def aplicar_html_no_docx(p, texto_html):
             run.font.name = 'Times New Roman'
             run.font.size = Pt(11)
             if is_bold: run.bold = True
+            if is_italic: run.italic = True
             if is_strike: run.font.strike = True
             if is_red: run.font.color.rgb = RGBColor(255, 0, 0)
 
