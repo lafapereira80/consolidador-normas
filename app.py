@@ -47,7 +47,7 @@ except:
         api_key = st.text_input("Chave da API do Google GenAI", type="password")
         st.markdown("[Obtenha sua chave gratuita no Google AI Studio](https://aistudio.google.com/)")
 
-# ----------------- NAVEGAÇÃO ENTRE ABAS espaço -----------------
+# ----------------- NAVEGAÇÃO ENTRE ABAS -----------------
 st.title("⚖️ Sistema Inteligente de Consolidação & Histórico Normativo")
 
 aba_principal, aba_historico = st.tabs(["🚀 Autopilot & Processamento", "📜 Histórico & Gestão no Supabase"])
@@ -140,7 +140,6 @@ with aba_principal:
             for caminho_tmp, _ in caminhos_temporarios:
                 if os.path.exists(caminho_tmp): os.remove(caminho_tmp)
 
-    # Funções de renderização de texto e documentos
     def extrair_paragrafos_seguros(texto_html):
         texto_html = (texto_html or "").replace("</font></strike>", "</strike></font>")
         texto_html = texto_html.replace("</b></i>", "</i></b>")
@@ -195,13 +194,15 @@ with aba_principal:
         return paragrafos
 
     def injetar_nota_remissiva(texto, nota):
+        """Injeta parênteses automáticos e garante um ESPAÇO FÍSICO REAL antes da nota."""
         if nota and nota.strip():
             n = nota.strip()
             if not n.startswith("("): n = f"({n}"
             if not n.endswith(")"): n = f"{n})"
             if texto:
                 texto_limpo = texto.rstrip('<br/>').rstrip('<br>').rstrip()
-                return f"{texto_limpo}&nbsp; <font color='red'>{n}</font>"
+                # Adiciona um espaço real explícito " " seguido de um espaço inquebrável para separar perfeitamente
+                return f"{texto_limpo} &nbsp;<font color='red'>{n}</font>"
             else:
                 return f"<font color='red'>{n}</font>"
         return texto
@@ -437,13 +438,11 @@ with aba_principal:
             nome_base = cons['nome_portaria_base']
             ano_base = cons['ano_portaria_base']
             
-            # 1. Verifica se a Portaria Base já existe
             res_busca = supabase.table("portarias_base").select("id").eq("nome_portaria", nome_base).eq("ano_criacao", ano_base).execute()
             
             if res_busca.data and len(res_busca.data) > 0:
                 base_id = res_busca.data[0]['id']
             else:
-                # Insere se não existir
                 res_ins = supabase.table("portarias_base").insert({
                     "nome_portaria": nome_base,
                     "ano_criacao": ano_base,
@@ -454,7 +453,6 @@ with aba_principal:
                 }).execute()
                 base_id = res_ins.data[0]['id']
                 
-            # 2. Insere a Portaria Alteradora vinculada (evita duplicidade exata)
             nome_alt = cons['nome_portaria_alteradora']
             ano_alt = cons['ano_portaria_alteradora']
             
@@ -503,7 +501,6 @@ with aba_principal:
                 with st.expander(f"📁 **{cons['nome_portaria_base']}** ({cons['ano_portaria_base']}) atualizada pela **{cons['nome_portaria_alteradora']}** ({cons['ano_portaria_alteradora']})", expanded=True):
                     st.info(f"**Original Identificado:** `{cons['arquivo_original_identificado']}`\n\n**Alterador Identificado:** `{cons['arquivo_alterador_identificado']}`")
                     
-                    # Botão para salvar no Supabase
                     if st.button(f"💾 Salvar no Histórico Supabase", key=f"btn_sup_{i}"):
                         sucesso = salvar_no_supabase(cons)
                         if sucesso:
@@ -544,7 +541,6 @@ with aba_historico:
     if not supabase:
         st.error("⚠️ Conexão com o Supabase indisponível. Verifique as configurações nos segredos do Streamlit.")
     else:
-        # Sub-abas para organizar a Gestão
         sub_consulta, sub_inserir = st.tabs(["📋 Consultar & Gerenciar Existentes", "➕ Inserir Nova Portaria Base"])
         
         with sub_consulta:
@@ -552,7 +548,6 @@ with aba_historico:
                 st.rerun()
                 
             try:
-                # Busca portarias base com suas respectivas alteradoras
                 response = supabase.table("portarias_base").select("*, portarias_alteradoras(*)").order("ano_criacao", desc=True).execute()
                 bases = response.data
                 
@@ -573,7 +568,6 @@ with aba_historico:
                             st.markdown("---")
                             st.markdown("#### 🛠️ Gerenciar esta Portaria Base")
                             
-                            # Formulário de Edição (Alterar Nome e Ano)
                             with st.form(key=f"form_edit_{p_id}"):
                                 c_ed1, c_ed2 = st.columns(2)
                                 novo_nome = c_ed1.text_input("Novo Nome da Portaria", value=p_nome)
@@ -591,7 +585,6 @@ with aba_historico:
                                     except Exception as err:
                                         st.error(f"Erro ao atualizar: {err}")
 
-                            # Botão de Exclusão da Portaria Base
                             if st.button(f"🗑️ Apagar Portaria Base e Histórico", key=f"btn_del_{p_id}"):
                                 try:
                                     supabase.table("portarias_base").delete().eq("id", p_id).execute()
