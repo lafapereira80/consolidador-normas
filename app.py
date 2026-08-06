@@ -114,43 +114,43 @@ def gerar_pdf_dinamico(titulo_versao, dados_json, tipo_versao):
     story.append(Paragraph(titulo_versao, estilo_cabecalho))
 
     # 2. Brasão
-    # CORREÇÃO: reportlab só baixa a imagem no momento de montar o PDF
-    # (doc.build), então uma URL quebrada/bloqueada (esta retorna 403)
-    # derrubava a geração inteira do PDF com um OSError não tratado aqui.
-    # Agora baixamos antes, com timeout, e simplesmente pulamos o brasão
-    # se o download falhar - o PDF continua sendo gerado normalmente.
     url_brasao = "https://www.gov.br/agricultura/pt-br/agroform/brasao-sem-fundo.png"
     try:
-        resp_img = requests.get(url_brasao, timeout=8)
-        resp_img.raise_for_status()
-        img_brasao = Image(ImageReader(io.BytesIO(resp_img.content)), width=60, height=60)
+        img_brasao = Image(url_brasao, width=60, height=60)
         img_brasao.hAlign = 'CENTER'
         story.append(img_brasao)
         story.append(Spacer(1, 10))
-    except Exception:
-        # Sem brasão disponível no momento: segue sem quebrar o documento.
+    except:
         pass
 
     # 3. Órgãos Emissores
     story.append(Paragraph("MINISTÉRIO PÚBLICO DA UNIÃO<br/>MINISTÉRIO PÚBLICO MILITAR<br/>PROCURADORIA-GERAL DE JUSTIÇA MILITAR", estilo_orgaos))
 
     # 4. Título da Norma
-    story.append(Paragraph(dados_json.get("titulo_portaria", "Portaria Normativa"), estilo_titulo))
+    titulo_texto = dados_json.get("titulo_portaria", "Portaria Normativa")
+    titulo_texto = titulo_texto.replace("<br>", "<br/>").replace("\n", "<br/>")
+    story.append(Paragraph(titulo_texto, estilo_titulo))
 
-    # 5. Preâmbulo
-    story.append(Paragraph(dados_json.get("ementa_preambulo", ""), estilo_dispositivo))
+    # 5. Preâmbulo (Correção da tag <br>)
+    preambulo_texto = dados_json.get("ementa_preambulo", "")
+    preambulo_texto = preambulo_texto.replace("<br>", "<br/>").replace("\n", "<br/>")
+    story.append(Paragraph(preambulo_texto, estilo_dispositivo))
 
-    # 6. Inserção Dinâmica dos Dispositivos
+    # 6. Inserção Dinâmica dos Dispositivos (Correção da tag <br>)
     for item in dados_json.get("dispositivos", []):
         tipo = item.get("tipo", "").lower()
-        if "capitulo" in tipo:
-            story.append(Paragraph(item.get("texto_alterada", ""), estilo_capitulo))
+        
+        if tipo_versao == "alterada":
+            texto_final = item.get("texto_alterada", "")
         else:
-            if tipo_versao == "alterada":
-                texto_final = item.get("texto_alterada", "")
-            else:
-                texto_final = item.get("texto_consolidado", "")
+            texto_final = item.get("texto_consolidado", "")
             
+        # Tratamento rigoroso de segurança para as tags HTML no ReportLab
+        texto_final = texto_final.replace("<br>", "<br/>").replace("\n", "<br/>")
+        
+        if "capitulo" in tipo:
+            story.append(Paragraph(texto_final, estilo_capitulo))
+        else:
             story.append(Paragraph(texto_final, estilo_dispositivo))
 
     # 7. Assinatura
@@ -159,7 +159,7 @@ def gerar_pdf_dinamico(titulo_versao, dados_json, tipo_versao):
     doc.build(story, onFirstPage=desenhar_cabecalho_rodape, onLaterPages=desenhar_cabecalho_rodape)
     buffer.seek(0)
     return buffer.getvalue()
-
+    
 # Interface do Botão de Execução
 if st.button("🚀 Processar Dinamicamente com IA e Gerar PDFs", type="primary"):
     if not api_key:
