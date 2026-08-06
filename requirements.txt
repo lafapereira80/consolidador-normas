@@ -2,3 +2,4 @@ streamlit
 reportlab
 PyMuPDF
 google-genai
+pydantic
