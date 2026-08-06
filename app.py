@@ -11,7 +11,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 from typing import List
 
-# CORREÇÃO: O comando correto é st.set_page_config
+# Configuração da página web
 st.set_page_config(page_title="Consolidador Dinâmico de Normas - MPM", layout="centered")
 
 st.title("⚖️ Sistema Web Dinâmico de Consolidação Normativa")
@@ -69,8 +69,9 @@ def analisar_normas_com_gemini_dinamico(texto_original, texto_alterador, key):
     Retorne os dados estruturados estritamente no formato exigido pelo esquema.
     """
     
+    # CORREÇÃO APLICADA AQUI: Utilizando o modelo gemini-1.5-flash
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-1.5-flash',
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
