@@ -41,14 +41,14 @@ arquivos_enviados = st.file_uploader("📥 Arraste todos os documentos de uma ve
 # ----------------- ESTRUTURAS DE DADOS (Autopilot) -----------------
 class Dispositivo(BaseModel):
     tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', 'inciso', etc.")
-    texto_principal_alterada: str = Field(description="Texto da versão alterada. OBRIGATÓRIO manter negritos (<b>) e itálicos (<i>). Tache TUDO que for substituído/revogado em vermelho (Ex: <font color='red'><strike><b>Art. 1º</b> ...</strike></font>). PROIBIDO colocar a nota remissiva aqui.")
-    texto_principal_consolidada: str = Field(description="Texto limpo da versão consolidada. OBRIGATÓRIO manter negritos (<b>) e itálicos (<i>). Se totalmente revogado, coloque apenas o identificador original (ex: <b>Art 1º</b>). PROIBIDO colocar a nota remissiva aqui.")
+    texto_principal_alterada: str = Field(description="Obrigatório copiar o texto idêntico ao original (com <b> e <i>). SE FOR ALTERADO/REVOGADO, tache O TEXTO INTEIRO incluindo 'Art. X', '§', etc (Ex: <font color='red'><strike><b>Art. 1º</b> O texto...</strike></font>). É TERMINANTEMENTE PROIBIDO COLOCAR A NOTA REMISSIVA AQUI.")
+    texto_principal_consolidada: str = Field(description="Texto limpo da consolidada. Se totalmente revogado, coloque apenas o identificador original (ex: <b>Art 1º</b>). PROIBIDO colocar a nota remissiva aqui.")
     is_tabela: bool = Field(description="True se houver uma tabela associada.")
     tabela_alterada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela alterada.")
     tabela_consolidada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela consolidada.")
     texto_pos_tabela_alterada: Optional[str] = Field(default=None)
     texto_pos_tabela_consolidada: Optional[str] = Field(default=None)
-    nota_remissiva: Optional[str] = Field(default="", description="OBRIGATÓRIO se alterado/revogado. Ex: 'Alterado pelo art. X da Portaria Y'. Apenas o texto puro, sem HTML.")
+    nota_remissiva: Optional[str] = Field(default="", description="OBRIGATÓRIO se alterado/revogado. Ex: 'Alterado pelo art. X da Portaria Y'. Apenas texto puro. O sistema injetará o espaço e a cor vermelha.")
 
 class Consolidacao(BaseModel):
     arquivo_original_identificado: str = Field(description="Nome do arquivo PDF/DOCX usado como norma base")
@@ -58,7 +58,7 @@ class Consolidacao(BaseModel):
     cabecalho_complemento: str = Field(description="Ex: 'Atualizada pela Portaria nº 103/PGJM...'")
     orgaos_emissores: str = Field(description="Órgãos emissores da norma original (use <br/>).")
     titulo_portaria: str = Field(description="Título da Norma Original.")
-    ementa_preambulo: str = Field(description="Preâmbulo original.")
+    ementa_preambulo: str = Field(description="CÓPIA LITERAL, PALAVRA POR PALAVRA, do preâmbulo (ex: 'O PROCURADOR-GERAL... resolve:'). NÃO RESUMA NADA e mantenha negritos.")
     assinatura_nome: str = Field(description="Nome de quem assina o original.")
     assinatura_cargo: str = Field(description="Cargo de quem assina.")
     dispositivos: List[Dispositivo] = Field(description="Lista de dispositivos combinados.")
@@ -96,15 +96,15 @@ def analisar_lote_arquivos(arquivos, key):
         Atue como um Especialista Sênior em Técnica Legislativa.
         
         Sua Missão:
-        1. Identificar pares de (Norma Original + Norma Alteradora) e gerar uma 'Consolidacao' para cada par.
-        2. Isolar arquivos sem vínculo em 'arquivos_nao_alterados'.
+        1. Identificar pares de (Norma Original + Norma Alteradora) e gerar uma 'Consolidacao'.
+        2. Isolar arquivos sem vínculo.
 
         REGRAS CRÍTICAS DE ESTRUTURAÇÃO (INEGOCIÁVEIS):
-        - PRESERVAÇÃO MÁXIMA DE FORMATAÇÃO: Você DEVE manter TODO o texto original que estiver em negrito envolto em <b>...</b> e itálico em <i>...</i>. Não perca essa formatação!
-        - PRESERVAÇÃO DE PARÁGRAFOS E ALÍNEAS: Respeite as quebras de linha estruturais. Se houver incisos (I, II) ou alíneas (a, b), separe-os obrigatoriamente usando <br/>.
-        - VERSÃO ALTERADA (REGRA DO TACHADO): Se um dispositivo for revogado ou substituído, envolva o bloco INTEIRO (incluindo o identificador, ex: 'Art. Xº') em <font color='red'><strike>...</strike></font>.
-        - SUBSTITUIÇÃO DE TEXTO: Se o texto for alterado (não tabela), coloque o antigo tachado, digite <br/><br/> e coloque o texto novo limpo. Exemplo: <font color='red'><strike>texto velho</strike></font><br/><br/>texto novo.
-        - NOTAS REMISSIVAS (OBRIGATÓRIO): Coloque a nota EXCLUSIVAMENTE no campo `nota_remissiva`. Nunca escreva no texto principal.
+        - PREÂMBULO E TEXTO LITERAL: O preâmbulo ("O PROCURADOR-GERAL... resolve:") e os artigos devem ser CÓPIAS EXATAS do original. Não resuma nem altere o texto.
+        - PRESERVAÇÃO DE PARÁGRAFOS: Respeite as quebras de linha. Separe incisos (I, II) e alíneas (a, b) OBRIGATORIAMENTE usando <br/>.
+        - FORMATAÇÃO NATIVA: Mantenha TODO o negrito (<b>...</b>) e itálico (<i>...</i>) conforme o documento original.
+        - TACHADO COMPLETO: Quando algo for revogado ou substituído, tache O TEXTO INTEIRO, incluindo a palavra 'Art.', '§', 'Parágrafo único'. Ex: <font color='red'><strike><b>Art. 1º</b> O Procurador...</strike></font>.
+        - SEPARAÇÃO DA NOTA REMISSIVA: É PROIBIDO escrever a nota remissiva (ex: 'Alterado por...') no meio do texto tachado ou consolidado. Ela deve ir EXCLUSIVAMENTE no campo `nota_remissiva`.
         - Não use LaTeX. Use formatação HTML básica.
         """
         conteudos_prompt.append(prompt_comandos)
@@ -182,17 +182,16 @@ def extrair_paragrafos_seguros(texto_html):
     return paragrafos
 
 def injetar_nota_remissiva(texto, nota):
-    """Injeta parênteses automáticos e um espaçamento seguro antes da nota."""
+    """Injeta parênteses automáticos e um espaçamento VISÍVEL RÍGIDO ( &nbsp; ) antes da nota."""
     if nota and nota.strip():
         n = nota.strip()
-        # Garante a presença dos parênteses
         if not n.startswith("("): n = f"({n}"
         if not n.endswith(")"): n = f"{n})"
         
-        # Injeta duplo espaço inquebrável para separar visualmente do texto anterior
         if texto:
             texto_limpo = texto.rstrip('<br/>').rstrip('<br>').rstrip()
-            return f"{texto_limpo}&nbsp;&nbsp;<font color='red'>{n}</font>"
+            # Adiciona um non-breaking space seguido de espaço simples antes da nota
+            return f"{texto_limpo}&nbsp; <font color='red'>{n}</font>"
         else:
             return f"<font color='red'>{n}</font>"
     return texto
@@ -203,7 +202,7 @@ def renderizar_paragrafos_pdf(story, texto_html, estilo):
         story.append(Paragraph(p, estilo))
 
 def aplicar_html_no_docx(p, texto_html):
-    # Converte os espaços inquebráveis injetados no Python para espaços físicos reais no Word
+    # Transforma o código do Python no espaço real para o Word
     texto_html = texto_html.replace("&nbsp;", "\xa0")
     tokens = re.split(r'(<[^>]+>)', texto_html)
     is_bold, is_strike, is_red, is_italic = False, False, False, False
