@@ -69,8 +69,9 @@ def analisar_normas_com_gemini_dinamico(texto_original, texto_alterador, key):
     Retorne os dados estruturados estritamente no formato exigido pelo esquema.
     """
     
+    # CORREÇÃO: Utilizando a versão mais atualizada e liberada pelo Google
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-2.0-flash',
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
