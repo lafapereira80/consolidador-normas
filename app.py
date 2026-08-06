@@ -76,8 +76,9 @@ def analisar_arquivos_multimodal(arquivo_orig, arquivo_alt, key):
         path_alt = tmp_alt.name
 
     try:
-        gemini_file_orig = client.files.upload(file=path_orig, display_name="Norma Original")
-        gemini_file_alt = client.files.upload(file=path_alt, display_name="Norma Alteradora")
+        # CORREÇÃO: Removido o display_name que estava causando o erro no novo SDK
+        gemini_file_orig = client.files.upload(file=path_orig)
+        gemini_file_alt = client.files.upload(file=path_alt)
         
         prompt = """
         Atue como um especialista em técnica legislativa.
