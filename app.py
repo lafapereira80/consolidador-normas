@@ -89,7 +89,7 @@ def analisar_normas_com_gemini_dinamico(texto_original, texto_alterador, key):
     """
     
     response = client.models.generate_content(
-        model='gemini-3.6-flash', # MUDANÇA APLICADA PARA EVITAR O ERRO DE COTA (429)
+        model='gemini-3.6-flash', # MUDANÇA APLICADA CONFORME SUA SOLICITAÇÃO
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
