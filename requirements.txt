@@ -3,3 +3,4 @@ reportlab
 PyMuPDF
 google-genai
 pydantic
+requests 
