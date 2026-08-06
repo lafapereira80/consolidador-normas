@@ -23,7 +23,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 st.set_page_config(page_title="Consolidador Dinâmico Autopilot", layout="wide")
 
 st.title("⚖️ Consolidador Dinâmico de Normas (Autopilot)")
-st.markdown("Faça o upload de **quantos arquivos normativos quiser** (Original, Alteradores, ou até misturados). A Inteligência Artificial fará o cruzamento automático, descobrirá as relações entre eles e entregará os arquivos prontos.")
+st.markdown("Faça o upload de **quantos arquivos normativos quiser**. A Inteligência Artificial fará o cruzamento automático, descobrirá as relações entre eles e entregará os arquivos com estrutura e formatações preservadas.")
 
 # Configuração da API Key
 api_key = None
@@ -41,14 +41,14 @@ arquivos_enviados = st.file_uploader("📥 Arraste todos os documentos de uma ve
 # ----------------- ESTRUTURAS DE DADOS (Autopilot) -----------------
 class Dispositivo(BaseModel):
     tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', 'inciso', etc.")
-    texto_principal_alterada: str = Field(description="Texto da versão alterada. OBRIGATÓRIO tachar TUDO que for substituído/revogado INCLUINDO o identificador original (Ex: <font color='red'><strike><b>Art. 1º</b> O texto...</strike></font>).")
-    texto_principal_consolidada: str = Field(description="Texto limpo da versão consolidada. Se totalmente revogado, coloque apenas o identificador (ex: <b>Art 1º</b>).")
+    texto_principal_alterada: str = Field(description="Texto da versão alterada. Tache TUDO que for substituído/revogado em vermelho (Ex: <font color='red'><strike><b>Art. 1º</b> ...</strike></font>). PROIBIDO colocar a nota remissiva aqui.")
+    texto_principal_consolidada: str = Field(description="Texto limpo da versão consolidada. Se totalmente revogado, coloque apenas o identificador original (ex: <b>Art 1º</b>). PROIBIDO colocar a nota remissiva aqui.")
     is_tabela: bool = Field(description="True se houver uma tabela associada.")
     tabela_alterada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela alterada.")
     tabela_consolidada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela consolidada.")
     texto_pos_tabela_alterada: Optional[str] = Field(default=None)
     texto_pos_tabela_consolidada: Optional[str] = Field(default=None)
-    nota_remissiva: Optional[str] = Field(default="", description="OBRIGATÓRIO se alterado/revogado. Ex: '(Alterado pelo art. X da Portaria Y)'. Não use HTML aqui.")
+    nota_remissiva: Optional[str] = Field(default="", description="OBRIGATÓRIO se alterado/revogado. Ex: '(Alterado pelo art. X da Portaria Y)'. Apenas o texto puro, o sistema pintará de vermelho.")
 
 class Consolidacao(BaseModel):
     arquivo_original_identificado: str = Field(description="Nome do arquivo PDF/DOCX usado como norma base")
@@ -79,15 +79,13 @@ def analisar_lote_arquivos(arquivos, key):
     gemini_files_objs = []
     
     try:
-        # 1. Salva e faz upload de todos os arquivos
         for arq in arquivos:
             ext = f".{arq.name.split('.')[-1]}"
             with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
                 tmp.write(arq.getvalue())
                 caminhos_temporarios.append((tmp.name, arq.name))
                 
-        # Intercala texto com o objeto da API para a IA saber qual arquivo é qual
-        conteudos_prompt = ["Analise as relações entre os seguintes arquivos normativos:"]
+        conteudos_prompt = ["Analise as relações entre os seguintes arquivos normativos e preserve rigorosamente suas formatações originais:"]
         for caminho_tmp, nome_original in caminhos_temporarios:
             g_file = client.files.upload(file=caminho_tmp)
             gemini_files_objs.append(g_file)
@@ -98,17 +96,15 @@ def analisar_lote_arquivos(arquivos, key):
         Atue como um Especialista Sênior em Técnica Legislativa.
         
         Sua Missão:
-        1. Ler todos os arquivos enviados e descobrir as relações entre eles.
-        2. Identificar pares de (Norma Original + Norma Alteradora).
-        3. Para CADA PAR identificado, gerar uma 'Consolidacao'.
-        4. Se um arquivo não sofreu nem causou alterações no contexto dos documentos enviados, liste-o em 'arquivos_nao_alterados'.
+        1. Identificar pares de (Norma Original + Norma Alteradora) e gerar uma 'Consolidacao' para cada par.
+        2. Isolar arquivos sem vínculo em 'arquivos_nao_alterados'.
 
-        REGRAS CRÍTICAS PARA A CONSOLIDAÇÃO (INEGOCIÁVEIS):
-        - TACHADO COMPLETO: Em `texto_principal_alterada`, se um dispositivo inteiro for substituído/revogado, você OBRIGATORIAMENTE deve tachar inclusive a nomenclatura inicial (Ex: <font color='red'><strike><b>Art. 1º</b> Texto antigo...</strike></font>).
-        - TABELAS: Se foram substituídas por texto, a matriz antiga inteira vai em `tabela_alterada` e o texto novo em `texto_pos_tabela_alterada` e `texto_pos_tabela_consolidada`.
-        - VERSÃO CONSOLIDADA: Mostre apenas o texto NOVO limpo. Se totalmente revogado, exiba APENAS o título original em negrito (Ex: <b>Art. 9º</b>).
-        - NOTAS REMISSIVAS: Preencha SEMPRE o campo `nota_remissiva` com o texto cru (Ex: (Alterado pelo art. X da Portaria...)). Não coloque tags HTML na nota, o sistema fará isso.
-        - Não use LaTeX para expressões ordinais. Separe listas (incisos/alíneas) obrigatoriamente com a tag <br/>.
+        REGRAS CRÍTICAS DE ESTRUTURAÇÃO (INEGOCIÁVEIS):
+        - PRESERVAÇÃO DE PARÁGRAFOS E ALÍNEAS: Respeite as quebras de linha. Se houver incisos (I, II) ou alíneas (a, b), separe-os obrigatoriamente com a tag <br/>. NUNCA junte listas no mesmo bloco de texto.
+        - FORMATAÇÃO NATIVA: Mantenha TODO o negrito usando <b>...</b> e itálico usando <i>...</i> conforme o documento original.
+        - TACHADO COMPLETO: Na versão alterada, se um artigo/parágrafo for substituído ou revogado, envolva o bloco INTEIRO (incluindo o 'Art. Xº') em <font color='red'><strike>...</strike></font>.
+        - NOTAS REMISSIVAS (OBRIGATÓRIO): Não escreva '(Alterado por...)' no meio do texto. Coloque essa informação EXCLUSIVAMENTE no campo `nota_remissiva`.
+        - Não use LaTeX ($, \textbf, etc). Use formatação HTML básica.
         """
         conteudos_prompt.append(prompt_comandos)
 
@@ -124,7 +120,6 @@ def analisar_lote_arquivos(arquivos, key):
         return json.loads(response.text)
     
     finally:
-        # Segurança e Limpeza (Google Cloud + Disco Local)
         for g_file in gemini_files_objs:
             try: client.files.delete(name=g_file.name)
             except: pass
@@ -186,10 +181,13 @@ def extrair_paragrafos_seguros(texto_html):
     return paragrafos
 
 def injetar_nota_remissiva(texto, nota):
-    """Injeta um espaço em branco claro antes de inserir a nota em vermelho, assegurando leitura perfeita."""
+    """Injeta a nota com um ESPAÇO FÍSICO LIMPO para separar o texto tachado do (Alterado...)."""
     if nota and nota.strip():
-        texto_limpo = texto.rstrip('<br/>').rstrip('<br>').rstrip()
-        return f"{texto_limpo} &nbsp;<font color='red'>{nota.strip()}</font>"
+        if texto:
+            texto_limpo = texto.rstrip('<br/>').rstrip('<br>').rstrip()
+            return f"{texto_limpo} <font color='red'>{nota.strip()}</font>"
+        else:
+            return f"<font color='red'>{nota.strip()}</font>"
     return texto
 
 def renderizar_paragrafos_pdf(story, texto_html, estilo):
@@ -198,7 +196,7 @@ def renderizar_paragrafos_pdf(story, texto_html, estilo):
         story.append(Paragraph(p, estilo))
 
 def aplicar_html_no_docx(p, texto_html):
-    tokens = re.split(r'(<[^>]+>)', texto_html.replace("&nbsp;", " "))
+    tokens = re.split(r'(<[^>]+>)', texto_html)
     is_bold, is_strike, is_red, is_italic = False, False, False, False
     
     for token in tokens:
@@ -231,7 +229,7 @@ def renderizar_paragrafos_docx(doc, texto_html, alignment, first_line_indent, sp
         p.paragraph_format.space_after = space_after
         p.paragraph_format.line_spacing = 1.15
         if bold_all:
-            run = p.add_run(re.sub(r'<[^>]+>', '', p_html).replace("&nbsp;", " "))
+            run = p.add_run(re.sub(r'<[^>]+>', '', p_html))
             run.font.name = 'Times New Roman'
             run.font.size = Pt(10)
             run.bold = True
@@ -266,36 +264,45 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
             story.append(Spacer(1, 10))
         except: pass
 
-    story.append(Paragraph(consolidacao_dict.get("orgaos_emissores", "").replace("\n", "").replace("<br>", "<br/>"), estilo_orgaos))
-    story.append(Paragraph(consolidacao_dict.get("titulo_portaria", "").replace("<br>", "<br/>").replace("\n", "<br/>"), estilo_titulo))
-    renderizar_paragrafos_pdf(story, consolidacao_dict.get("ementa_preambulo", "").replace("\n", ""), estilo_dispositivo)
+    # Converte quebras naturais para o parser processar
+    orgs = consolidacao_dict.get("orgaos_emissores", "").replace('\n', '<br/>')
+    tit = consolidacao_dict.get("titulo_portaria", "").replace('\n', '<br/>')
+    preamb = consolidacao_dict.get("ementa_preambulo", "").replace('\n', '<br/>')
+    
+    story.append(Paragraph(orgs, estilo_orgaos))
+    story.append(Paragraph(tit, estilo_titulo))
+    renderizar_paragrafos_pdf(story, preamb, estilo_dispositivo)
 
     for item in consolidacao_dict.get("dispositivos", []):
         tipo = item.get("tipo", "").lower()
         is_tabela = item.get("is_tabela", False)
         nota = item.get("nota_remissiva", "")
         
-        texto_principal = item.get(f"texto_principal_{tipo_versao}", "")
-        texto_pos = item.get(f"texto_pos_tabela_{tipo_versao}", "")
+        # Protege as quebras de linha físicas geradas pela IA substituindo por <br/> ANTES do processamento
+        texto_principal = item.get(f"texto_principal_{tipo_versao}", "").replace('\n', '<br/>')
+        texto_pos = item.get(f"texto_pos_tabela_{tipo_versao}", "").replace('\n', '<br/>')
         
-        if not is_tabela and not texto_pos:
+        if is_tabela:
+            if not texto_pos and nota:
+                texto_pos = injetar_nota_remissiva("", nota)
+            else:
+                texto_pos = injetar_nota_remissiva(texto_pos, nota)
+        else:
             texto_principal = injetar_nota_remissiva(texto_principal, nota)
-        elif texto_pos:
-            texto_pos = injetar_nota_remissiva(texto_pos, nota)
             
         if "capitulo" in tipo:
-            story.append(Paragraph(texto_principal.replace('\n', ' '), estilo_capitulo))
+            story.append(Paragraph(texto_principal, estilo_capitulo))
             continue
 
         if texto_principal:
-            renderizar_paragrafos_pdf(story, texto_principal.replace("\n", " "), estilo_dispositivo)
+            renderizar_paragrafos_pdf(story, texto_principal, estilo_dispositivo)
             
         if is_tabela:
             linhas = item.get(f"tabela_{tipo_versao}", [])
             if linhas and len(linhas) > 0:
                 tabela_processada = []
                 for linha in linhas:
-                    linha_processada = [Paragraph(celula.replace('\n', ' '), estilo_celula) for celula in linha]
+                    linha_processada = [Paragraph(celula.replace('\n', '<br/>'), estilo_celula) for celula in linha]
                     tabela_processada.append(linha_processada)
                 t = Table(tabela_processada, colWidths='*')
                 t.setStyle(TableStyle([
@@ -309,7 +316,7 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
                 story.append(Spacer(1, 15))
                 
         if texto_pos:
-            renderizar_paragrafos_pdf(story, texto_pos.replace("\n", " "), estilo_dispositivo)
+            renderizar_paragrafos_pdf(story, texto_pos, estilo_dispositivo)
 
     bloco_assinatura = f"{consolidacao_dict.get('assinatura_nome', '')}<br/>{consolidacao_dict.get('assinatura_cargo', '')}"
     story.append(Paragraph(bloco_assinatura, estilo_assinatura))
@@ -352,25 +359,32 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     r_tit = p_tit.add_run(consolidacao_dict.get("titulo_portaria", ""))
     r_tit.font.name, r_tit.font.size, r_tit.bold = 'Times New Roman', Pt(11), True
 
-    renderizar_paragrafos_docx(doc, consolidacao_dict.get("ementa_preambulo", "").replace("\n", " "), WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
+    preamb = consolidacao_dict.get("ementa_preambulo", "").replace('\n', '<br/>')
+    renderizar_paragrafos_docx(doc, preamb, WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
 
     for item in consolidacao_dict.get("dispositivos", []):
         tipo = item.get("tipo", "").lower()
         is_tabela = item.get("is_tabela", False)
         nota = item.get("nota_remissiva", "")
         
-        texto_principal = item.get(f"texto_principal_{tipo_versao}", "")
-        texto_pos = item.get(f"texto_pos_tabela_{tipo_versao}", "")
+        # Preserva linhas estruturais convertendo \n para <br/>
+        texto_principal = item.get(f"texto_principal_{tipo_versao}", "").replace('\n', '<br/>')
+        texto_pos = item.get(f"texto_pos_tabela_{tipo_versao}", "").replace('\n', '<br/>')
         
-        if not is_tabela and not texto_pos: texto_principal = injetar_nota_remissiva(texto_principal, nota)
-        elif texto_pos: texto_pos = injetar_nota_remissiva(texto_pos, nota)
+        if is_tabela:
+            if not texto_pos and nota:
+                texto_pos = injetar_nota_remissiva("", nota)
+            else:
+                texto_pos = injetar_nota_remissiva(texto_pos, nota)
+        else:
+            texto_principal = injetar_nota_remissiva(texto_principal, nota)
 
         if "capitulo" in tipo:
-            renderizar_paragrafos_docx(doc, texto_principal.replace("\n", " "), WD_ALIGN_PARAGRAPH.CENTER, Inches(0), Pt(10), bold_all=True)
+            renderizar_paragrafos_docx(doc, texto_principal, WD_ALIGN_PARAGRAPH.CENTER, Inches(0), Pt(10), bold_all=True)
             continue
 
         if texto_principal:
-            renderizar_paragrafos_docx(doc, texto_principal.replace('\n', ' '), WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
+            renderizar_paragrafos_docx(doc, texto_principal, WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
             
         if is_tabela:
             linhas = item.get(f"tabela_{tipo_versao}", [])
@@ -383,11 +397,11 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
                         cell.text = "" 
                         p = cell.paragraphs[0]
                         p.paragraph_format.space_after = Pt(2)
-                        aplicar_html_no_docx(p, celula.replace("\n", " "))
+                        aplicar_html_no_docx(p, celula.replace('\n', '<br/>'))
                 doc.add_paragraph().paragraph_format.space_after = Pt(12)
                 
         if texto_pos:
-            renderizar_paragrafos_docx(doc, texto_pos.replace('\n', ' '), WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
+            renderizar_paragrafos_docx(doc, texto_pos, WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
 
     p_assinatura = doc.add_paragraph()
     p_assinatura.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -418,7 +432,7 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     elif not arquivos_enviados or len(arquivos_enviados) < 1:
         st.warning("⚠️ Envie pelo menos um arquivo normativo.")
     else:
-        with st.spinner("🧠 Lendo os arquivos, descobrindo relações e processando formatações..."):
+        with st.spinner("🧠 Lendo os arquivos, mapeando estruturas e formatando o texto..."):
             try:
                 chave_limpa = api_key.strip()
                 resultados = analisar_lote_arquivos(arquivos_enviados, chave_limpa)
@@ -443,7 +457,6 @@ if st.session_state.dados_processados is not None:
             with st.expander(f"📁 **{cons['nome_portaria_base']}** atualizada pela **{cons['nome_portaria_alteradora']}**", expanded=True):
                 st.info(f"**Original Identificado:** `{cons['arquivo_original_identificado']}`\n\n**Alterador Identificado:** `{cons['arquivo_alterador_identificado']}`")
                 
-                # Gera os binários exclusivos desta consolidação
                 pdf_alt_bytes = gerar_pdf_dinamico(cons, "alterada")
                 pdf_cons_bytes = gerar_pdf_dinamico(cons, "consolidada")
                 docx_alt_bytes = gerar_docx_dinamico(cons, "alterada")
