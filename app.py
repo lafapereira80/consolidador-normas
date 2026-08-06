@@ -44,10 +44,10 @@ with col2:
 # Estrutura Avançada Pydantic (Universal)
 class Dispositivo(BaseModel):
     tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', 'inciso', etc.")
-    texto_principal_alterada: str = Field(description="Texto da versão alterada. Mantenha <b> e <i>. Use <font color='red'><strike>...</strike></font> para trechos removidos. Respeite as quebras de linha com <br/>.")
+    texto_principal_alterada: str = Field(description="Texto da versão alterada. OBRIGATÓRIO envolver TODO o trecho revogado ou substituído em <font color='red'><strike>...</strike></font>. Respeite quebras de linha com <br/>.")
     texto_principal_consolidada: str = Field(description="Texto limpo da versão consolidada. Se totalmente revogado, coloque apenas o identificador original (ex: <b>Art 1º</b>).")
     is_tabela: bool = Field(description="True se houver uma tabela associada a este dispositivo.")
-    tabela_alterada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela alterada. Se revogada, envolva células em <font color='red'><strike>...</strike></font>.")
+    tabela_alterada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela alterada. Se revogada, envolva TODAS as células em <font color='red'><strike>...</strike></font>.")
     tabela_consolidada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela consolidada. Vazio se apagada.")
     texto_pos_tabela_alterada: Optional[str] = Field(default=None, description="Texto que entra após a tabela na versão alterada (se houver).")
     texto_pos_tabela_consolidada: Optional[str] = Field(default=None, description="Texto que entra após a tabela na versão consolidada (se houver).")
@@ -63,16 +63,13 @@ class ResultadoConsolidacao(BaseModel):
     dispositivos: List[Dispositivo] = Field(description="Lista de todos os dispositivos do documento.")
 
 def analisar_arquivos_multimodal(arquivo_orig, arquivo_alt, key):
-    """Envia os arquivos para a Visão Computacional do Gemini com instruções universais."""
     client = genai.Client(api_key=key)
-    
     ext_orig = f".{arquivo_orig.name.split('.')[-1]}"
     ext_alt = f".{arquivo_alt.name.split('.')[-1]}"
     
     with tempfile.NamedTemporaryFile(delete=False, suffix=ext_orig) as tmp_orig:
         tmp_orig.write(arquivo_orig.getvalue())
         path_orig = tmp_orig.name
-        
     with tempfile.NamedTemporaryFile(delete=False, suffix=ext_alt) as tmp_alt:
         tmp_alt.write(arquivo_alt.getvalue())
         path_alt = tmp_alt.name
@@ -88,24 +85,22 @@ def analisar_arquivos_multimodal(arquivo_orig, arquivo_alt, key):
         REGRAS UNIVERSAIS DE ESTRUTURAÇÃO (OBRIGATÓRIAS):
         1. FORMATAÇÃO TEXTUAL:
            - Identifique e mantenha TODO o texto em negrito (use <b>...</b>) e itálico (use <i>...</i>).
-           - PRESERVAÇÃO DE LISTAS: Se houver Incisos (I, II, III) ou Alíneas (a, b, c), você DEVE separá-los com a tag <br/> para que fiquem em linhas distintas. NUNCA aglutine listas na mesma linha.
-           - PROIBIDO o uso de LaTeX para ordinais (use 1º, 2º).
+           - PRESERVAÇÃO DE LISTAS: Se houver Incisos (I, II) ou Alíneas (a, b), você DEVE separá-los com a tag <br/> para que fiquem em linhas distintas.
         
         2. LÓGICA DE ALTERAÇÃO E REVOGAÇÃO:
-           - Na versão ALTERADA: O que sai deve ser envolvido em <font color='red'><strike>...</strike></font>. Se algo for substituído, coloque o tachado, adicione <br/><br/> e insira o texto novo.
-           - Na versão CONSOLIDADA: Mostre apenas a nova redação limpa. Se for totalmente REVOGADO, mostre apenas o identificador (ex: <b>Art. 9º</b>) sem o texto antigo.
+           - Na versão ALTERADA: O que sai deve ser integralmente envolvido em <font color='red'><strike>...</strike></font>. Se algo for substituído, coloque o tachado em vermelho, adicione <br/><br/> e insira o texto novo.
+           - Na versão CONSOLIDADA: Mostre apenas a nova redação limpa. Se for totalmente REVOGADO, mostre apenas o identificador (ex: <b>Art. 9º</b>).
         
         3. NOTAS REMISSIVAS (AUTOMATIZADAS):
-           - Se um dispositivo foi alterado, revogado ou incluído, você DEVE preencher o campo `nota_remissiva` com o texto exato (Ex: "(Alterado pelo art. Xº da Portaria Y...)").
-           - Não aplique tags HTML dentro do campo `nota_remissiva`, o sistema cuidará da formatação em vermelho automaticamente.
+           - Preencha SEMPRE o campo `nota_remissiva` com o texto exato (Ex: "(Alterado pelo art. Xº da Portaria Y...)"). O nosso sistema injetará o vermelho.
         
-        4. TABELAS (SE EXISTIREM):
+        4. TABELAS:
            - Reconstrua a matriz fielmente.
-           - Se a tabela foi substituída por texto: A tabela antiga entra em `tabela_alterada` toda tachada. O texto novo entra em `texto_pos_tabela_alterada` e `texto_pos_tabela_consolidada`. A `tabela_consolidada` fica vazia.
+           - Se a tabela foi substituída por texto: A tabela antiga entra em `tabela_alterada` toda tachada. O texto novo entra em `texto_pos_tabela_alterada`.
         """
         
         response = client.models.generate_content(
-            model='gemini-3.5-flash',
+            model='gemini-2.0-flash',
             contents=[
                 "Documento 1 (Norma Original):", gemini_file_orig,
                 "Documento 2 (Norma Alteradora):", gemini_file_alt,
@@ -120,28 +115,89 @@ def analisar_arquivos_multimodal(arquivo_orig, arquivo_alt, key):
         
         client.files.delete(name=gemini_file_orig.name)
         client.files.delete(name=gemini_file_alt.name)
-        
         return json.loads(response.text)
-    
     finally:
         if os.path.exists(path_orig): os.remove(path_orig)
         if os.path.exists(path_alt): os.remove(path_alt)
 
+def extrair_paragrafos_seguros(texto_html):
+    """
+    BALANCEADOR DE HTML: Garante que as tags (b, i, strike, font) não sejam quebradas ao meio.
+    Fecha as tags automaticamente antes de um <br/> e reabre na linha de baixo, evitando crash no PDF e Word.
+    """
+    texto_html = texto_html.replace("</font></strike>", "</strike></font>")
+    texto_html = texto_html.replace("</font></s>", "</s></font>")
+    texto_html = texto_html.replace("</b></i>", "</i></b>")
+    texto_html = texto_html.replace('<em>', '<i>').replace('</em>', '</i>')
+    texto_html = texto_html.replace('<strong>', '<b>').replace('</strong>', '</b>')
+    texto_html = texto_html.replace('<s>', '<strike>').replace('</s>', '</strike>')
+    
+    tokens = re.split(r'(<[^>]+>)', texto_html)
+    paragrafos = []
+    pilha = []
+    texto_atual = ""
+    
+    def fechar_todas(pilha_tags):
+        res = ""
+        for tag in reversed(pilha_tags):
+            tag_lower = tag.lower()
+            if tag_lower.startswith("<font"): res += "</font>"
+            elif tag_lower.startswith("<strike"): res += "</strike>"
+            elif tag_lower == "<b>": res += "</b>"
+            elif tag_lower == "<i>": res += "</i>"
+        return res
+        
+    def abrir_todas(pilha_tags):
+        return "".join(pilha_tags)
+        
+    for token in tokens:
+        if not token: continue
+        t_lower = token.lower()
+        
+        if t_lower in ["<br>", "<br/>", "<br />"]:
+            texto_atual += fechar_todas(pilha)
+            # Só anexa se não for um parágrafo vazio (apenas com tags escondidas)
+            if re.sub(r'<[^>]+>', '', texto_atual).strip():
+                paragrafos.append(texto_atual.strip())
+            texto_atual = abrir_todas(pilha)
+        elif t_lower.startswith("</"):
+            # Balancear a pilha fechando a tag
+            removido = False
+            for i in range(len(pilha)-1, -1, -1):
+                p_lower = pilha[i].lower()
+                if (t_lower == "</font>" and p_lower.startswith("<font")) or \
+                   (t_lower == "</strike>" and p_lower.startswith("<strike")) or \
+                   (t_lower == "</b>" and p_lower == "<b>") or \
+                   (t_lower == "</i>" and p_lower == "<i>"):
+                    pilha.pop(i)
+                    removido = True
+                    break
+            if removido:
+                texto_atual += token
+        elif t_lower.startswith("<"):
+            # Evita adicionar sujeira no parser
+            if t_lower.startswith("<font") or t_lower.startswith("<strike") or t_lower in ["<b>", "<i>"]:
+                pilha.append(token)
+                texto_atual += token
+        else:
+            texto_atual += token
+            
+    texto_atual += fechar_todas(pilha)
+    if re.sub(r'<[^>]+>', '', texto_atual).strip():
+        paragrafos.append(texto_atual.strip())
+        
+    return paragrafos
+
 def injetar_nota_remissiva(texto, nota):
-    """Garante que a nota remissiva sempre seja incluída e pintada de vermelho no final do bloco."""
     if nota and nota.strip():
-        # Remove quebras desnecessárias do fim antes de injetar a nota
         texto_limpo = texto.rstrip('<br/>').rstrip('<br>').rstrip()
         return f"{texto_limpo} <font color='red'>{nota.strip()}</font>"
     return texto
 
 def renderizar_paragrafos_pdf(story, texto_html, estilo):
-    texto_html = texto_html.replace('<em>', '<i>').replace('</em>', '</i>')
-    partes = re.split(r'(?:<br\s*/?>\s*)+', texto_html)
-    for parte in partes:
-        texto_limpo = parte.strip()
-        if texto_limpo:
-            story.append(Paragraph(texto_limpo, estilo))
+    paragrafos = extrair_paragrafos_seguros(texto_html)
+    for p in paragrafos:
+        story.append(Paragraph(p, estilo))
 
 def aplicar_html_no_docx(p, texto_html):
     tokens = re.split(r'(<[^>]+>)', texto_html)
@@ -153,12 +209,12 @@ def aplicar_html_no_docx(p, texto_html):
     for token in tokens:
         if not token: continue
         t_lower = token.lower()
-        if t_lower in ['<b>', '<strong>']: is_bold = True
-        elif t_lower in ['</b>', '</strong>']: is_bold = False
-        elif t_lower in ['<i>', '<em>']: is_italic = True
-        elif t_lower in ['</i>', '</em>']: is_italic = False
-        elif t_lower in ['<strike>', '<s>']: is_strike = True
-        elif t_lower in ['</strike>', '</s>']: is_strike = False
+        if t_lower == '<b>': is_bold = True
+        elif t_lower == '</b>': is_bold = False
+        elif t_lower == '<i>': is_italic = True
+        elif t_lower == '</i>': is_italic = False
+        elif t_lower == '<strike>': is_strike = True
+        elif t_lower == '</strike>': is_strike = False
         elif "font color" in t_lower and ("red" in t_lower or "'red'" in t_lower or '"red"' in t_lower): is_red = True
         elif t_lower == '</font>': is_red = False
         elif token.startswith('<'): pass
@@ -172,22 +228,20 @@ def aplicar_html_no_docx(p, texto_html):
             if is_red: run.font.color.rgb = RGBColor(255, 0, 0)
 
 def renderizar_paragrafos_docx(doc, texto_html, alignment, first_line_indent, space_after=Pt(6), bold_all=False):
-    partes = re.split(r'(?:<br\s*/?>\s*)+', texto_html)
-    for parte in partes:
-        texto_limpo = parte.strip()
-        if texto_limpo:
-            p = doc.add_paragraph()
-            p.alignment = alignment
-            p.paragraph_format.first_line_indent = first_line_indent
-            p.paragraph_format.space_after = space_after
-            p.paragraph_format.line_spacing = 1.15
-            if bold_all:
-                run = p.add_run(texto_limpo)
-                run.font.name = 'Times New Roman'
-                run.font.size = Pt(10)
-                run.bold = True
-            else:
-                aplicar_html_no_docx(p, texto_limpo)
+    paragrafos = extrair_paragrafos_seguros(texto_html)
+    for p_html in paragrafos:
+        p = doc.add_paragraph()
+        p.alignment = alignment
+        p.paragraph_format.first_line_indent = first_line_indent
+        p.paragraph_format.space_after = space_after
+        p.paragraph_format.line_spacing = 1.15
+        if bold_all:
+            run = p.add_run(re.sub(r'<[^>]+>', '', p_html))
+            run.font.name = 'Times New Roman'
+            run.font.size = Pt(10)
+            run.bold = True
+        else:
+            aplicar_html_no_docx(p, p_html)
 
 def gerar_pdf_dinamico(dados_json, tipo_versao):
     buffer = io.BytesIO()
@@ -229,7 +283,6 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
         texto_principal = item.get(f"texto_principal_{tipo_versao}", "")
         texto_pos = item.get(f"texto_pos_tabela_{tipo_versao}", "")
         
-        # A nota remissiva é injetada no final do último bloco de texto daquele dispositivo
         if not is_tabela and not texto_pos:
             texto_principal = injetar_nota_remissiva(texto_principal, nota)
         elif texto_pos:
@@ -389,15 +442,15 @@ if st.button("🚀 Processar Multimodal com IA e Gerar Documentos", type="primar
     if not api_key:
         st.error("⚠️ Insira sua chave da API do Google GenAI.")
     elif arq_original and arq_alteradora:
-        with st.spinner("Realizando upload e análise universal (pode levar alguns segundos)..."):
+        with st.spinner("Realizando análise estrutural universal (isso pode levar alguns segundos)..."):
             try:
                 chave_limpa = api_key.strip()
                 dados_estruturados = analisar_arquivos_multimodal(arq_original, arq_alteradora, chave_limpa)
                 
                 st.session_state.dados_processados = dados_estruturados
-                st.success("✨ Análise Universal Multimodal concluída com sucesso!")
+                st.success("✨ Processamento concluído! Seu sistema universal tratou os parágrafos perfeitamente.")
             except Exception as e:
-                st.error("❌ Ocorreu um erro na API Multimodal. Verifique os limites da sua cota.")
+                st.error("❌ Ocorreu um erro no processamento.")
                 st.code(str(e))
     else:
         st.warning("⚠️ Envie ambos os arquivos (PDF ou DOCX).")
@@ -415,12 +468,12 @@ if st.session_state.dados_processados is not None:
     col_d1, col_d2 = st.columns(2)
     with col_d1:
         st.markdown("### Versão Alterada")
-        st.download_button(label="Baixar em PDF", data=pdf_alt_bytes, file_name="versao_alterada_universal.pdf", mime="application/pdf", key="dl_pdf_alt")
-        st.download_button(label="Baixar em Word (.docx)", data=docx_alt_bytes, file_name="versao_alterada_universal.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="dl_docx_alt")
+        st.download_button(label="Baixar em PDF", data=pdf_alt_bytes, file_name="versao_alterada_definitiva.pdf", mime="application/pdf", key="dl_pdf_alt")
+        st.download_button(label="Baixar em Word (.docx)", data=docx_alt_bytes, file_name="versao_alterada_definitiva.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="dl_docx_alt")
     with col_d2:
         st.markdown("### Versão Consolidada")
-        st.download_button(label="Baixar em PDF", data=pdf_cons_bytes, file_name="versao_consolidada_universal.pdf", mime="application/pdf", key="dl_pdf_cons")
-        st.download_button(label="Baixar em Word (.docx)", data=docx_cons_bytes, file_name="versao_consolidada_universal.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="dl_docx_cons")
+        st.download_button(label="Baixar em PDF", data=pdf_cons_bytes, file_name="versao_consolidada_definitiva.pdf", mime="application/pdf", key="dl_pdf_cons")
+        st.download_button(label="Baixar em Word (.docx)", data=docx_cons_bytes, file_name="versao_consolidada_definitiva.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="dl_docx_cons")
 
     st.markdown("---")
     if st.button("🔄 Realizar Nova Análise", type="secondary"):
