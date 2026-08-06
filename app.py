@@ -124,7 +124,7 @@ with aba_principal:
             conteudos_prompt.append(prompt_comandos)
 
             response = client.models.generate_content(
-                model='gemini-2.0-flash',
+                model='gemini-3.6-flash',
                 contents=conteudos_prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
