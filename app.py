@@ -20,10 +20,10 @@ from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 # Configuração da página web
-st.set_page_config(page_title="Consolidador Dinâmico Multimodal", layout="centered")
+st.set_page_config(page_title="Consolidador Dinâmico Universal", layout="centered")
 
 st.title("⚖️ Sistema Web de Consolidação Normativa (Visão Multimodal)")
-st.write("Faça o upload da **Norma Original** e da **Norma Alteradora**. A IA analisará VISUALMENTE os documentos, interpretando matrizes de tabelas e formatações com precisão, e gerará os arquivos em PDF e Word (.docx).")
+st.write("Faça o upload da **Norma Original** e da **Norma Alteradora**. O sistema fará a análise estrutural universal, preservando incisos, formatações e tabelas dinamicamente.")
 
 # Configuração da API Key
 api_key = None
@@ -41,27 +41,29 @@ with col1:
 with col2:
     arq_alteradora = st.file_uploader("2. Documento Alterador (PDF ou DOCX)", type=["pdf", "docx"], key="file_alt")
 
-# Estrutura Avançada Pydantic
+# Estrutura Avançada Pydantic (Universal)
 class Dispositivo(BaseModel):
-    tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', ou 'tabela'")
-    texto_alterada: str = Field(description="O texto antigo tachado em vermelho. OBRIGATÓRIO: Adicione a nota remissiva em vermelho no final (ex: <font color='red'>(Alterado...)</font>). Mantenha negritos e itálicos originais.")
-    texto_novo_pos_tabela: Optional[str] = Field(default=None, description="APENAS PARA TABELAS SUBSTITUÍDAS: A NOVA redação do dispositivo aqui. OBRIGATÓRIO conter a nota remissiva em vermelho.")
-    texto_consolidado: str = Field(description="Texto limpo da versão consolidada. SE REVOGADO: apenas o identificador (ex: <b>Art. 9º</b>) + nota remissiva. OBRIGATÓRIO: A nota remissiva final em vermelho <font color='red'>...</font>.")
-    is_tabela: bool = Field(description="Verdadeiro (true) SE possuir matriz de tabela associada.")
-    tabela_linhas_alterada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela. Se foi alterada/revogada, envolver TODAS as células com <font color='red'><strike>...</strike></font>.")
-    tabela_linhas_consolidada: Optional[List[List[str]]] = Field(default=None, description="Matriz limpa. SE A TABELA FOI APAGADA/SUBSTITUÍDA por texto na alteração, DEVE SER UMA LISTA VAZIA [].")
+    tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', 'inciso', etc.")
+    texto_principal_alterada: str = Field(description="Texto da versão alterada. Mantenha <b> e <i>. Use <font color='red'><strike>...</strike></font> para trechos removidos. Respeite as quebras de linha com <br/>.")
+    texto_principal_consolidada: str = Field(description="Texto limpo da versão consolidada. Se totalmente revogado, coloque apenas o identificador original (ex: <b>Art 1º</b>).")
+    is_tabela: bool = Field(description="True se houver uma tabela associada a este dispositivo.")
+    tabela_alterada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela alterada. Se revogada, envolva células em <font color='red'><strike>...</strike></font>.")
+    tabela_consolidada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela consolidada. Vazio se apagada.")
+    texto_pos_tabela_alterada: Optional[str] = Field(default=None, description="Texto que entra após a tabela na versão alterada (se houver).")
+    texto_pos_tabela_consolidada: Optional[str] = Field(default=None, description="Texto que entra após a tabela na versão consolidada (se houver).")
+    nota_remissiva: Optional[str] = Field(default="", description="OBRIGATÓRIO se houver alteração/revogação. Ex: '(Alterado pelo art. X da Portaria Y)'. O sistema aplicará a cor vermelha automaticamente. Deixe vazio se não houve mudança.")
 
 class ResultadoConsolidacao(BaseModel):
-    cabecalho_complemento: str = Field(description="Gere apenas o texto complemento do topo. Ex: 'Atualizada pela Portaria nº 103/PGJM, de 21/05/2026 (vigência: 21/05/2026)'.")
-    orgaos_emissores: str = Field(description="Extraia o cabeçalho com os órgãos emissores da norma original.")
-    titulo_portaria: str = Field(description="Apenas o nome e data da Norma Original.")
-    ementa_preambulo: str = Field(description="O preâmbulo original.")
-    assinatura_nome: str = Field(description="Nome da pessoa que assina o documento original.")
-    assinatura_cargo: str = Field(description="Cargo da pessoa que assina o documento original.")
-    dispositivos: List[Dispositivo] = Field(description="Lista sequencial estruturada de toda a norma.")
+    cabecalho_complemento: str = Field(description="Complemento do topo. Ex: 'Atualizada pela Portaria nº 103/PGJM, de 21/05/2026 (vigência: 21/05/2026)'.")
+    orgaos_emissores: str = Field(description="Órgãos emissores da norma original (use <br/> para quebras).")
+    titulo_portaria: str = Field(description="Nome e data da Norma Original.")
+    ementa_preambulo: str = Field(description="Preâmbulo original.")
+    assinatura_nome: str = Field(description="Nome de quem assina o original.")
+    assinatura_cargo: str = Field(description="Cargo de quem assina.")
+    dispositivos: List[Dispositivo] = Field(description="Lista de todos os dispositivos do documento.")
 
 def analisar_arquivos_multimodal(arquivo_orig, arquivo_alt, key):
-    """Envia os arquivos fisicamente para a Visão Computacional do Gemini."""
+    """Envia os arquivos para a Visão Computacional do Gemini com instruções universais."""
     client = genai.Client(api_key=key)
     
     ext_orig = f".{arquivo_orig.name.split('.')[-1]}"
@@ -80,23 +82,26 @@ def analisar_arquivos_multimodal(arquivo_orig, arquivo_alt, key):
         gemini_file_alt = client.files.upload(file=path_alt)
         
         prompt = """
-        Atue como um especialista em técnica legislativa.
-        Você recebeu a Norma Original e a Norma Alteradora. Analise visualmente e gere o JSON.
+        Atue como um especialista em técnica legislativa analisando documentos normativos genéricos.
+        Você recebeu a Norma Original e a Norma Alteradora. Extraia o conteúdo combinando ambos.
 
-        REGRAS CRÍTICAS DE ESTRUTURAÇÃO E FORMATAÇÃO (LEIA COM ATENÇÃO):
-        1. FORMATAÇÃO E ESTRUTURA DO TEXTO ORIGINAL:
-           - Preserve RIGOROSAMENTE as palavras em negrito usando <b>...</b> e em itálico usando <i>...</i>.
-           - Preserve as quebras de linha originais. Se houver incisos (I, II) ou alíneas (a, b), insira a tag <br/> para forçar a quebra estrutural. NÃO aglutine itens de lista na mesma linha.
-        2. NOTAS REMISSIVAS (OBRIGATÓRIO E INEGOCIÁVEL):
-           - É OBRIGATÓRIO adicionar a nota remissiva ao final de TODO dispositivo alterado ou revogado.
-           - A nota DEVE ser escrita inteiramente na cor vermelha: <font color='red'>(Alterado pelo art. Xº da Portaria...)</font> ou <font color='red'>(Revogado pelo art. Xº...)</font>.
-        3. ARTIGOS COM TABELA QUE FORAM SUBSTITUÍDOS POR TEXTO CORRIDO:
-           - Na Versão Alterada: `texto_alterada` recebe APENAS a introdução antiga tachada; `tabela_linhas_alterada` recebe a matriz tachada; `texto_novo_pos_tabela` recebe a nova redação + NOTA REMISSIVA.
-        4. VERSÃO CONSOLIDADA RIGOROSA (`texto_consolidado`):
-           - Dispositivo ALTERADO: mostre APENAS a nova redação + NOTA REMISSIVA em vermelho.
-           - Dispositivo REVOGADO: mostre APENAS o identificador original (ex: <b>Art. 9º</b>) + NOTA REMISSIVA em vermelho.
-        5. ARTIGOS SEM TABELA ALTERADOS:
-           - Em `texto_alterada`: Texto antigo tachado + <br/><br/> + Texto novo + NOTA REMISSIVA em vermelho.
+        REGRAS UNIVERSAIS DE ESTRUTURAÇÃO (OBRIGATÓRIAS):
+        1. FORMATAÇÃO TEXTUAL:
+           - Identifique e mantenha TODO o texto em negrito (use <b>...</b>) e itálico (use <i>...</i>).
+           - PRESERVAÇÃO DE LISTAS: Se houver Incisos (I, II, III) ou Alíneas (a, b, c), você DEVE separá-los com a tag <br/> para que fiquem em linhas distintas. NUNCA aglutine listas na mesma linha.
+           - PROIBIDO o uso de LaTeX para ordinais (use 1º, 2º).
+        
+        2. LÓGICA DE ALTERAÇÃO E REVOGAÇÃO:
+           - Na versão ALTERADA: O que sai deve ser envolvido em <font color='red'><strike>...</strike></font>. Se algo for substituído, coloque o tachado, adicione <br/><br/> e insira o texto novo.
+           - Na versão CONSOLIDADA: Mostre apenas a nova redação limpa. Se for totalmente REVOGADO, mostre apenas o identificador (ex: <b>Art. 9º</b>) sem o texto antigo.
+        
+        3. NOTAS REMISSIVAS (AUTOMATIZADAS):
+           - Se um dispositivo foi alterado, revogado ou incluído, você DEVE preencher o campo `nota_remissiva` com o texto exato (Ex: "(Alterado pelo art. Xº da Portaria Y...)").
+           - Não aplique tags HTML dentro do campo `nota_remissiva`, o sistema cuidará da formatação em vermelho automaticamente.
+        
+        4. TABELAS (SE EXISTIREM):
+           - Reconstrua a matriz fielmente.
+           - Se a tabela foi substituída por texto: A tabela antiga entra em `tabela_alterada` toda tachada. O texto novo entra em `texto_pos_tabela_alterada` e `texto_pos_tabela_consolidada`. A `tabela_consolidada` fica vazia.
         """
         
         response = client.models.generate_content(
@@ -122,8 +127,15 @@ def analisar_arquivos_multimodal(arquivo_orig, arquivo_alt, key):
         if os.path.exists(path_orig): os.remove(path_orig)
         if os.path.exists(path_alt): os.remove(path_alt)
 
+def injetar_nota_remissiva(texto, nota):
+    """Garante que a nota remissiva sempre seja incluída e pintada de vermelho no final do bloco."""
+    if nota and nota.strip():
+        # Remove quebras desnecessárias do fim antes de injetar a nota
+        texto_limpo = texto.rstrip('<br/>').rstrip('<br>').rstrip()
+        return f"{texto_limpo} <font color='red'>{nota.strip()}</font>"
+    return texto
+
 def renderizar_paragrafos_pdf(story, texto_html, estilo):
-    # Traduz as tags de itálico para o padrão que o ReportLab aceita
     texto_html = texto_html.replace('<em>', '<i>').replace('</em>', '</i>')
     partes = re.split(r'(?:<br\s*/?>\s*)+', texto_html)
     for parte in partes:
@@ -210,26 +222,32 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
     renderizar_paragrafos_pdf(story, dados_json.get("ementa_preambulo", "").replace("\n", ""), estilo_dispositivo)
 
     for item in dados_json.get("dispositivos", []):
-        is_tabela = item.get("is_tabela", False)
         tipo = item.get("tipo", "").lower()
+        is_tabela = item.get("is_tabela", False)
+        nota = item.get("nota_remissiva", "")
         
+        texto_principal = item.get(f"texto_principal_{tipo_versao}", "")
+        texto_pos = item.get(f"texto_pos_tabela_{tipo_versao}", "")
+        
+        # A nota remissiva é injetada no final do último bloco de texto daquele dispositivo
+        if not is_tabela and not texto_pos:
+            texto_principal = injetar_nota_remissiva(texto_principal, nota)
+        elif texto_pos:
+            texto_pos = injetar_nota_remissiva(texto_pos, nota)
+            
+        if "capitulo" in tipo:
+            story.append(Paragraph(texto_principal.replace('\n', ' '), estilo_capitulo))
+            continue
+
+        if texto_principal:
+            renderizar_paragrafos_pdf(story, texto_principal.replace("\n", " "), estilo_dispositivo)
+            
         if is_tabela:
-            if tipo_versao == "alterada":
-                intro = item.get("texto_alterada", "")
-                if intro: renderizar_paragrafos_pdf(story, intro.replace("\n", " "), estilo_dispositivo)
-            else:
-                intro = item.get("texto_consolidado", "")
-                if intro: renderizar_paragrafos_pdf(story, intro.replace("\n", " "), estilo_dispositivo)
-            
-            chave_tabela = f"tabela_linhas_{tipo_versao}"
-            linhas = item.get(chave_tabela, [])
-            
+            linhas = item.get(f"tabela_{tipo_versao}", [])
             if linhas and len(linhas) > 0:
                 tabela_processada = []
                 for linha in linhas:
-                    linha_processada = []
-                    for celula in linha:
-                        linha_processada.append(Paragraph(celula.replace('\n', ' '), estilo_celula))
+                    linha_processada = [Paragraph(celula.replace('\n', ' '), estilo_celula) for celula in linha]
                     tabela_processada.append(linha_processada)
                 
                 t = Table(tabela_processada, colWidths='*')
@@ -243,16 +261,9 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
                 ]))
                 story.append(t)
                 story.append(Spacer(1, 15))
-            
-            if tipo_versao == "alterada":
-                novo_pos = item.get("texto_novo_pos_tabela", "")
-                if novo_pos: renderizar_paragrafos_pdf(story, novo_pos.replace('\n', ' '), estilo_dispositivo)
-        else:
-            texto_final = item.get(f"texto_{tipo_versao}", "").replace("\n", " ")
-            if "capitulo" in tipo:
-                story.append(Paragraph(texto_final, estilo_capitulo))
-            else:
-                renderizar_paragrafos_pdf(story, texto_final, estilo_dispositivo)
+                
+        if texto_pos:
+            renderizar_paragrafos_pdf(story, texto_pos.replace("\n", " "), estilo_dispositivo)
 
     bloco_assinatura = f"{dados_json.get('assinatura_nome', '')}<br/>{dados_json.get('assinatura_cargo', '')}"
     story.append(Paragraph(bloco_assinatura, estilo_assinatura))
@@ -306,19 +317,27 @@ def gerar_docx_dinamico(dados_json, tipo_versao):
     renderizar_paragrafos_docx(doc, dados_json.get("ementa_preambulo", "").replace("\n", " "), alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4))
 
     for item in dados_json.get("dispositivos", []):
-        is_tabela = item.get("is_tabela", False)
         tipo = item.get("tipo", "").lower()
+        is_tabela = item.get("is_tabela", False)
+        nota = item.get("nota_remissiva", "")
         
-        if is_tabela:
-            if tipo_versao == "alterada":
-                intro = item.get("texto_alterada", "")
-                if intro: renderizar_paragrafos_docx(doc, intro.replace('\n', ' '), alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4))
-            else:
-                intro = item.get("texto_consolidado", "")
-                if intro: renderizar_paragrafos_docx(doc, intro.replace('\n', ' '), alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4))
+        texto_principal = item.get(f"texto_principal_{tipo_versao}", "")
+        texto_pos = item.get(f"texto_pos_tabela_{tipo_versao}", "")
+        
+        if not is_tabela and not texto_pos:
+            texto_principal = injetar_nota_remissiva(texto_principal, nota)
+        elif texto_pos:
+            texto_pos = injetar_nota_remissiva(texto_pos, nota)
+
+        if "capitulo" in tipo:
+            renderizar_paragrafos_docx(doc, texto_principal.replace("\n", " "), alignment=WD_ALIGN_PARAGRAPH.CENTER, first_line_indent=Inches(0), space_after=Pt(10), bold_all=True)
+            continue
+
+        if texto_principal:
+            renderizar_paragrafos_docx(doc, texto_principal.replace('\n', ' '), alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4))
             
-            chave_tabela = f"tabela_linhas_{tipo_versao}"
-            linhas = item.get(chave_tabela, [])
+        if is_tabela:
+            linhas = item.get(f"tabela_{tipo_versao}", [])
             if linhas and len(linhas) > 0:
                 table = doc.add_table(rows=len(linhas), cols=len(linhas[0]))
                 table.style = 'Table Grid'
@@ -330,16 +349,9 @@ def gerar_docx_dinamico(dados_json, tipo_versao):
                         p.paragraph_format.space_after = Pt(2)
                         aplicar_html_no_docx(p, celula.replace("\n", " "))
                 doc.add_paragraph().paragraph_format.space_after = Pt(12)
-            
-            if tipo_versao == "alterada":
-                novo_pos = item.get("texto_novo_pos_tabela", "")
-                if novo_pos: renderizar_paragrafos_docx(doc, novo_pos.replace('\n', ' '), alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4))
-        else:
-            texto_final = item.get(f"texto_{tipo_versao}", "").replace("\n", " ")
-            if "capitulo" in tipo:
-                renderizar_paragrafos_docx(doc, texto_final, alignment=WD_ALIGN_PARAGRAPH.CENTER, first_line_indent=Inches(0), space_after=Pt(10), bold_all=True)
-            else:
-                renderizar_paragrafos_docx(doc, texto_final, alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4))
+                
+        if texto_pos:
+            renderizar_paragrafos_docx(doc, texto_pos.replace('\n', ' '), alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4))
 
     p_assinatura = doc.add_paragraph()
     p_assinatura.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -377,13 +389,13 @@ if st.button("🚀 Processar Multimodal com IA e Gerar Documentos", type="primar
     if not api_key:
         st.error("⚠️ Insira sua chave da API do Google GenAI.")
     elif arq_original and arq_alteradora:
-        with st.spinner("Realizando upload e analisando visualmente os documentos... Pode levar alguns segundos."):
+        with st.spinner("Realizando upload e análise universal (pode levar alguns segundos)..."):
             try:
                 chave_limpa = api_key.strip()
                 dados_estruturados = analisar_arquivos_multimodal(arq_original, arq_alteradora, chave_limpa)
                 
                 st.session_state.dados_processados = dados_estruturados
-                st.success("✨ Análise Multimodal concluída com sucesso!")
+                st.success("✨ Análise Universal Multimodal concluída com sucesso!")
             except Exception as e:
                 st.error("❌ Ocorreu um erro na API Multimodal. Verifique os limites da sua cota.")
                 st.code(str(e))
@@ -403,12 +415,12 @@ if st.session_state.dados_processados is not None:
     col_d1, col_d2 = st.columns(2)
     with col_d1:
         st.markdown("### Versão Alterada")
-        st.download_button(label="Baixar em PDF", data=pdf_alt_bytes, file_name="versao_alterada_multimodal.pdf", mime="application/pdf", key="dl_pdf_alt")
-        st.download_button(label="Baixar em Word (.docx)", data=docx_alt_bytes, file_name="versao_alterada_multimodal.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="dl_docx_alt")
+        st.download_button(label="Baixar em PDF", data=pdf_alt_bytes, file_name="versao_alterada_universal.pdf", mime="application/pdf", key="dl_pdf_alt")
+        st.download_button(label="Baixar em Word (.docx)", data=docx_alt_bytes, file_name="versao_alterada_universal.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="dl_docx_alt")
     with col_d2:
         st.markdown("### Versão Consolidada")
-        st.download_button(label="Baixar em PDF", data=pdf_cons_bytes, file_name="versao_consolidada_multimodal.pdf", mime="application/pdf", key="dl_pdf_cons")
-        st.download_button(label="Baixar em Word (.docx)", data=docx_cons_bytes, file_name="versao_consolidada_multimodal.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="dl_docx_cons")
+        st.download_button(label="Baixar em PDF", data=pdf_cons_bytes, file_name="versao_consolidada_universal.pdf", mime="application/pdf", key="dl_pdf_cons")
+        st.download_button(label="Baixar em Word (.docx)", data=docx_cons_bytes, file_name="versao_consolidada_universal.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="dl_docx_cons")
 
     st.markdown("---")
     if st.button("🔄 Realizar Nova Análise", type="secondary"):
