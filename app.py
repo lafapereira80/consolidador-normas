@@ -11,8 +11,8 @@ from google.genai import types
 from pydantic import BaseModel, Field
 from typing import List
 
-# Configuração da página web
-st.set_page_title(page_title="Consolidador Dinâmico de Normas - MPM", layout="centered")
+# CORREÇÃO: O comando correto é st.set_page_config
+st.set_page_config(page_title="Consolidador Dinâmico de Normas - MPM", layout="centered")
 
 st.title("⚖️ Sistema Web Dinâmico de Consolidação Normativa")
 st.write("Faça o upload da **Portaria Original** e da **Portaria Alteradora**. A IA fará a leitura, o cruzamento normativo e gerará os PDFs dinamicamente.")
@@ -133,7 +133,6 @@ def gerar_pdf_dinamico(titulo_versao, dados_json, tipo_versao):
         if "capitulo" in tipo:
             story.append(Paragraph(item.get("texto_alterada", ""), estilo_capitulo))
         else:
-            # Seleciona o texto adequado dependendo se é a versão Alterada (histórica) ou Consolidada (limpa)
             if tipo_versao == "alterada":
                 texto_final = item.get("texto_alterada", "")
             else:
