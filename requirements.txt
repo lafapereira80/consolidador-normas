@@ -4,3 +4,4 @@ PyMuPDF
 google-genai
 pydantic
 requests 
+python-docx
