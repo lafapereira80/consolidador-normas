@@ -52,15 +52,15 @@ def extrair_texto_de_upload(arquivo_uploaded):
 # Estrutura Avançada Pydantic
 class Dispositivo(BaseModel):
     tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', ou 'tabela'")
-    texto_alterada: str = Field(description="Texto antigo tachado em vermelho. Se não for tabela, insira <br/><br/> e o texto novo logo após.")
+    texto_alterada: str = Field(description="Texto antigo tachado em vermelho. Se não for tabela e tiver alteração, insira <br/><br/> e o texto novo logo após.")
     texto_novo_pos_tabela: Optional[str] = Field(default=None, description="APENAS se a tabela foi apagada/substituída: Coloque aqui o novo texto que deve vir após a matriz da tabela antiga.")
-    texto_consolidado: str = Field(description="Texto limpo e atualizado.")
+    texto_consolidado: str = Field(description="Texto limpo e atualizado para a versão consolidada. SE REVOGADO, coloque APENAS o identificador e a nota (ex: <b>Art. 9º</b> <font color='red'>(Revogado pelo art...)</font>).")
     is_tabela: bool = Field(description="Verdadeiro (true) SE o conteúdo for um quadro ou tabela.")
-    tabela_linhas_alterada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela. Se foi alterada/revogada, TODAS as células devem estar em <font color='red'><strike>...</strike></font>.")
-    tabela_linhas_consolidada: Optional[List[List[str]]] = Field(default=None, description="Matriz limpa da tabela consolidada.")
+    tabela_linhas_alterada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela da versão alterada. Se foi alterada/revogada, envolver células com <font color='red'><strike>...</strike></font>.")
+    tabela_linhas_consolidada: Optional[List[List[str]]] = Field(default=None, description="Matriz limpa da tabela consolidada. Deixe null se a tabela foi revogada/apagada.")
 
 class ResultadoConsolidacao(BaseModel):
-    cabecalho_versao_alterada: str = Field(description="Gere o texto exato: 'VERSÃO ALTERADA — Atualizada pela [Nome/Número da Norma Alteradora], [Data por extenso]'.")
+    cabecalho_complemento: str = Field(description="Gere apenas o texto complemento do topo. Ex: 'Atualizada pela Portaria nº 103/PGJM, de 21/05/2026 (vigência: 21/05/2026)'.")
     orgaos_emissores: str = Field(description="Extraia o cabeçalho com os órgãos emissores da norma original.")
     titulo_portaria: str = Field(description="Apenas o nome e data da Norma Original.")
     ementa_preambulo: str = Field(description="O preâmbulo original.")
@@ -77,22 +77,21 @@ def analisar_normas_com_gemini_dinamico(texto_original, texto_alterador, key):
     
     REGRAS RÍGIDAS DE FORMATAÇÃO E ESTRUTURAÇÃO:
     1. PROIBIDO LaTeX: NUNCA use LaTeX. Use textualmente "1º", "2º", "5º", "§", etc.
-    2. CABEÇALHO ALTERADO: Crie o título dinâmico da versão alterada.
-    3. TABELAS (CRÍTICO - ATENÇÃO MÁXIMA):
-       - O PDF original possui uma tabela com colunas (ex: "Lotação" e "Servidor"). A extração bruta de texto pode misturar as linhas. Você DEVE reconstruir a matriz de dados com perfeição (ex: ["1º Ofício...", "Maria..."]).
-       - Se a tabela inteira foi REVOGADA ou SUBSTITUÍDA por um texto novo (ex: Portaria 103 apagou a tabela do Art 1º):
-         * Em `texto_alterada`: Coloque APENAS a introdução antiga (tachada em vermelho).
+    2. TABELAS:
+       - Reconstrua a matriz de dados da tabela original com perfeição.
+       - Se a tabela inteira foi REVOGADA ou SUBSTITUÍDA por texto:
          * Em `tabela_linhas_alterada`: Extraia a matriz antiga completa e envolva o texto de TODAS as células com <font color='red'><strike>...</strike></font>.
-         * Em `texto_novo_pos_tabela`: Coloque a nova redação + a nota remissiva em vermelho.
-         * Em `texto_consolidado`: Coloque a nova redação limpa + a nota remissiva em vermelho.
-         * Em `tabela_linhas_consolidada`: Deixe vazio ou null.
-    4. REGRA DO VERMELHO TACHADO E PARÁGRAFOS (Para textos sem tabela): 
-       - Coloque o texto antigo tachado em vermelho <font color='red'><strike>...</strike></font>, insira uma quebra de linha dupla <br/><br/> e o texto novo logo após.
-    5. NOTAS REMISSIVAS (OBRIGATÓRIO):
+         * Em `texto_novo_pos_tabela`: Coloque a nova redação + nota remissiva.
+         * Em `tabela_linhas_consolidada`: Null/Vazio.
+    3. VERSÃO CONSOLIDADA (`texto_consolidado`):
+       - Se o dispositivo foi ALTERADO, mostre apenas o NOVO texto limpo + nota remissiva em vermelho no final.
+       - Se o dispositivo foi REVOGADO, mostre APENAS o identificador original + nota remissiva em vermelho. Exemplo: <b>Art. 9º</b> <font color='red'>(Revogado pelo art. 2º da Portaria...)</font>. Não inclua o texto antigo.
+    4. VERSÃO ALTERADA (`texto_alterada`):
+       - Texto antigo DEVE estar tachado em vermelho <font color='red'><strike>...</strike></font>.
+       - Se houve substituição por texto, coloque o texto tachado, seguido de <br/><br/> e a nova redação.
+    5. NOTAS REMISSIVAS (OBRIGATÓRIO EM TODAS AS VERSÕES):
        - TODAS as notas remissivas DEVEM estar inteiramente na cor vermelha: <font color='red'>(Alterado pelo art...)</font> ou <font color='red'>(Revogado pelo art...)</font>.
-       - NUNCA use termos como "Redação dada por". Use EXATAMENTE a estrutura "(Alterado pelo art. Xº da Portaria nº Y...)" ou "(Revogado pelo art. Xº...)".
-    6. NEGRITOS: Mantenha as palavras em negrito do original (ex: <b>Art. 1º</b>).
-    7. LIMPEZA: Remova quebras de linha (Enters) artificiais no meio de frases.
+    6. NEGRITOS E LIMPEZA: Mantenha as palavras em negrito originais (ex: <b>Art. 1º</b>). Remova quebras de linha (Enters) do meio de frases.
     
     NORMA ORIGINAL:
     {texto_original}
@@ -102,7 +101,7 @@ def analisar_normas_com_gemini_dinamico(texto_original, texto_alterador, key):
     """
     
     response = client.models.generate_content(
-        model='gemini-3.5-flash', # Modelo robusto definido
+        model='gemini-2.0-flash',
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -113,7 +112,6 @@ def analisar_normas_com_gemini_dinamico(texto_original, texto_alterador, key):
     return json.loads(response.text)
 
 def renderizar_paragrafos_pdf(story, texto_html, estilo):
-    """Quebra o texto em parágrafos separados no PDF para garantir indentação correta em textos inseridos."""
     partes = re.split(r'(?:<br\s*/?>\s*)+', texto_html)
     for parte in partes:
         texto_limpo = parte.strip()
@@ -121,7 +119,6 @@ def renderizar_paragrafos_pdf(story, texto_html, estilo):
             story.append(Paragraph(texto_limpo, estilo))
 
 def aplicar_html_no_docx(p, texto_html):
-    """Lê as tags HTML (<b>, <strike>, <font>) e aplica nativamente no formato DOCX."""
     tokens = re.split(r'(<[^>]+>)', texto_html)
     is_bold = False
     is_strike = False
@@ -147,7 +144,6 @@ def aplicar_html_no_docx(p, texto_html):
             if is_red: run.font.color.rgb = RGBColor(255, 0, 0)
 
 def renderizar_paragrafos_docx(doc, texto_html, alignment, first_line_indent, space_after=Pt(6), bold_all=False):
-    """Cria parágrafos no DOCX forçando alinhamento e chamando o tradutor de HTML."""
     partes = re.split(r'(?:<br\s*/?>\s*)+', texto_html)
     for parte in partes:
         texto_limpo = parte.strip()
@@ -157,7 +153,6 @@ def renderizar_paragrafos_docx(doc, texto_html, alignment, first_line_indent, sp
             p.paragraph_format.first_line_indent = first_line_indent
             p.paragraph_format.space_after = space_after
             p.paragraph_format.line_spacing = 1.15
-            
             if bold_all:
                 run = p.add_run(texto_limpo)
                 run.font.name = 'Times New Roman'
@@ -182,10 +177,9 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
     estilo_rodape = ParagraphStyle('Rodape', parent=styles['Normal'], fontName='Times-Italic', fontSize=9, leading=12, alignment=0)
 
     # 1. Cabeçalho
-    if tipo_versao == "alterada":
-        story.append(Paragraph(dados_json.get("cabecalho_versao_alterada", "VERSÃO ALTERADA"), estilo_cabecalho_topo))
-    else:
-        story.append(Paragraph("VERSÃO CONSOLIDADA", estilo_cabecalho_topo))
+    comp = dados_json.get("cabecalho_complemento", "")
+    topo_texto = f"VERSÃO ALTERADA - {comp}" if tipo_versao == "alterada" else f"VERSÃO CONSOLIDADA - {comp}"
+    story.append(Paragraph(topo_texto, estilo_cabecalho_topo))
 
     # 2. Brasão
     caminho_imagem = "brasao.png"
@@ -202,13 +196,12 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
     story.append(Paragraph(dados_json.get("titulo_portaria", "").replace("<br>", "<br/>").replace("\n", "<br/>"), estilo_titulo))
     renderizar_paragrafos_pdf(story, dados_json.get("ementa_preambulo", "").replace("\n", ""), estilo_dispositivo)
 
-    # 4. Dispositivos e Tabelas (Com Lógica de Recuo)
+    # 4. Dispositivos e Tabelas
     for item in dados_json.get("dispositivos", []):
         is_tabela = item.get("is_tabela", False)
         tipo = item.get("tipo", "").lower()
         
         if is_tabela:
-            # Texto Introdutório da Tabela
             if tipo_versao == "alterada":
                 intro = item.get("texto_alterada", "")
                 if intro: renderizar_paragrafos_pdf(story, intro.replace("\n", " "), estilo_dispositivo)
@@ -216,9 +209,9 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
                 intro = item.get("texto_consolidado", "")
                 if intro: renderizar_paragrafos_pdf(story, intro.replace("\n", " "), estilo_dispositivo)
             
-            # Matriz da Tabela
             chave_tabela = f"tabela_linhas_{tipo_versao}"
             linhas = item.get(chave_tabela, [])
+            
             if linhas and len(linhas) > 0:
                 tabela_processada = []
                 for linha in linhas:
@@ -226,19 +219,20 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
                     for celula in linha:
                         linha_processada.append(Paragraph(celula.replace('\n', ' '), estilo_celula))
                     tabela_processada.append(linha_processada)
+                
                 t = Table(tabela_processada, colWidths='*')
+                # CORREÇÃO: Aplicação da borda total com 'GRID'
                 t.setStyle(TableStyle([
                     ('TEXTCOLOR', (0,0), (-1,-1), colors.black),
                     ('ALIGN', (0,0), (-1,-1), 'LEFT'),
                     ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                    ('LINEBELOW', (0,0), (-1,0), 0.5, colors.black),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.black),
                     ('BOTTOMPADDING', (0,0), (-1,-1), 6),
                     ('TOPPADDING', (0,0), (-1,-1), 6),
                 ]))
                 story.append(t)
                 story.append(Spacer(1, 15))
             
-            # Novo Texto após a tabela ter sido apagada/substituída (Apenas na Alterada)
             if tipo_versao == "alterada":
                 novo_pos = item.get("texto_novo_pos_tabela", "")
                 if novo_pos: renderizar_paragrafos_pdf(story, novo_pos.replace('\n', ' '), estilo_dispositivo)
@@ -275,7 +269,8 @@ def gerar_docx_dinamico(dados_json, tipo_versao):
     # 1. Cabeçalho de Versão
     p_head = doc.add_paragraph()
     p_head.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    texto_head = dados_json.get("cabecalho_versao_alterada", "VERSÃO ALTERADA") if tipo_versao == "alterada" else "VERSÃO CONSOLIDADA"
+    comp = dados_json.get("cabecalho_complemento", "")
+    texto_head = f"VERSÃO ALTERADA - {comp}" if tipo_versao == "alterada" else f"VERSÃO CONSOLIDADA - {comp}"
     r_head = p_head.add_run(texto_head)
     r_head.font.name = 'Times New Roman'
     r_head.font.size = Pt(10)
@@ -378,7 +373,7 @@ if st.button("🚀 Processar Dinamicamente com IA e Gerar Documentos", type="pri
     if not api_key:
         st.error("⚠️ Insira sua chave da API do Google GenAI.")
     elif pdf_original and pdf_alteradora:
-        with st.spinner("Analisando documentos, reconstruindo tabelas e formatando parágrafos..."):
+        with st.spinner("Analisando documentos e formatando versões consolidadas..."):
             try:
                 texto_orig = extrair_texto_de_upload(pdf_original)
                 texto_alt = extrair_texto_de_upload(pdf_alteradora)
