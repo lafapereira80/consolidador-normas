@@ -8,6 +8,7 @@ from reportlab.graphics.shapes import Drawing, Line
 import io
 import json
 import os
+import re
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
@@ -51,8 +52,8 @@ def extrair_texto_de_upload(arquivo_uploaded):
 # Estrutura Avançada Pydantic
 class Dispositivo(BaseModel):
     tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', ou 'tabela'")
-    texto_alterada: str = Field(description="Se alterado: coloque o texto antigo totalmente tachado em vermelho <font color='red'><strike>...</strike></font>, seguido de quebra de linha <br/><br/> e o novo texto devidamente estruturado como parágrafo. A nota remissiva final DEVE estar inteiramente em vermelho (ex: <font color='red'>(Alterado pelo art. ...)</font>).")
-    texto_consolidado: str = Field(description="Texto limpo e atualizado. Preserve negritos originais (ex: <b>Art. 1º</b>). A nota remissiva final DEVE estar em vermelho (ex: <font color='red'>(Alterado pelo art. ...)</font>).")
+    texto_alterada: str = Field(description="Se alterado: coloque o texto antigo totalmente tachado em vermelho <font color='red'><strike>...</strike></font>, seguido de separador <br/> e o novo texto. A nota remissiva final DEVE estar inteiramente em vermelho (ex: <font color='red'>(Alterado pelo art. ...)</font>).")
+    texto_consolidado: str = Field(description="Texto limpo e atualizado. Preserve negritos originais (ex: <b>Art. 1º</b>). A nota remissiva final DEVE estar em vermelho.")
     is_tabela: bool = Field(description="Verdadeiro (true) SE o conteúdo for um quadro ou tabela.")
     tabela_linhas_alterada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela da versão alterada.")
     tabela_linhas_consolidada: Optional[List[List[str]]] = Field(default=None, description="Matriz limpa da tabela consolidada.")
@@ -76,12 +77,12 @@ def analisar_normas_com_gemini_dinamico(texto_original, texto_alterador, key):
     REGRAS RÍGIDAS DE FORMATAÇÃO E ESTRUTURAÇÃO:
     1. PROIBIDO LaTeX: NUNCA use LaTeX (como $5^{{\circ}}$). Use textualmente "1º", "2º", "5º", "§", etc.
     2. EXTRAÇÃO DINÂMICA: Extraia corretamente o Órgão Emissor e quem assina (Nome e Cargo) do documento original.
-    3. CABEÇALHO ALTERADO: Crie o título dinâmico da versão alterada (Ex: 'VERSÃO ALTERADA — Atualizada pela Portaria nº 103/PGJM, de 21 de maio de 2026').
-    4. REGRA DO VERMELHO TACHADO E PARÁGRAFO DO ATO DERIVATIVO: 
-       - Na versão alterada, quando houver substituição por texto novo (vindo do ato derivativo), formate estruturalmente colocando o texto antigo tachado em vermelho <font color='red'><strike>...</strike></font>, insira um espaçamento claro com quebra dupla <br/><br/> e o texto novo começando com indentação própria de parágrafo (ex: <b>Art. 1º</b> Os Assessores...).
-       - TODAS as notas remissivas de alteração ou revogação DEVEM estar integralmente na cor vermelha (<font color='red'>...</font>).
-    5. NEGRITOS E ITÁLICOS: Mantenha as palavras que estavam em negrito no original (ex: <b>Art. 1º</b>, <b>Parágrafo único.</b>).
-    6. TABELAS: Defina `is_tabela` como true e extraia como matriz fiel ao documento original.
+    3. CABEÇALHO ALTERADO: Crie o título dinâmico da versão alterada.
+    4. REGRA DO VERMELHO TACHADO E PARÁGRAFOS: 
+       - Na versão alterada, quando houver substituição, formate colocando o texto antigo tachado em vermelho <font color='red'><strike>...</strike></font>, insira UMA ÚNICA tag <br/> e o texto novo logo após.
+       - TODAS as notas remissivas de alteração ou revogação DEVEM estar na cor vermelha (<font color='red'>...</font>).
+    5. NEGRITOS E ITÁLICOS: Mantenha as palavras que estavam em negrito no original (ex: <b>Art. 1º</b>).
+    6. TABELAS: Defina `is_tabela` como true. A matriz da tabela (linhas e colunas) DEVE ser extraída exatamente como no formato original. Não invente ou agrupe dados.
     7. LIMPEZA: Remova quebras de linha artificiais do meio das frases.
     
     NORMA ORIGINAL:
@@ -92,7 +93,7 @@ def analisar_normas_com_gemini_dinamico(texto_original, texto_alterador, key):
     """
     
     response = client.models.generate_content(
-        model='gemini-3.5-flash',
+        model='gemini-3.5-flash', # Ajustado para modelo padrão robusto e evitar o erro 400 de modelo inexistente
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -102,8 +103,75 @@ def analisar_normas_com_gemini_dinamico(texto_original, texto_alterador, key):
     )
     return json.loads(response.text)
 
+def renderizar_paragrafos_pdf(story, texto_html, estilo):
+    """Quebra o texto em parágrafos separados no PDF para garantir indentação correta em textos inseridos."""
+    # Corta o texto sempre que houver um <br> para gerar um novo parágrafo independente
+    partes = re.split(r'<br\s*/?>', texto_html)
+    for parte in partes:
+        texto_limpo = parte.strip()
+        if texto_limpo:
+            story.append(Paragraph(texto_limpo, estilo))
+
+def aplicar_html_no_docx(p, texto_html):
+    """Lê as tags HTML (<b>, <strike>, <font>) e aplica nativamente no formato DOCX."""
+    tokens = re.split(r'(<[^>]+>)', texto_html)
+    is_bold = False
+    is_strike = False
+    is_red = False
+    
+    for token in tokens:
+        if not token:
+            continue
+        t_lower = token.lower()
+        
+        # Controle de estado das tags
+        if t_lower == '<b>':
+            is_bold = True
+        elif t_lower == '</b>':
+            is_bold = False
+        elif t_lower == '<strike>':
+            is_strike = True
+        elif t_lower == '</strike>':
+            is_strike = False
+        elif "font color" in t_lower and ("red" in t_lower or "'red'" in t_lower or '"red"' in t_lower):
+            is_red = True
+        elif t_lower == '</font>':
+            is_red = False
+        elif token.startswith('<'):
+            pass # Ignora tags desconhecidas
+        else:
+            # Aplica o texto com as formatações ativas
+            run = p.add_run(token)
+            run.font.name = 'Times New Roman'
+            run.font.size = Pt(11)
+            if is_bold:
+                run.bold = True
+            if is_strike:
+                run.font.strike = True
+            if is_red:
+                run.font.color.rgb = RGBColor(255, 0, 0)
+
+def renderizar_paragrafos_docx(doc, texto_html, alignment, first_line_indent, space_after=Pt(6), bold_all=False):
+    """Cria parágrafos no DOCX, quebrando por <br> e chamando o tradutor de HTML."""
+    partes = re.split(r'<br\s*/?>', texto_html)
+    for parte in partes:
+        texto_limpo = parte.strip()
+        if texto_limpo:
+            p = doc.add_paragraph()
+            p.alignment = alignment
+            p.paragraph_format.first_line_indent = first_line_indent
+            p.paragraph_format.space_after = space_after
+            p.paragraph_format.line_spacing = 1.15
+            
+            if bold_all:
+                run = p.add_run(texto_limpo)
+                run.font.name = 'Times New Roman'
+                run.font.size = Pt(10)
+                run.bold = True
+            else:
+                aplicar_html_no_docx(p, texto_limpo)
+
 def gerar_pdf_dinamico(dados_json, tipo_versao):
-    """Gera o PDF utilizando Times-Roman com recuos uniformes de parágrafo e separações limpas."""
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
     story = []
@@ -112,21 +180,19 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
     estilo_cabecalho_topo = ParagraphStyle('CabecalhoTopo', parent=styles['Normal'], fontName='Times-Bold', fontSize=10, leading=12, alignment=1, textColor=colors.HexColor('#444444'), spaceAfter=20)
     estilo_orgaos = ParagraphStyle('Orgaos', parent=styles['Normal'], fontName='Times-Bold', fontSize=11, leading=14, alignment=1, spaceAfter=25)
     estilo_titulo = ParagraphStyle('TituloPortaria', parent=styles['Normal'], fontName='Times-Bold', fontSize=11, leading=14, alignment=1, spaceAfter=20)
-    # Recuo de primeira linha uniforme (30 pt) para todos os dispositivos e textos derivados
     estilo_dispositivo = ParagraphStyle('Dispositivo', parent=styles['Normal'], fontName='Times-Roman', fontSize=11, leading=15, alignment=4, firstLineIndent=30, spaceAfter=12)
     estilo_celula = ParagraphStyle('Celula', parent=styles['Normal'], fontName='Times-Roman', fontSize=10, leading=12, alignment=0)
     estilo_capitulo = ParagraphStyle('Capitulo', parent=styles['Normal'], fontName='Times-Bold', fontSize=10, leading=14, alignment=1, spaceBefore=20, spaceAfter=12, textTransform='uppercase')
     estilo_assinatura = ParagraphStyle('Assinatura', parent=styles['Normal'], fontName='Times-Bold', fontSize=11, leading=15, alignment=1, spaceBefore=50, spaceAfter=20)
     estilo_rodape = ParagraphStyle('Rodape', parent=styles['Normal'], fontName='Times-Italic', fontSize=9, leading=12, alignment=0)
 
-    # 1. Cabeçalho Dinâmico da Versão
+    # Cabeçalho
     if tipo_versao == "alterada":
-        cabecalho_texto = dados_json.get("cabecalho_versao_alterada", "VERSÃO ALTERADA")
-        story.append(Paragraph(cabecalho_texto, estilo_cabecalho_topo))
+        story.append(Paragraph(dados_json.get("cabecalho_versao_alterada", "VERSÃO ALTERADA"), estilo_cabecalho_topo))
     else:
         story.append(Paragraph("VERSÃO CONSOLIDADA", estilo_cabecalho_topo))
 
-    # 2. Brasão da República
+    # Brasão
     caminho_imagem = "brasao.png"
     if os.path.exists(caminho_imagem):
         try:
@@ -134,22 +200,16 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
             img_brasao.hAlign = 'CENTER'
             story.append(img_brasao)
             story.append(Spacer(1, 10))
-        except:
-            pass
+        except: pass
 
-    # 3. Órgãos Emissores Dinâmicos
-    orgaos_texto = dados_json.get("orgaos_emissores", "").replace("\n", "").replace("<br>", "<br/>")
-    story.append(Paragraph(orgaos_texto, estilo_orgaos))
+    # Topo
+    story.append(Paragraph(dados_json.get("orgaos_emissores", "").replace("\n", "").replace("<br>", "<br/>"), estilo_orgaos))
+    story.append(Paragraph(dados_json.get("titulo_portaria", "").replace("<br>", "<br/>").replace("\n", "<br/>"), estilo_titulo))
+    
+    # Preâmbulo
+    renderizar_paragrafos_pdf(story, dados_json.get("ementa_preambulo", "").replace("\n", ""), estilo_dispositivo)
 
-    # 4. Título da Norma
-    titulo_texto = dados_json.get("titulo_portaria", "").replace("<br>", "<br/>").replace("\n", "<br/>")
-    story.append(Paragraph(titulo_texto, estilo_titulo))
-
-    # 5. Preâmbulo 
-    preambulo_texto = dados_json.get("ementa_preambulo", "").replace("<br>", "<br/>").replace("\n", "<br/>")
-    story.append(Paragraph(preambulo_texto, estilo_dispositivo))
-
-    # 6. Inserção Dinâmica (Texto e TABELAS)
+    # Dispositivos e Tabelas
     for item in dados_json.get("dispositivos", []):
         is_tabela = item.get("is_tabela", False)
         tipo = item.get("tipo", "").lower()
@@ -158,7 +218,7 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
             if tipo_versao == "alterada":
                 texto_alt_intro = item.get("texto_alterada", "")
                 if "<strike>" in texto_alt_intro or "<font color='red'>" in texto_alt_intro:
-                    story.append(Paragraph(texto_alt_intro.replace("\n", " ").replace("<br>", "<br/>"), estilo_dispositivo))
+                    renderizar_paragrafos_pdf(story, texto_alt_intro.replace("\n", ""), estilo_dispositivo)
             
             chave_tabela = f"tabela_linhas_{tipo_versao}"
             linhas = item.get(chave_tabela, [])
@@ -168,7 +228,7 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
                 for linha in linhas:
                     linha_processada = []
                     for celula in linha:
-                        cel_texto = celula.replace('\n', ' ').replace('<br>', '<br/>')
+                        cel_texto = celula.replace('\n', ' ')
                         linha_processada.append(Paragraph(cel_texto, estilo_celula))
                     tabela_processada.append(linha_processada)
                 
@@ -187,101 +247,69 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
             if tipo_versao == "consolidada":
                 fallback = item.get("texto_consolidado", "")
                 if fallback:
-                    story.append(Paragraph(fallback.replace('\n', ' ').replace('<br>', '<br/>'), estilo_dispositivo))
+                    renderizar_paragrafos_pdf(story, fallback.replace('\n', ' '), estilo_dispositivo)
         else:
-            texto_final = item.get(f"texto_{tipo_versao}", "").replace("\n", " ").replace("<br>", "<br/>")
+            texto_final = item.get(f"texto_{tipo_versao}", "").replace("\n", " ")
             if "capitulo" in tipo:
                 story.append(Paragraph(texto_final, estilo_capitulo))
             else:
-                story.append(Paragraph(texto_final, estilo_dispositivo))
+                renderizar_paragrafos_pdf(story, texto_final, estilo_dispositivo)
 
-    # 7. Assinatura Dinâmica Extraída pela IA
-    nome_assinatura = dados_json.get("assinatura_nome", "")
-    cargo_assinatura = dados_json.get("assinatura_cargo", "")
-    bloco_assinatura = f"{nome_assinatura}<br/>{cargo_assinatura}"
+    # Assinatura e Rodapé
+    bloco_assinatura = f"{dados_json.get('assinatura_nome', '')}<br/>{dados_json.get('assinatura_cargo', '')}"
     story.append(Paragraph(bloco_assinatura, estilo_assinatura))
 
-    # 8. Nota de Rodapé Exclusiva da Última Página
     story.append(Spacer(1, 40))
     d = Drawing(A4[0] - 144, 10)
     d.add(Line(0, 5, A4[0] - 144, 5, strokeColor=colors.black, strokeWidth=0.5))
     story.append(d)
     story.append(Spacer(1, 5))
-    texto_rodape = "<b>Nota:</b> Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial."
-    story.append(Paragraph(texto_rodape, estilo_rodape))
+    story.append(Paragraph("<b>Nota:</b> Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial.", estilo_rodape))
 
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
 
 def gerar_docx_dinamico(dados_json, tipo_versao):
-    """Gera um documento Word (.docx) formatado com fontes Times New Roman e recuos de parágrafo."""
     doc = docx.Document()
-    
-    sections = doc.sections
-    for section in sections:
+    for section in doc.sections:
         section.top_margin = Inches(1)
         section.bottom_margin = Inches(1)
         section.left_margin = Inches(1)
         section.right_margin = Inches(1)
 
-    def adicionar_paragrafo_formatado(texto, alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4), space_after=Pt(6)):
-        p = doc.add_paragraph()
-        p.alignment = alignment
-        p.paragraph_format.first_line_indent = first_line_indent
-        p.paragraph_format.space_after = space_after
-        p.paragraph_format.line_spacing = 1.15
-        
-        texto_tratado = texto.replace("<br>", "\n").replace("<br/>", "\n")
-        run = p.add_run(texto_tratado.replace("<b>", "").replace("</b>", ""))
-        run.font.name = 'Times New Roman'
-        run.font.size = Pt(11)
-        return p
-
     # 1. Cabeçalho de Versão
-    if tipo_versao == "alterada":
-        cabecalho_texto = dados_json.get("cabecalho_versao_alterada", "VERSÃO ALTERADA")
-        p_head = doc.add_paragraph()
-        p_head.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        r_head = p_head.add_run(cabecalho_texto)
-        r_head.font.name = 'Times New Roman'
-        r_head.font.size = Pt(10)
-        r_head.bold = True
-        r_head.font.color.rgb = RGBColor(68, 68, 68)
-        doc.add_paragraph().paragraph_format.space_after = Pt(12)
-    else:
-        p_head = doc.add_paragraph()
-        p_head.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        r_head = p_head.add_run("VERSÃO CONSOLIDADA")
-        r_head.font.name = 'Times New Roman'
-        r_head.font.size = Pt(10)
-        r_head.bold = True
-        r_head.font.color.rgb = RGBColor(68, 68, 68)
-        doc.add_paragraph().paragraph_format.space_after = Pt(12)
+    p_head = doc.add_paragraph()
+    p_head.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    texto_head = dados_json.get("cabecalho_versao_alterada", "VERSÃO ALTERADA") if tipo_versao == "alterada" else "VERSÃO CONSOLIDADA"
+    r_head = p_head.add_run(texto_head)
+    r_head.font.name = 'Times New Roman'
+    r_head.font.size = Pt(10)
+    r_head.bold = True
+    r_head.font.color.rgb = RGBColor(68, 68, 68)
+    doc.add_paragraph().paragraph_format.space_after = Pt(12)
 
     # 2. Órgãos Emissores
-    orgaos_texto = dados_json.get("orgaos_emissores", "").replace("<br/>", "\n").replace("<br>", "\n")
     p_org = doc.add_paragraph()
     p_org.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p_org.paragraph_format.space_after = Pt(18)
-    r_org = p_org.add_run(orgaos_texto)
+    # Aqui não podemos usar o parser de HTML genérico porque queremos o <br> interpretado como linha nova
+    r_org = p_org.add_run(dados_json.get("orgaos_emissores", "").replace("<br/>", "\n").replace("<br>", "\n"))
     r_org.font.name = 'Times New Roman'
     r_org.font.size = Pt(11)
     r_org.bold = True
 
     # 3. Título da Portaria
-    titulo_texto = dados_json.get("titulo_portaria", "")
     p_tit = doc.add_paragraph()
     p_tit.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p_tit.paragraph_format.space_after = Pt(14)
-    r_tit = p_tit.add_run(titulo_texto)
+    r_tit = p_tit.add_run(dados_json.get("titulo_portaria", ""))
     r_tit.font.name = 'Times New Roman'
     r_tit.font.size = Pt(11)
     r_tit.bold = True
 
     # 4. Preâmbulo
-    preambulo_texto = dados_json.get("ementa_preambulo", "")
-    adicionar_paragrafo_formatado(preambulo_texto, alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4))
+    renderizar_paragrafos_docx(doc, dados_json.get("ementa_preambulo", ""), alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4))
 
     # 5. Dispositivos e Tabelas
     for item in dados_json.get("dispositivos", []):
@@ -292,8 +320,7 @@ def gerar_docx_dinamico(dados_json, tipo_versao):
             if tipo_versao == "alterada":
                 txt_antigo = item.get("texto_alterada", "")
                 if txt_antigo:
-                    # Garante que o texto derivativo/alterado venha com recuo idêntico de parágrafo no Word
-                    adicionar_paragrafo_formatado(txt_antigo, alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4))
+                    renderizar_paragrafos_docx(doc, txt_antigo, alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4))
             
             chave_tabela = f"tabela_linhas_{tipo_versao}"
             linhas = item.get(chave_tabela, [])
@@ -303,38 +330,25 @@ def gerar_docx_dinamico(dados_json, tipo_versao):
                 for r_idx, linha in enumerate(linhas):
                     for c_idx, celula in enumerate(linha):
                         cell = table.cell(r_idx, c_idx)
-                        cell.text = celula.replace("<br>", "\n").replace("<br/>", "\n")
-                        for p in cell.paragraphs:
-                            p.paragraph_format.space_after = Pt(2)
-                            for run in p.runs:
-                                run.font.name = 'Times New Roman'
-                                run.font.size = Pt(10)
-                                if "<font color='red'>" in celula or "<strike>" in celula:
-                                    run.font.color.rgb = RGBColor(255, 0, 0)
-                                    run.font.strike = True
+                        cell.text = "" # Limpa a célula
+                        p = cell.paragraphs[0]
+                        p.paragraph_format.space_after = Pt(2)
+                        # Processa formatação rica de HTML (negrito, cor) para a tabela no Word
+                        aplicar_html_no_docx(p, celula.replace("\n", " "))
                 doc.add_paragraph().paragraph_format.space_after = Pt(12)
         else:
             texto_final = item.get(f"texto_{tipo_versao}", "").replace("\n", " ")
             if "capitulo" in tipo:
-                p_cap = doc.add_paragraph()
-                p_cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                p_cap.paragraph_format.space_before = Pt(18)
-                p_cap.paragraph_format.space_after = Pt(10)
-                r_cap = p_cap.add_run(texto_final)
-                r_cap.font.name = 'Times New Roman'
-                r_cap.font.size = Pt(10)
-                r_cap.bold = True
+                renderizar_paragrafos_docx(doc, texto_final, alignment=WD_ALIGN_PARAGRAPH.CENTER, first_line_indent=Inches(0), space_after=Pt(10), bold_all=True)
             else:
-                adicionar_paragrafo_formatado(texto_final, alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4))
+                renderizar_paragrafos_docx(doc, texto_final, alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4))
 
     # 6. Assinatura
-    nome_assinatura = dados_json.get("assinatura_nome", "")
-    cargo_assinatura = dados_json.get("assinatura_cargo", "")
     p_assinatura = doc.add_paragraph()
     p_assinatura.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p_assinatura.paragraph_format.space_before = Pt(36)
     p_assinatura.paragraph_format.space_after = Pt(24)
-    r_ass = p_assinatura.add_run(f"{nome_assinatura}\n{cargo_assinatura}")
+    r_ass = p_assinatura.add_run(f"{dados_json.get('assinatura_nome', '')}\n{dados_json.get('assinatura_cargo', '')}")
     r_ass.font.name = 'Times New Roman'
     r_ass.font.size = Pt(11)
     r_ass.bold = True
@@ -368,7 +382,7 @@ if st.button("🚀 Processar Dinamicamente com IA e Gerar Documentos", type="pri
     if not api_key:
         st.error("⚠️ Insira sua chave da API do Google GenAI.")
     elif pdf_original and pdf_alteradora:
-        with st.spinner("Analisando documentos, extraindo tabelas e formatando recuos de parágrafo..."):
+        with st.spinner("Analisando documentos, traduzindo HTML para Word e ajustando recuos de parágrafo..."):
             try:
                 texto_orig = extrair_texto_de_upload(pdf_original)
                 texto_alt = extrair_texto_de_upload(pdf_alteradora)
