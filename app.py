@@ -41,14 +41,14 @@ arquivos_enviados = st.file_uploader("📥 Arraste todos os documentos de uma ve
 # ----------------- ESTRUTURAS DE DADOS (Autopilot) -----------------
 class Dispositivo(BaseModel):
     tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', 'inciso', etc.")
-    texto_principal_alterada: str = Field(description="Texto da versão alterada. Tache TUDO que for substituído/revogado em vermelho (Ex: <font color='red'><strike><b>Art. 1º</b> ...</strike></font>). PROIBIDO colocar a nota remissiva aqui.")
-    texto_principal_consolidada: str = Field(description="Texto limpo da versão consolidada. Se totalmente revogado, coloque apenas o identificador original (ex: <b>Art 1º</b>). PROIBIDO colocar a nota remissiva aqui.")
+    texto_principal_alterada: str = Field(description="Texto da versão alterada. OBRIGATÓRIO manter negritos (<b>) e itálicos (<i>). Tache TUDO que for substituído/revogado em vermelho (Ex: <font color='red'><strike><b>Art. 1º</b> ...</strike></font>). PROIBIDO colocar a nota remissiva aqui.")
+    texto_principal_consolidada: str = Field(description="Texto limpo da versão consolidada. OBRIGATÓRIO manter negritos (<b>) e itálicos (<i>). Se totalmente revogado, coloque apenas o identificador original (ex: <b>Art 1º</b>). PROIBIDO colocar a nota remissiva aqui.")
     is_tabela: bool = Field(description="True se houver uma tabela associada.")
     tabela_alterada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela alterada.")
     tabela_consolidada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela consolidada.")
     texto_pos_tabela_alterada: Optional[str] = Field(default=None)
     texto_pos_tabela_consolidada: Optional[str] = Field(default=None)
-    nota_remissiva: Optional[str] = Field(default="", description="OBRIGATÓRIO se alterado/revogado. Ex: '(Alterado pelo art. X da Portaria Y)'. Apenas o texto puro, o sistema pintará de vermelho.")
+    nota_remissiva: Optional[str] = Field(default="", description="OBRIGATÓRIO se alterado/revogado. Ex: 'Alterado pelo art. X da Portaria Y'. Apenas o texto puro, sem HTML.")
 
 class Consolidacao(BaseModel):
     arquivo_original_identificado: str = Field(description="Nome do arquivo PDF/DOCX usado como norma base")
@@ -100,11 +100,12 @@ def analisar_lote_arquivos(arquivos, key):
         2. Isolar arquivos sem vínculo em 'arquivos_nao_alterados'.
 
         REGRAS CRÍTICAS DE ESTRUTURAÇÃO (INEGOCIÁVEIS):
-        - PRESERVAÇÃO DE PARÁGRAFOS E ALÍNEAS: Respeite as quebras de linha. Se houver incisos (I, II) ou alíneas (a, b), separe-os obrigatoriamente com a tag <br/>. NUNCA junte listas no mesmo bloco de texto.
-        - FORMATAÇÃO NATIVA: Mantenha TODO o negrito usando <b>...</b> e itálico usando <i>...</i> conforme o documento original.
-        - TACHADO COMPLETO: Na versão alterada, se um artigo/parágrafo for substituído ou revogado, envolva o bloco INTEIRO (incluindo o 'Art. Xº') em <font color='red'><strike>...</strike></font>.
-        - NOTAS REMISSIVAS (OBRIGATÓRIO): Não escreva '(Alterado por...)' no meio do texto. Coloque essa informação EXCLUSIVAMENTE no campo `nota_remissiva`.
-        - Não use LaTeX ($, \textbf, etc). Use formatação HTML básica.
+        - PRESERVAÇÃO MÁXIMA DE FORMATAÇÃO: Você DEVE manter TODO o texto original que estiver em negrito envolto em <b>...</b> e itálico em <i>...</i>. Não perca essa formatação!
+        - PRESERVAÇÃO DE PARÁGRAFOS E ALÍNEAS: Respeite as quebras de linha estruturais. Se houver incisos (I, II) ou alíneas (a, b), separe-os obrigatoriamente usando <br/>.
+        - VERSÃO ALTERADA (REGRA DO TACHADO): Se um dispositivo for revogado ou substituído, envolva o bloco INTEIRO (incluindo o identificador, ex: 'Art. Xº') em <font color='red'><strike>...</strike></font>.
+        - SUBSTITUIÇÃO DE TEXTO: Se o texto for alterado (não tabela), coloque o antigo tachado, digite <br/><br/> e coloque o texto novo limpo. Exemplo: <font color='red'><strike>texto velho</strike></font><br/><br/>texto novo.
+        - NOTAS REMISSIVAS (OBRIGATÓRIO): Coloque a nota EXCLUSIVAMENTE no campo `nota_remissiva`. Nunca escreva no texto principal.
+        - Não use LaTeX. Use formatação HTML básica.
         """
         conteudos_prompt.append(prompt_comandos)
 
@@ -181,12 +182,19 @@ def extrair_paragrafos_seguros(texto_html):
     return paragrafos
 
 def injetar_nota_remissiva(texto, nota):
+    """Injeta parênteses automáticos e um espaçamento seguro antes da nota."""
     if nota and nota.strip():
+        n = nota.strip()
+        # Garante a presença dos parênteses
+        if not n.startswith("("): n = f"({n}"
+        if not n.endswith(")"): n = f"{n})"
+        
+        # Injeta duplo espaço inquebrável para separar visualmente do texto anterior
         if texto:
             texto_limpo = texto.rstrip('<br/>').rstrip('<br>').rstrip()
-            return f"{texto_limpo} &nbsp;<font color='red'>{nota.strip()}</font>"
+            return f"{texto_limpo}&nbsp;&nbsp;<font color='red'>{n}</font>"
         else:
-            return f"<font color='red'>{nota.strip()}</font>"
+            return f"<font color='red'>{n}</font>"
     return texto
 
 def renderizar_paragrafos_pdf(story, texto_html, estilo):
@@ -195,7 +203,9 @@ def renderizar_paragrafos_pdf(story, texto_html, estilo):
         story.append(Paragraph(p, estilo))
 
 def aplicar_html_no_docx(p, texto_html):
-    tokens = re.split(r'(<[^>]+>)', texto_html.replace("&nbsp;", " "))
+    # Converte os espaços inquebráveis injetados no Python para espaços físicos reais no Word
+    texto_html = texto_html.replace("&nbsp;", "\xa0")
+    tokens = re.split(r'(<[^>]+>)', texto_html)
     is_bold, is_strike, is_red, is_italic = False, False, False, False
     
     for token in tokens:
@@ -228,7 +238,7 @@ def renderizar_paragrafos_docx(doc, texto_html, alignment, first_line_indent, sp
         p.paragraph_format.space_after = space_after
         p.paragraph_format.line_spacing = 1.15
         if bold_all:
-            run = p.add_run(re.sub(r'<[^>]+>', '', p_html).replace("&nbsp;", " "))
+            run = p.add_run(re.sub(r'<[^>]+>', '', p_html).replace("&nbsp;", "\xa0"))
             run.font.name = 'Times New Roman'
             run.font.size = Pt(10)
             run.bold = True
