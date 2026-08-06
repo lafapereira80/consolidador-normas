@@ -181,11 +181,10 @@ def extrair_paragrafos_seguros(texto_html):
     return paragrafos
 
 def injetar_nota_remissiva(texto, nota):
-    """Injeta a nota com um ESPAÇO FÍSICO LIMPO para separar o texto tachado do (Alterado...)."""
     if nota and nota.strip():
         if texto:
             texto_limpo = texto.rstrip('<br/>').rstrip('<br>').rstrip()
-            return f"{texto_limpo} <font color='red'>{nota.strip()}</font>"
+            return f"{texto_limpo} &nbsp;<font color='red'>{nota.strip()}</font>"
         else:
             return f"<font color='red'>{nota.strip()}</font>"
     return texto
@@ -196,7 +195,7 @@ def renderizar_paragrafos_pdf(story, texto_html, estilo):
         story.append(Paragraph(p, estilo))
 
 def aplicar_html_no_docx(p, texto_html):
-    tokens = re.split(r'(<[^>]+>)', texto_html)
+    tokens = re.split(r'(<[^>]+>)', texto_html.replace("&nbsp;", " "))
     is_bold, is_strike, is_red, is_italic = False, False, False, False
     
     for token in tokens:
@@ -229,7 +228,7 @@ def renderizar_paragrafos_docx(doc, texto_html, alignment, first_line_indent, sp
         p.paragraph_format.space_after = space_after
         p.paragraph_format.line_spacing = 1.15
         if bold_all:
-            run = p.add_run(re.sub(r'<[^>]+>', '', p_html))
+            run = p.add_run(re.sub(r'<[^>]+>', '', p_html).replace("&nbsp;", " "))
             run.font.name = 'Times New Roman'
             run.font.size = Pt(10)
             run.bold = True
@@ -251,7 +250,7 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
     estilo_assinatura = ParagraphStyle('Assinatura', parent=styles['Normal'], fontName='Times-Bold', fontSize=11, leading=15, alignment=1, spaceBefore=50, spaceAfter=20)
     estilo_rodape = ParagraphStyle('Rodape', parent=styles['Normal'], fontName='Times-Italic', fontSize=9, leading=12, alignment=0)
 
-    comp = consolidacao_dict.get("cabecalho_complemento", "")
+    comp = (consolidacao_dict.get("cabecalho_complemento") or "")
     topo_texto = f"VERSÃO ALTERADA - {comp}" if tipo_versao == "alterada" else f"VERSÃO CONSOLIDADA - {comp}"
     story.append(Paragraph(topo_texto, estilo_cabecalho_topo))
 
@@ -264,23 +263,21 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
             story.append(Spacer(1, 10))
         except: pass
 
-    # Converte quebras naturais para o parser processar
-    orgs = consolidacao_dict.get("orgaos_emissores", "").replace('\n', '<br/>')
-    tit = consolidacao_dict.get("titulo_portaria", "").replace('\n', '<br/>')
-    preamb = consolidacao_dict.get("ementa_preambulo", "").replace('\n', '<br/>')
+    orgs = (consolidacao_dict.get("orgaos_emissores") or "").replace('\n', '<br/>')
+    tit = (consolidacao_dict.get("titulo_portaria") or "").replace('\n', '<br/>')
+    preamb = (consolidacao_dict.get("ementa_preambulo") or "").replace('\n', '<br/>')
     
     story.append(Paragraph(orgs, estilo_orgaos))
     story.append(Paragraph(tit, estilo_titulo))
     renderizar_paragrafos_pdf(story, preamb, estilo_dispositivo)
 
     for item in consolidacao_dict.get("dispositivos", []):
-        tipo = item.get("tipo", "").lower()
+        tipo = (item.get("tipo") or "").lower()
         is_tabela = item.get("is_tabela", False)
-        nota = item.get("nota_remissiva", "")
+        nota = item.get("nota_remissiva") or ""
         
-        # Protege as quebras de linha físicas geradas pela IA substituindo por <br/> ANTES do processamento
-        texto_principal = item.get(f"texto_principal_{tipo_versao}", "").replace('\n', '<br/>')
-        texto_pos = item.get(f"texto_pos_tabela_{tipo_versao}", "").replace('\n', '<br/>')
+        texto_principal = (item.get(f"texto_principal_{tipo_versao}") or "").replace('\n', '<br/>')
+        texto_pos = (item.get(f"texto_pos_tabela_{tipo_versao}") or "").replace('\n', '<br/>')
         
         if is_tabela:
             if not texto_pos and nota:
@@ -298,7 +295,7 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
             renderizar_paragrafos_pdf(story, texto_principal, estilo_dispositivo)
             
         if is_tabela:
-            linhas = item.get(f"tabela_{tipo_versao}", [])
+            linhas = item.get(f"tabela_{tipo_versao}") or []
             if linhas and len(linhas) > 0:
                 tabela_processada = []
                 for linha in linhas:
@@ -318,7 +315,7 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
         if texto_pos:
             renderizar_paragrafos_pdf(story, texto_pos, estilo_dispositivo)
 
-    bloco_assinatura = f"{consolidacao_dict.get('assinatura_nome', '')}<br/>{consolidacao_dict.get('assinatura_cargo', '')}"
+    bloco_assinatura = f"{(consolidacao_dict.get('assinatura_nome') or '')}<br/>{(consolidacao_dict.get('assinatura_cargo') or '')}"
     story.append(Paragraph(bloco_assinatura, estilo_assinatura))
 
     story.append(Spacer(1, 40))
@@ -340,7 +337,7 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
 
     p_head = doc.add_paragraph()
     p_head.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    comp = consolidacao_dict.get("cabecalho_complemento", "")
+    comp = consolidacao_dict.get("cabecalho_complemento") or ""
     texto_head = f"VERSÃO ALTERADA - {comp}" if tipo_versao == "alterada" else f"VERSÃO CONSOLIDADA - {comp}"
     r_head = p_head.add_run(texto_head)
     r_head.font.name, r_head.font.size, r_head.bold = 'Times New Roman', Pt(10), True
@@ -350,26 +347,25 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     p_org = doc.add_paragraph()
     p_org.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p_org.paragraph_format.space_after = Pt(18)
-    r_org = p_org.add_run(consolidacao_dict.get("orgaos_emissores", "").replace("<br/>", "\n").replace("<br>", "\n"))
+    r_org = p_org.add_run((consolidacao_dict.get("orgaos_emissores") or "").replace("<br/>", "\n").replace("<br>", "\n"))
     r_org.font.name, r_org.font.size, r_org.bold = 'Times New Roman', Pt(11), True
 
     p_tit = doc.add_paragraph()
     p_tit.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p_tit.paragraph_format.space_after = Pt(14)
-    r_tit = p_tit.add_run(consolidacao_dict.get("titulo_portaria", ""))
+    r_tit = p_tit.add_run(consolidacao_dict.get("titulo_portaria") or "")
     r_tit.font.name, r_tit.font.size, r_tit.bold = 'Times New Roman', Pt(11), True
 
-    preamb = consolidacao_dict.get("ementa_preambulo", "").replace('\n', '<br/>')
+    preamb = (consolidacao_dict.get("ementa_preambulo") or "").replace('\n', '<br/>')
     renderizar_paragrafos_docx(doc, preamb, WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
 
     for item in consolidacao_dict.get("dispositivos", []):
-        tipo = item.get("tipo", "").lower()
+        tipo = (item.get("tipo") or "").lower()
         is_tabela = item.get("is_tabela", False)
-        nota = item.get("nota_remissiva", "")
+        nota = item.get("nota_remissiva") or ""
         
-        # Preserva linhas estruturais convertendo \n para <br/>
-        texto_principal = item.get(f"texto_principal_{tipo_versao}", "").replace('\n', '<br/>')
-        texto_pos = item.get(f"texto_pos_tabela_{tipo_versao}", "").replace('\n', '<br/>')
+        texto_principal = (item.get(f"texto_principal_{tipo_versao}") or "").replace('\n', '<br/>')
+        texto_pos = (item.get(f"texto_pos_tabela_{tipo_versao}") or "").replace('\n', '<br/>')
         
         if is_tabela:
             if not texto_pos and nota:
@@ -387,7 +383,7 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
             renderizar_paragrafos_docx(doc, texto_principal, WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
             
         if is_tabela:
-            linhas = item.get(f"tabela_{tipo_versao}", [])
+            linhas = item.get(f"tabela_{tipo_versao}") or []
             if linhas and len(linhas) > 0:
                 table = doc.add_table(rows=len(linhas), cols=len(linhas[0]))
                 table.style = 'Table Grid'
@@ -406,7 +402,7 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     p_assinatura = doc.add_paragraph()
     p_assinatura.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p_assinatura.paragraph_format.space_before, p_assinatura.paragraph_format.space_after = Pt(36), Pt(24)
-    r_ass = p_assinatura.add_run(f"{consolidacao_dict.get('assinatura_nome', '')}\n{consolidacao_dict.get('assinatura_cargo', '')}")
+    r_ass = p_assinatura.add_run(f"{(consolidacao_dict.get('assinatura_nome') or '')}\n{(consolidacao_dict.get('assinatura_cargo') or '')}")
     r_ass.font.name, r_ass.font.size, r_ass.bold = 'Times New Roman', Pt(11), True
 
     p_rod = doc.add_paragraph()
