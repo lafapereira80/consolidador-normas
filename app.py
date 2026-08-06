@@ -4,10 +4,13 @@ from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
+from reportlab.lib.utils import ImageReader
 import io
 import json
+import requests
 from google import genai
 from google.genai import types
+from google.genai import errors as genai_errors
 from pydantic import BaseModel, Field
 from typing import List
 
@@ -69,9 +72,10 @@ def analisar_normas_com_gemini_dinamico(texto_original, texto_alterador, key):
     Retorne os dados estruturados estritamente no formato exigido pelo esquema.
     """
     
-    # CORREÇÃO: Utilizando a versão mais atualizada e liberada pelo Google
+    # CORREÇÃO: 'gemini-2.0-flash' foi desativado pelo Google em 01/06/2026
+    # (toda chamada retornava erro 404). Usando o modelo estável atual.
     response = client.models.generate_content(
-        model='gemini-2.0-flash',
+        model='gemini-2.5-flash',
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -110,13 +114,21 @@ def gerar_pdf_dinamico(titulo_versao, dados_json, tipo_versao):
     story.append(Paragraph(titulo_versao, estilo_cabecalho))
 
     # 2. Brasão
+    # CORREÇÃO: reportlab só baixa a imagem no momento de montar o PDF
+    # (doc.build), então uma URL quebrada/bloqueada (esta retorna 403)
+    # derrubava a geração inteira do PDF com um OSError não tratado aqui.
+    # Agora baixamos antes, com timeout, e simplesmente pulamos o brasão
+    # se o download falhar - o PDF continua sendo gerado normalmente.
     url_brasao = "https://www.gov.br/agricultura/pt-br/agroform/brasao-sem-fundo.png"
     try:
-        img_brasao = Image(url_brasao, width=60, height=60)
+        resp_img = requests.get(url_brasao, timeout=8)
+        resp_img.raise_for_status()
+        img_brasao = Image(ImageReader(io.BytesIO(resp_img.content)), width=60, height=60)
         img_brasao.hAlign = 'CENTER'
         story.append(img_brasao)
         story.append(Spacer(1, 10))
-    except:
+    except Exception:
+        # Sem brasão disponível no momento: segue sem quebrar o documento.
         pass
 
     # 3. Órgãos Emissores
@@ -154,30 +166,45 @@ if st.button("🚀 Processar Dinamicamente com IA e Gerar PDFs", type="primary")
         st.error("⚠️ Insira sua chave da API do Google GenAI na barra lateral ou nos Segredos.")
     elif pdf_original and pdf_alteradora:
         with st.spinner("Lendo os PDFs, cruzando os atos e estruturando os dados dinamicamente..."):
+            texto_orig, texto_alt = None, None
             try:
                 texto_orig = extrair_texto_de_upload(pdf_original)
                 texto_alt = extrair_texto_de_upload(pdf_alteradora)
-                
+            except Exception as e:
+                st.error("❌ Não foi possível ler um dos PDFs enviados. Verifique se os arquivos não estão corrompidos ou protegidos por senha.")
+                st.code(str(e))
+                st.stop()
+
+            dados_estruturados = None
+            try:
                 chave_limpa = api_key.strip()
                 dados_estruturados = analisar_normas_com_gemini_dinamico(texto_orig, texto_alt, chave_limpa)
-                
-                pdf_alt_bytes = gerar_pdf_dinamico("VERSÃO ALTERADA - Dinâmica", dados_estruturados, "alterada")
-                pdf_cons_bytes = gerar_pdf_dinamico("VERSÃO CONSOLIDADA - Dinâmica", dados_estruturados, "consolidada")
-                
-                st.success("✨ Processamento dinâmico concluído com sucesso!")
-                st.divider()
-                st.subheader("📥 Baixe os PDFs Oficiais Prontos:")
-                
-                col_d1, col_d2 = st.columns(2)
-                with col_d1:
-                    st.download_button(label="Baixar Versão Alterada (PDF)", data=pdf_alt_bytes, file_name="versao_alterada_dinamica.pdf", mime="application/pdf")
-                with col_d2:
-                    st.download_button(label="Baixar Versão Consolidada (PDF)", data=pdf_cons_bytes, file_name="versao_consolidada_dinamica.pdf", mime="application/pdf")
-            
+            except genai_errors.ClientError as e:
+                st.error("❌ A API do Google recusou a solicitação (chave inválida, sem cota, ou modelo indisponível).")
+                st.code(str(e))
+                st.stop()
             except Exception as e:
                 st.error("❌ Ocorreu um erro na comunicação com a Inteligência Artificial do Google.")
-                st.warning("Detalhes técnicos do erro:")
                 st.code(str(e))
+                st.stop()
+
+            try:
+                pdf_alt_bytes = gerar_pdf_dinamico("VERSÃO ALTERADA - Dinâmica", dados_estruturados, "alterada")
+                pdf_cons_bytes = gerar_pdf_dinamico("VERSÃO CONSOLIDADA - Dinâmica", dados_estruturados, "consolidada")
+            except Exception as e:
+                st.error("❌ A IA respondeu, mas houve um erro ao montar os PDFs a partir dos dados retornados.")
+                st.code(str(e))
+                st.stop()
+
+            st.success("✨ Processamento dinâmico concluído com sucesso!")
+            st.divider()
+            st.subheader("📥 Baixe os PDFs Oficiais Prontos:")
+
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                st.download_button(label="Baixar Versão Alterada (PDF)", data=pdf_alt_bytes, file_name="versao_alterada_dinamica.pdf", mime="application/pdf")
+            with col_d2:
+                st.download_button(label="Baixar Versão Consolidada (PDF)", data=pdf_cons_bytes, file_name="versao_consolidada_dinamica.pdf", mime="application/pdf")
                 
     else:
         st.warning("⚠️ Envie ambos os arquivos PDF para iniciar.")
