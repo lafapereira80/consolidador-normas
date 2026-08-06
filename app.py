@@ -46,7 +46,7 @@ def extrair_texto_de_upload(arquivo_uploaded):
 # Estrutura Avançada Pydantic
 class Dispositivo(BaseModel):
     tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', ou 'tabela'")
-    texto_alterada: str = Field(description="Obrigatório: Se alterado, texto antigo deve estar em <font color='red'><strike>...</strike></font> seguido do novo e da nota remissiva no final. Se revogado, tudo em vermelho tachado seguido da nota. Preserve negritos originais (ex: <b>Art. 1º</b>).")
+    texto_alterada: str = Field(description="Obrigatório: Se alterado, TODO o dispositivo antigo (incluindo identificadores como Art., §) DEVE estar em <font color='red'><strike>...</strike></font>. Em seguida, insira <br/> para pular linha e adicione o texto novo. Adicione nota remissiva no final.")
     texto_consolidado: str = Field(description="Texto limpo e atualizado. Preserve negritos originais (ex: <b>Art. 1º</b>). OBRIGATÓRIO adicionar a nota remissiva no final (ex: (Alterado pela Portaria...)).")
     is_tabela: bool = Field(description="Verdadeiro (true) SE o conteúdo for um quadro ou tabela.")
     tabela_linhas_alterada: Optional[List[List[str]]] = Field(default=None, description="Se tabela alterada, células antigas devem usar <font color='red'><strike>...</strike></font> seguidas das novas.")
@@ -72,7 +72,9 @@ def analisar_normas_com_gemini_dinamico(texto_original, texto_alterador, key):
     1. PROIBIDO LaTeX: NUNCA use LaTeX (como $5^{{\circ}}$). Use textualmente "1º", "2º", "5º", "§", etc.
     2. EXTRAÇÃO DINÂMICA: Extraia corretamente o Órgão Emissor e quem assina (Nome e Cargo) do documento original.
     3. CABEÇALHO ALTERADO: Crie o título dinâmico da versão alterada (Ex: 'VERSÃO ALTERADA — Atualizada pela Portaria nº 103/PGJM, 21 de maio de 2026').
-    4. REGRA DO VERMELHO TACHADO: Para itens alterados, o texto antigo DEVE estar obrigatoriamente dentro de <font color='red'><strike>TEXTO ANTIGO</strike></font>. Logo em seguida, apresente o texto novo.
+    4. REGRA DO VERMELHO TACHADO: Para itens alterados, TODO o dispositivo antigo (incluindo identificadores lidos no documento como Art. 1º, Parágrafo único, § 1º) DEVE estar dentro de <font color='red'><strike>TEXTO ANTIGO</strike></font>. Insira a tag HTML <br/> para quebrar a linha, e inicie o texto novo completo abaixo.
+       Exemplo obrigatório de formatação de alteração:
+       <font color='red'><strike><b>Art. 1º</b> Texto antigo...</strike></font><br/><b>Art. 1º</b> Texto novo... (Alterado pela Portaria...)
     5. REGRA DE REVOGAÇÃO: Texto inteiro revogado deve ficar em <font color='red'><strike>TEXTO REVOGADO</strike></font> seguido de (Revogado pela...).
     6. NOTAS REMISSIVAS: Se um dispositivo foi alterado, revogado ou acrescentado, é OBRIGATÓRIO incluir a nota remissiva ao FINAL do texto do dispositivo.
     7. NEGRITOS E ITÁLICOS: Mantenha as palavras que estavam em negrito no original (ex: <b>Art. 1º</b>, <b>Parágrafo único.</b>).
@@ -87,7 +89,7 @@ def analisar_normas_com_gemini_dinamico(texto_original, texto_alterador, key):
     """
     
     response = client.models.generate_content(
-        model='gemini-3.6-flash',
+        model='gemini-3.6-flash', # MUDANÇA APLICADA PARA EVITAR O ERRO DE COTA (429)
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -175,10 +177,11 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
                 story.append(Spacer(1, 15))
             else:
                 fallback = item.get(f"texto_{tipo_versao}", "")
-                story.append(Paragraph(fallback.replace('\n', ' '), estilo_dispositivo))
+                story.append(Paragraph(fallback.replace('\n', ' ').replace('<br>', '<br/>'), estilo_dispositivo))
                 
         else:
-            texto_final = item.get(f"texto_{tipo_versao}", "").replace("\n", " ")
+            # Preserva os HTMLs gerados e limpa os Enters
+            texto_final = item.get(f"texto_{tipo_versao}", "").replace("\n", " ").replace("<br>", "<br/>")
             if "capitulo" in tipo:
                 story.append(Paragraph(texto_final, estilo_capitulo))
             else:
@@ -197,8 +200,8 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
     d.add(Line(0, 5, A4[0] - 144, 5, strokeColor=colors.black, strokeWidth=0.5))
     story.append(d)
     story.append(Spacer(1, 5))
-    # Adiciona o texto da nota
-    texto_rodape = "<b>Nota:</b> Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado<br/>no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial."
+    # Adiciona o texto da nota SEM a quebra forçada
+    texto_rodape = "<b>Nota:</b> Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial."
     story.append(Paragraph(texto_rodape, estilo_rodape))
 
     # Constrói o PDF sem repetição de rodapé em todas as páginas
