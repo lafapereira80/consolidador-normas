@@ -51,7 +51,7 @@ def extrair_texto_de_upload(arquivo_uploaded):
 # Estrutura Avançada Pydantic
 class Dispositivo(BaseModel):
     tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', ou 'tabela'")
-    texto_alterada: str = Field(description="Se alterado: coloque o texto antigo totalmente tachado em vermelho <font color='red'><strike>...</strike></font>, quebra de linha <br/>, e a nova redação. A nota remissiva final DEVE estar inteiramente em vermelho (ex: <font color='red'>(Alterado pelo art. ...)</font>). Se revogado, coloque o dispositivo tachado em vermelho seguido de <font color='red'>(Revogado pelo art. ...)</font>.")
+    texto_alterada: str = Field(description="Se alterado: coloque o texto antigo totalmente tachado em vermelho <font color='red'><strike>...</strike></font>, seguido de quebra de linha <br/><br/> e o novo texto devidamente estruturado como parágrafo. A nota remissiva final DEVE estar inteiramente em vermelho (ex: <font color='red'>(Alterado pelo art. ...)</font>).")
     texto_consolidado: str = Field(description="Texto limpo e atualizado. Preserve negritos originais (ex: <b>Art. 1º</b>). A nota remissiva final DEVE estar em vermelho (ex: <font color='red'>(Alterado pelo art. ...)</font>).")
     is_tabela: bool = Field(description="Verdadeiro (true) SE o conteúdo for um quadro ou tabela.")
     tabela_linhas_alterada: Optional[List[List[str]]] = Field(default=None, description="Matriz da tabela da versão alterada.")
@@ -77,12 +77,12 @@ def analisar_normas_com_gemini_dinamico(texto_original, texto_alterador, key):
     1. PROIBIDO LaTeX: NUNCA use LaTeX (como $5^{{\circ}}$). Use textualmente "1º", "2º", "5º", "§", etc.
     2. EXTRAÇÃO DINÂMICA: Extraia corretamente o Órgão Emissor e quem assina (Nome e Cargo) do documento original.
     3. CABEÇALHO ALTERADO: Crie o título dinâmico da versão alterada (Ex: 'VERSÃO ALTERADA — Atualizada pela Portaria nº 103/PGJM, de 21 de maio de 2026').
-    4. REGRA DO VERMELHO TACHADO E NOTAS EM VERMELHO: 
-       - Na versão alterada, se o artigo introduz uma tabela que foi mantida ou alterada, o texto de introdução antigo deve aparecer tachado em vermelho <font color='red'><strike>Art. 1º Fixar a lotação...</strike></font>, seguido da tabela estruturada, e logo abaixo a nova redação.
-       - TODAS as notas remissivas de alteração ou revogação DEVEM estar integralmente na cor vermelha. Exemplo: <font color='red'>(Alterado pelo art. 1º da Portaria nº 103/PGJM, de 21/05/2026)</font> ou <font color='red'>(Revogado pelo art. 2º da Portaria nº 103/PGJM, de 21/05/2026)</font>.
+    4. REGRA DO VERMELHO TACHADO E PARÁGRAFO DO ATO DERIVATIVO: 
+       - Na versão alterada, quando houver substituição por texto novo (vindo do ato derivativo), formate estruturalmente colocando o texto antigo tachado em vermelho <font color='red'><strike>...</strike></font>, insira um espaçamento claro com quebra dupla <br/><br/> e o texto novo começando com indentação própria de parágrafo (ex: <b>Art. 1º</b> Os Assessores...).
+       - TODAS as notas remissivas de alteração ou revogação DEVEM estar integralmente na cor vermelha (<font color='red'>...</font>).
     5. NEGRITOS E ITÁLICOS: Mantenha as palavras que estavam em negrito no original (ex: <b>Art. 1º</b>, <b>Parágrafo único.</b>).
     6. TABELAS: Defina `is_tabela` como true e extraia como matriz fiel ao documento original.
-    7. LIMPEZA: Remova quebras de linha (Enters) artificiais do meio das frases para manter os parágrafos uniformes.
+    7. LIMPEZA: Remova quebras de linha artificiais do meio das frases.
     
     NORMA ORIGINAL:
     {texto_original}
@@ -103,7 +103,7 @@ def analisar_normas_com_gemini_dinamico(texto_original, texto_alterador, key):
     return json.loads(response.text)
 
 def gerar_pdf_dinamico(dados_json, tipo_versao):
-    """Gera o PDF utilizando Times-Roman (equivalente PDF para Times New Roman) com recuos e tabelas."""
+    """Gera o PDF utilizando Times-Roman com recuos uniformes de parágrafo e separações limpas."""
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
     story = []
@@ -112,6 +112,7 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
     estilo_cabecalho_topo = ParagraphStyle('CabecalhoTopo', parent=styles['Normal'], fontName='Times-Bold', fontSize=10, leading=12, alignment=1, textColor=colors.HexColor('#444444'), spaceAfter=20)
     estilo_orgaos = ParagraphStyle('Orgaos', parent=styles['Normal'], fontName='Times-Bold', fontSize=11, leading=14, alignment=1, spaceAfter=25)
     estilo_titulo = ParagraphStyle('TituloPortaria', parent=styles['Normal'], fontName='Times-Bold', fontSize=11, leading=14, alignment=1, spaceAfter=20)
+    # Recuo de primeira linha uniforme (30 pt) para todos os dispositivos e textos derivados
     estilo_dispositivo = ParagraphStyle('Dispositivo', parent=styles['Normal'], fontName='Times-Roman', fontSize=11, leading=15, alignment=4, firstLineIndent=30, spaceAfter=12)
     estilo_celula = ParagraphStyle('Celula', parent=styles['Normal'], fontName='Times-Roman', fontSize=10, leading=12, alignment=0)
     estilo_capitulo = ParagraphStyle('Capitulo', parent=styles['Normal'], fontName='Times-Bold', fontSize=10, leading=14, alignment=1, spaceBefore=20, spaceAfter=12, textTransform='uppercase')
@@ -214,7 +215,7 @@ def gerar_pdf_dinamico(dados_json, tipo_versao):
     return buffer.getvalue()
 
 def gerar_docx_dinamico(dados_json, tipo_versao):
-    """Gera um documento Word (.docx) formatado com fontes Times New Roman."""
+    """Gera um documento Word (.docx) formatado com fontes Times New Roman e recuos de parágrafo."""
     doc = docx.Document()
     
     sections = doc.sections
@@ -291,13 +292,8 @@ def gerar_docx_dinamico(dados_json, tipo_versao):
             if tipo_versao == "alterada":
                 txt_antigo = item.get("texto_alterada", "")
                 if txt_antigo:
-                    p_ant = doc.add_paragraph()
-                    p_ant.paragraph_format.first_line_indent = Inches(0.4)
-                    r_ant = p_ant.add_run(txt_antigo.replace("<br>", "\n").replace("<br/>", "\n"))
-                    r_ant.font.name = 'Times New Roman'
-                    r_ant.font.size = Pt(11)
-                    r_ant.font.color.rgb = RGBColor(255, 0, 0)
-                    r_ant.font.strike = True
+                    # Garante que o texto derivativo/alterado venha com recuo idêntico de parágrafo no Word
+                    adicionar_paragrafo_formatado(txt_antigo, alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line_indent=Inches(0.4))
             
             chave_tabela = f"tabela_linhas_{tipo_versao}"
             linhas = item.get(chave_tabela, [])
@@ -372,7 +368,7 @@ if st.button("🚀 Processar Dinamicamente com IA e Gerar Documentos", type="pri
     if not api_key:
         st.error("⚠️ Insira sua chave da API do Google GenAI.")
     elif pdf_original and pdf_alteradora:
-        with st.spinner("Analisando documentos, extraindo tabelas e formatando com Times New Roman..."):
+        with st.spinner("Analisando documentos, extraindo tabelas e formatando recuos de parágrafo..."):
             try:
                 texto_orig = extrair_texto_de_upload(pdf_original)
                 texto_alt = extrair_texto_de_upload(pdf_alteradora)
@@ -380,7 +376,6 @@ if st.button("🚀 Processar Dinamicamente com IA e Gerar Documentos", type="pri
                 chave_limpa = api_key.strip()
                 dados_estruturados = analisar_normas_com_gemini_dinamico(texto_orig, texto_alt, chave_limpa)
                 
-                # Salva os dados na sessão para persistir após o download
                 st.session_state.dados_processados = dados_estruturados
                 st.success("✨ Processamento dinâmico concluído com sucesso!")
             except Exception as e:
@@ -394,7 +389,6 @@ if st.session_state.dados_processados is not None:
     st.divider()
     st.subheader("📥 Baixe os Documentos Oficiais Prontos:")
     
-    # Pré-gera os binários para os botões
     pdf_alt_bytes = gerar_pdf_dinamico(st.session_state.dados_processados, "alterada")
     pdf_cons_bytes = gerar_pdf_dinamico(st.session_state.dados_processados, "consolidada")
     
