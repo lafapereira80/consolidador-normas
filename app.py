@@ -104,7 +104,7 @@ def analisar_arquivos_multimodal(arquivo_orig, arquivo_alt, key):
         """
         
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-3.5-flash',
             contents=[
                 "Documento 1 (Norma Original):", gemini_file_orig,
                 "Documento 2 (Norma Alteradora):", gemini_file_alt,
