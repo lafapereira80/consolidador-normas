@@ -53,7 +53,7 @@ def init_supabase() -> Optional[Client]:
         url = st.secrets["supabase"]["url"]
         key = st.secrets["supabase"]["key"]
         return create_client(url, key)
-    except Exception as e:
+    except Exception:
         return None
 
 supabase = init_supabase()
@@ -74,7 +74,7 @@ def render_botao_historico():
 
 col_info, col_nav = st.columns([2, 1])
 with col_info:
-    st.info("💡 **Inteligência Ativada:** Envie os novos arquivos. O sistema caçará datas ocultas no SEI e cruzará com o banco de dados.")
+    st.info("💡 **Inteligência Ativada:** O sistema fará a consolidação em cascata caso envie múltiplas alterações simultâneas.")
 with col_nav:
     render_botao_historico()
 
@@ -90,30 +90,30 @@ except:
 st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF ou DOCX)", type=["pdf", "docx"], accept_multiple_files=True, key="uploader_lote")
 
-# ----------------- ESTRUTURAS PYDANTIC (NOVA INTELIGÊNCIA) -----------------
+# ----------------- ESTRUTURAS PYDANTIC (NOVA INTELIGÊNCIA CASCATA) -----------------
 class MetadadosNorma(BaseModel):
     tipo_documento: str = Field(description="Ex: 'Portaria', 'Lei', 'Decreto'")
     numero_documento: str = Field(description="O número. Ex: '158', '137', ou 'S/N'")
     orgao_emissor: str = Field(description="Sigla do órgão. Ex: 'PGJM'")
-    data_assinatura: str = Field(description="Data exata no formato YYYY-MM-DD. IMPORTANTE: Se o cabeçalho disser '(data de assinatura)', procure no bloco final de assinatura eletrônica do SEI.")
-    nome_padronizado: str = Field(description="Nome por extenso. Ex: 'PORTARIA Nº 158/PGJM, DE 29 DE JULHO DE 2026'. Deve ser a data real.")
+    data_assinatura: str = Field(description="Data exata no formato YYYY-MM-DD. IMPORTANTE: Se o cabeçalho disser '(data de assinatura)', busque ativamente a data no bloco final de assinatura eletrônica do SEI.")
+    nome_padronizado: str = Field(description="Nome completo da norma. Ex: 'PORTARIA Nº 158/PGJM, DE 29 DE JULHO DE 2026'.")
 
 class Dispositivo(BaseModel):
     tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', etc.")
-    texto_principal_alterada: str = Field(description="Texto da versão alterada. Tache em vermelho.")
-    texto_principal_consolidada: str = Field(description="Texto limpo da versão consolidada.")
+    texto_principal_alterada: str = Field(description="Texto com <b>, <i> e <strike> em vermelho. NUNCA envie '\\n'.")
+    texto_principal_consolidada: str = Field(description="Texto limpo da versão em vigor.")
     is_tabela: bool = Field(description="True se houver tabela.")
     tabela_alterada: Optional[List[List[str]]] = Field(default=None)
     tabela_consolidada: Optional[List[List[str]]] = Field(default=None)
     texto_pos_tabela_alterada: Optional[str] = Field(default=None)
     texto_pos_tabela_consolidada: Optional[str] = Field(default=None)
-    nota_remissiva: Optional[str] = Field(default="")
+    nota_remissiva: Optional[str] = Field(default="", description="A nota remissiva (ex: 'Revogado por...'). NÃO coloque a nota no texto principal, coloque apenas aqui.")
 
 class Consolidacao(BaseModel):
-    arquivo_original_identificado: str
-    arquivo_alterador_identificado: str
+    arquivos_originais_identificados: List[str]
+    arquivos_alteradores_identificados: List[str]
     norma_base: MetadadosNorma
-    norma_alteradora: MetadadosNorma
+    normas_alteradoras: List[MetadadosNorma] = Field(description="Lista de TODAS as normas que alteraram esta norma base, em ordem cronológica.")
     cabecalho_complemento: str
     orgaos_emissores: str
     titulo_portaria: str
@@ -132,7 +132,14 @@ class AnaliseGlobal(BaseModel):
     arquivos_nao_alterados: List[ArquivoAvulso]
 
 class IdentificadorDeAlvos(BaseModel):
-    nomes_padronizados_alvo: List[str] = Field(description="Lista de 'nome_padronizado' do banco que estão sendo alterados.")
+    nomes_padronizados_alvo: List[str] = Field(description="Lista exata de 'nome_padronizado' do banco que estão sendo alterados.")
+
+def limpar_texto_ia(texto):
+    """Limpeza extrema para remover \n literal e lixo da IA"""
+    if not texto: return ""
+    texto = texto.replace('\\n', ' ').replace('\n', ' ')
+    texto = re.sub(r'\s+', ' ', texto).strip()
+    return texto
 
 def analisar_lote_arquivos(arquivos, key):
     client = genai.Client(api_key=key)
@@ -153,7 +160,6 @@ def analisar_lote_arquivos(arquivos, key):
             conteudos_iniciais.append(f"ARQUIVO: {nome_original}")
             conteudos_iniciais.append(g_file)
 
-        # ETAPA 1: Pré-Análise com a nova padronização
         nomes_bd = []
         if supabase:
             try:
@@ -162,10 +168,10 @@ def analisar_lote_arquivos(arquivos, key):
             except: pass
 
         prompt_pre = f"""
-        Normas já cadastradas no nosso banco de dados: {nomes_bd}
-        Descubra se os arquivos fornecidos alteram alguma norma listada acima. Para datas ocultas tipo 'SEI', leia a assinatura no final do documento para formar o nome padronizado corretamente e buscar a correspondência.
+        Normas base já cadastradas: {nomes_bd}
+        Verifique se os PDFs enviados modificam ativamente alguma dessas normas cadastradas. Considere as datas do SEI lendo as assinaturas finais.
         """
-        st.toast("🔍 Cruzando dados e buscando datas em assinaturas...", icon="⏳")
+        st.toast("🔍 Identificando relações temporais e lendo SEI...", icon="⏳")
         resp_pre = client.models.generate_content(
             model='gemini-3.6-flash',
             contents=conteudos_iniciais + [prompt_pre],
@@ -185,23 +191,26 @@ def analisar_lote_arquivos(arquivos, key):
                         st.toast(f"✅ Histórico carregado para: {alvo_nome}!", icon="🧠")
                 except: pass
 
-        # ETAPA 2: Consolidação Final
         conteudos_prompt = ["Analise as relações normativas e gere a consolidação:"]
         conteudos_prompt.extend(conteudos_iniciais)
         if textos_historico:
-            conteudos_prompt.append("\n\nATENÇÃO - HISTÓRICO NO BANCO:")
+            conteudos_prompt.append("\n\nATENÇÃO - HISTÓRICO ENCONTRADO NO BANCO:")
             conteudos_prompt.extend(textos_historico)
 
         prompt_comandos = """
-        Atue como Especialista Legislativo.
-        1. Identifique pares e extraia todos os metadados (tipo, número, orgao, data formato ISO, nome padronizado real).
-        2. ATENÇÃO PARA O SEI: Se a data no cabeçalho for genérica '(data da assinatura)', busque ativamente no rodapé do documento pela assinatura eletrônica.
-        3. Se houver 'JSON DA NORMA BASE' no prompt, APLIQUE AS ALTERAÇÕES EM CIMA DELE (Memória Cumulativa).
-        4. Tache revogações em vermelho. Use APENAS <font color='red'><strike> para tachado e <b> ou <i> para formatação. NUNCA use tags <span>, <div>, ou estilos CSS, pois eles quebram o gerador de PDF.
+        Atue como Especialista Sênior em Técnica Legislativa e crie o documento consolidado.
+        
+        REGRAS ABSOLUTAS:
+        1. MÚLTIPLAS ALTERAÇÕES (CASCATA): Se os PDFs enviados contiverem DUAS OU MAIS normas que alteram a MESMA norma base, você DEVE gerar apenas UMA (1) 'Consolidacao'. Aplique todas as alterações de forma sequencial (cronológica) no texto, acumulando as revogações e redações sucessivas. Adicione todas as normas alteradoras na lista 'normas_alteradoras'.
+        2. DATA SEI: Leia o rodapé para descobrir a verdadeira data se o cabeçalho tiver "(data de assinatura)".
+        3. ESPAÇAMENTO DO TACHADO: NUNCA coloque espaço em branco dentro das tags <strike> ou <b>. 
+        4. NOTAS REMISSIVAS: Coloque as expressões "(Alterado pela...)" ou "(Revogado pela...)" APENAS no campo 'nota_remissiva'. Não suje o texto principal com elas.
+        5. LIXO LITERAL: Não retorne caracteres literais como '\\n' ou ' ' no texto.
+        6. Se houver 'JSON DA NORMA BASE', atualize-o acumulando as novas mudanças. Use <font color='red'><strike> para revogar. NENHUMA TAG <span>!
         """
         conteudos_prompt.append(prompt_comandos)
 
-        st.toast("⚙️ Gerando Textos Consolidados...", icon="⏳")
+        st.toast("⚙️ Gerando Textos Consolidados Unificados...", icon="⏳")
         response = client.models.generate_content(
             model='gemini-3.6-flash',
             contents=conteudos_prompt,
@@ -215,13 +224,21 @@ def analisar_lote_arquivos(arquivos, key):
         for caminho_tmp, _ in caminhos_temporarios:
             if os.path.exists(caminho_tmp): os.remove(caminho_tmp)
 
-# --- FUNÇÕES DE PDF/DOCX (AJUSTADAS CONTRA O ERRO DO SPAN) ---
+def injetar_nota_remissiva(texto, nota):
+    """Injeta a nota garantindo o espaço físico exato e evitando quebra de formatação."""
+    if nota and nota.strip():
+        n = f"({nota.strip()})" if not nota.strip().startswith("(") else nota.strip()
+        if texto:
+            # Remove brs e espaços finais indesejados antes de injetar a nota
+            texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
+            return f"{texto_limpo} &nbsp;<font color='red'>{n}</font>"
+        else:
+            return f"<font color='red'>{n}</font>"
+    return texto
+
 def extrair_paragrafos_seguros(texto_html):
-    texto_html = texto_html or ""
-    # Blindagem 1: Arrancar spans, divs, p que a IA possa gerar indevidamente
+    texto_html = limpar_texto_ia(texto_html)
     texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE)
-    
-    # Blindagem 2: Correção de fechamentos cruzados
     texto_html = texto_html.replace("</font></strike>", "</strike></font>").replace("</b></i>", "</i></b>").replace('<em>', '<i>').replace('</em>', '</i>').replace('<strong>', '<b>').replace('</strong>', '</b>').replace('<s>', '<strike>').replace('</s>', '</strike>')
     
     tokens = re.split(r'(<[^>]+>)', texto_html)
@@ -260,18 +277,11 @@ def extrair_paragrafos_seguros(texto_html):
     if re.sub(r'<[^>]+>', '', texto_atual).strip(): paragrafos.append(texto_atual.strip())
     return paragrafos
 
-def injetar_nota_remissiva(texto, nota):
-    if nota and nota.strip():
-        n = f"({nota.strip()})" if not nota.strip().startswith("(") else nota.strip()
-        return f"{texto.rstrip('<br/>').rstrip('<br>').rstrip()} &nbsp;<font color='red'>{n}</font>" if texto else f"<font color='red'>{n}</font>"
-    return texto
-
 def renderizar_paragrafos_pdf(story, texto_html, estilo):
     for p in extrair_paragrafos_seguros(texto_html): story.append(Paragraph(p, estilo))
 
 def aplicar_html_no_docx(p, texto_html):
-    texto_html = (texto_html or "").replace("&nbsp;", "\xa0")
-    # Limpa span para o docx também
+    texto_html = limpar_texto_ia(texto_html).replace("&nbsp;", "\xa0")
     texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE)
     tokens = re.split(r'(<[^>]+>)', texto_html)
     is_bold = is_strike = is_red = is_italic = False
@@ -326,8 +336,8 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
     if os.path.exists("brasao.png"):
         img = Image("brasao.png", width=60, height=60); img.hAlign = 'CENTER'; story.append(img); story.append(Spacer(1, 10))
 
-    story.append(Paragraph((consolidacao_dict.get("orgaos_emissores") or "").replace('\n', '<br/>'), estilos['orgaos']))
-    story.append(Paragraph((consolidacao_dict.get("titulo_portaria") or "").replace('\n', '<br/>'), estilos['tit']))
+    story.append(Paragraph(limpar_texto_ia(consolidacao_dict.get("orgaos_emissores") or "").replace('\n', '<br/>'), estilos['orgaos']))
+    story.append(Paragraph(limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or "").replace('\n', '<br/>'), estilos['tit']))
     renderizar_paragrafos_pdf(story, (consolidacao_dict.get("ementa_preambulo") or "").replace('\n', '<br/>'), estilos['disp'])
 
     for item in consolidacao_dict.get("dispositivos", []):
@@ -346,7 +356,7 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
             t_pos = injetar_nota_remissiva((item.get(f"texto_pos_tabela_{tipo_versao}") or "").replace('\n', '<br/>'), item.get("nota_remissiva"))
             if t_pos: renderizar_paragrafos_pdf(story, t_pos, estilos['disp'])
 
-    story.append(Paragraph(f"{(consolidacao_dict.get('assinatura_nome') or '')}<br/>{(consolidacao_dict.get('assinatura_cargo') or '')}", estilos['ass']))
+    story.append(Paragraph(f"{limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')}<br/>{limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')}", estilos['ass']))
     doc.build(story); buffer.seek(0)
     return buffer.getvalue()
 
@@ -359,11 +369,11 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     rh.font.name, rh.font.size, rh.bold, rh.font.color.rgb = 'Times New Roman', Pt(10), True, RGBColor(68, 68, 68)
     
     po = doc.add_paragraph(); po.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    ro = po.add_run((consolidacao_dict.get("orgaos_emissores") or "").replace("<br/>", "\n"))
+    ro = po.add_run(limpar_texto_ia(consolidacao_dict.get("orgaos_emissores") or "").replace("<br/>", "\n"))
     ro.font.name, ro.font.size, ro.bold = 'Times New Roman', Pt(11), True
 
     ptit = doc.add_paragraph(); ptit.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    rt = ptit.add_run(consolidacao_dict.get("titulo_portaria") or "")
+    rt = ptit.add_run(limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or ""))
     rt.font.name, rt.font.size, rt.bold = 'Times New Roman', Pt(11), True
 
     renderizar_paragrafos_docx(doc, (consolidacao_dict.get("ementa_preambulo") or "").replace('\n', '<br/>'), WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
@@ -385,24 +395,22 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
             if t_pos: renderizar_paragrafos_docx(doc, t_pos, WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
 
     pa = doc.add_paragraph(); pa.alignment = WD_ALIGN_PARAGRAPH.CENTER; pa.paragraph_format.space_before = Pt(36)
-    ra = pa.add_run(f"{(consolidacao_dict.get('assinatura_nome') or '')}\n{(consolidacao_dict.get('assinatura_cargo') or '')}")
+    ra = pa.add_run(f"{limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')}\n{limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')}")
     ra.font.name, ra.font.size, ra.bold = 'Times New Roman', Pt(11), True
     buffer = io.BytesIO(); doc.save(buffer); buffer.seek(0)
     return buffer.getvalue()
 
-# ----------------- NOVO SALVAMENTO NO SUPABASE (METADADOS EXATOS) -----------------
 def salvar_no_supabase(cons):
     if not supabase: st.error("⚠️ Supabase não configurado."); return False
     try:
         base = cons['norma_base']
-        alt = cons['norma_alteradora']
+        alteradoras = cons.get('normas_alteradoras', [])
         
-        # 1. Busca se a norma base já existe
+        # 1. Atualiza ou insere a Norma Base
         res_busca = supabase.table("portarias_base").select("id").eq("nome_padronizado", base['nome_padronizado']).execute()
         
         if res_busca.data:
             base_id = res_busca.data[0]['id']
-            # Atualiza o JSON da Memória
             supabase.table("portarias_base").update({"documento_consolidado_json": cons}).eq("id", base_id).execute()
         else:
             data_ass = base.get('data_assinatura')
@@ -422,22 +430,24 @@ def salvar_no_supabase(cons):
             }).execute()
             base_id = res_ins.data[0]['id']
             
-        # 2. Registra a Norma Alteradora
-        res_alt = supabase.table("portarias_alteradoras").select("id").eq("portaria_base_id", base_id).eq("nome_padronizado", alt['nome_padronizado']).execute()
-        
-        if not res_alt.data:
-            data_alt = alt.get('data_assinatura')
-            if not data_alt or data_alt.strip() == "": data_alt = None
+        # 2. Registra TODAS as Normas Alteradoras em Cascata
+        for alt in alteradoras:
+            res_alt = supabase.table("portarias_alteradoras").select("id").eq("portaria_base_id", base_id).eq("nome_padronizado", alt['nome_padronizado']).execute()
             
-            supabase.table("portarias_alteradoras").insert({
-                "portaria_base_id": base_id,
-                "tipo_documento": alt['tipo_documento'],
-                "numero_documento": alt['numero_documento'],
-                "orgao_emissor": alt['orgao_emissor'],
-                "data_assinatura": data_alt,
-                "nome_padronizado": alt['nome_padronizado'],
-                "arquivo_nome_original": cons.get("arquivo_alterador_identificado")
-            }).execute()
+            if not res_alt.data:
+                data_alt = alt.get('data_assinatura')
+                if not data_alt or data_alt.strip() == "": data_alt = None
+                
+                supabase.table("portarias_alteradoras").insert({
+                    "portaria_base_id": base_id,
+                    "tipo_documento": alt['tipo_documento'],
+                    "numero_documento": alt['numero_documento'],
+                    "orgao_emissor": alt['orgao_emissor'],
+                    "data_assinatura": data_alt,
+                    "nome_padronizado": alt['nome_padronizado'],
+                    "arquivo_nome_original": "Múltiplos Documentos"
+                }).execute()
+                
         return True
     except Exception as e:
         st.error(f"Erro ao salvar: {e}")
@@ -451,7 +461,7 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     if not api_key: st.error("⚠️ Insira sua chave.")
     elif not arquivos_enviados: st.warning("⚠️ Envie arquivos.")
     else:
-        with st.spinner("🧠 Processando e lendo assinaturas SEI..."):
+        with st.spinner("🧠 Processando Cascata Cronológica e lendo assinaturas SEI..."):
             try:
                 st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip())
                 st.success("✨ Processamento Concluído!")
@@ -462,11 +472,14 @@ if st.session_state.dados_processados:
     dados = st.session_state.dados_processados
     for i, cons in enumerate(dados.get("consolidacoes_geradas", [])):
         nome_exibicao_base = cons['norma_base']['nome_padronizado']
-        nome_exibicao_alt = cons['norma_alteradora']['nome_padronizado']
+        
+        # Junta todas as alteradoras processadas nesta cascata
+        nomes_alteradoras = [alt['nome_padronizado'] for alt in cons.get('normas_alteradoras', [])]
+        nome_exibicao_alt = " e ".join(nomes_alteradoras) if nomes_alteradoras else "Desconhecido"
         
         with st.expander(f"📁 **{nome_exibicao_base}** alterada por **{nome_exibicao_alt}**", expanded=True):
-            if st.button(f"💾 Salvar/Atualizar no Supabase", key=f"btn_sup_{i}"):
-                if salvar_no_supabase(cons): st.success(f"Banco atualizado com {nome_exibicao_alt}!")
+            if st.button(f"💾 Salvar Cascata Inteira no Supabase", key=f"btn_sup_{i}"):
+                if salvar_no_supabase(cons): st.success(f"Banco atualizado com as alterações em cascata!")
             
             c1, c2 = st.columns(2)
             pdf_alt, docx_alt = gerar_pdf_dinamico(cons, "alterada"), gerar_docx_dinamico(cons, "alterada")
