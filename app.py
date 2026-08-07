@@ -16,12 +16,13 @@ from google.genai import types
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
-# Importação para Supabase, Word e Leitura de PDF Determinística
+# Importação para Supabase, Word, Leitura de PDF Determinística e Editor Web
 from supabase import create_client, Client
 import docx
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import fitz  # PyMuPDF
+from streamlit_quill import st_quill
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide")
@@ -45,7 +46,7 @@ st.markdown("""
 </style>
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
-    <p>Motor Híbrido com OCR Estrutural, Fallback Automático e Editor Web Integrado</p>
+    <p>Motor Híbrido OCR com Editor Visual WYSIWYG Integrado</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -77,7 +78,7 @@ def render_botao_historico():
 
 col_info, col_nav = st.columns([2, 1])
 with col_info:
-    st.info("💡 **Fluxo Completo:** Análise Inteligente → Edição Manual via Web → Geração de PDF/DOCX.")
+    st.info("💡 **Editor Visual Ativado:** Você pode usar a barra de ferramentas para formatar o texto livremente antes de gerar os arquivos.")
 with col_nav:
     render_botao_historico()
 
@@ -93,9 +94,43 @@ except:
 st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF ou DOCX)", type=["pdf", "docx"], accept_multiple_files=True, key="uploader_lote")
 
+# ----------------- TRADUTORES PARA O EDITOR VISUAL (NOVIDADE) -----------------
+def ia_para_editor(texto):
+    """Traduz o HTML simples da IA para o padrão estruturado do Quill (Editor Visual)."""
+    if not texto: return ""
+    texto = texto.replace("<br/>", "</p><p>").replace("<br>", "</p><p>")
+    texto = f"<p>{texto}</p>"
+    texto = texto.replace("<p></p>", "")
+    texto = texto.replace("<font color='red'><strike>", '<span style="color: rgb(230, 0, 0);"><s>')
+    texto = texto.replace("</strike></font>", "</s></span>")
+    texto = texto.replace("<font color='red'>", '<span style="color: rgb(230, 0, 0);">')
+    texto = texto.replace("</font>", "</span>")
+    texto = texto.replace("<strike>", "<s>").replace("</strike>", "</s>")
+    texto = texto.replace("<b>", "<strong>").replace("</b>", "</strong>")
+    texto = texto.replace("<i>", "<em>").replace("</i>", "</em>")
+    return texto
+
+def editor_para_pdf(texto):
+    """Pega a saída rica do Quill e converte de volta pro padrão engessado do nosso PDF/DOCX."""
+    if not texto: return ""
+    texto = texto.replace("<strong>", "<b>").replace("</strong>", "</b>")
+    texto = texto.replace("<em>", "<i>").replace("</em>", "</i>")
+    texto = texto.replace("<s>", "<strike>").replace("</s>", "</strike>")
+    
+    # Captura cores aplicadas no editor e converte para a tag padrão do nosso sistema
+    texto = re.sub(r'<span[^>]*color:[^>]*>(.*?)</span>', r"<font color='red'>\1</font>", texto, flags=re.IGNORECASE)
+    
+    # Limpa tags <p> do editor transformando em <br/>
+    texto = texto.replace("<p><br></p>", "<br/>")
+    texto = texto.replace("</p>", "<br/>").replace("<p>", "")
+    texto = re.sub(r'</?span[^>]*>', '', texto)
+    
+    # Remove quebras fantasmas nos extremos
+    texto = re.sub(r'^(<br/>)+|(<br/>)+$', '', texto).strip()
+    return texto
+
 # ----------------- FUNÇÃO INTELIGENTE DE FALLBACK (3.6 ➔ 3.5) -----------------
 def executar_com_fallback(client, contents, response_schema):
-    """Força 5 tentativas no 3.6-flash. Se todas falharem, muda para o 3.5-flash."""
     config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=response_schema, temperature=0.0)
     
     max_tentativas_36 = 5
@@ -125,14 +160,12 @@ def executar_com_fallback(client, contents, response_schema):
             config=config
         )
     except Exception as e_secundario:
-        raise Exception(f"Erro crítico: O sistema tentou 5 vezes no Gemini 3.6 e falhou no 3.5 por cota. Detalhes: {e_secundario}")
+        raise Exception(f"Erro crítico: Ambos os modelos esgotaram a cota (RESOURCE_EXHAUSTED). Detalhes: {e_secundario}")
 
-# ----------------- FUNÇÃO DE CONVERSÃO DE DATA PARA SQL (YYYY-MM-DD) -----------------
 def converter_para_iso(data_str):
     if not data_str: return None
     data_str = data_str.strip()
-    if re.match(r'^\d{4}-\d{2}-\d{2}$', data_str):
-        return data_str
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', data_str): return data_str
     match_br = re.match(r'^(\d{2})/(\d{2})/(\d{4})$', data_str)
     if match_br:
         d, m, a = match_br.groups()
@@ -143,11 +176,8 @@ def converter_para_iso(data_str):
     except:
         return None
 
-# ----------------- EXTRAÇÃO OCR ESTRUTURAL MILIMÉTRICA -----------------
 def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
-    if nome_arquivo.lower().endswith(".docx"):
-        return f"ARQUIVO DOCX: {nome_arquivo}"
-    
+    if nome_arquivo.lower().endswith(".docx"): return f"ARQUIVO DOCX: {nome_arquivo}"
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         html_text = f"CONTEÚDO DO ARQUIVO {nome_arquivo}:\n\n"
@@ -155,7 +185,7 @@ def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
             html_text += f"=== PÁGINA {page_num + 1} ===\n"
             blocks = page.get_text("dict", sort=True).get("blocks", [])
             for b in blocks:
-                if b.get('type') == 0:  
+                if b.get('type') == 0:
                     bloco_linhas = ""
                     for l in b.get("lines", []):
                         linha_span = ""
@@ -165,7 +195,6 @@ def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
                             flags = s.get("flags", 0)
                             is_bold = flags & 2**4
                             is_italic = flags & 2**1
-                            
                             if is_bold: texto = f"<b>{texto}</b>"
                             if is_italic: texto = f"<i>{texto}</i>"
                             linha_span += texto
@@ -240,10 +269,8 @@ def injetar_nota_remissiva(texto, nota):
             return f"<font color='red'>{n}</font>"
     return texto
 
-# ----------------- PIPELINE DE EXECUÇÃO COM FALLBACK E OCR -----------------
 def analisar_lote_arquivos(arquivos, key):
     client = genai.Client(api_key=key)
-    
     textos_extraidos = {}
     for arq in arquivos:
         textos_extraidos[arq.name] = extrair_texto_com_formatacao(arq.getvalue(), arq.name)
@@ -253,13 +280,9 @@ def analisar_lote_arquivos(arquivos, key):
     TEXTOS: {" | ".join([f"[{k}]" for k in textos_extraidos.keys()])}
     """
     
-    resp_triagem = executar_com_fallback(
-        client=client,
-        contents=[prompt_triagem] + list(textos_extraidos.values()),
-        response_schema=TriagemDocumentos
-    )
-    
+    resp_triagem = executar_com_fallback(client=client, contents=[prompt_triagem] + list(textos_extraidos.values()), response_schema=TriagemDocumentos)
     triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
+    
     arquivo_base = next((a for a in triagem_dados if a['tipo'] == 'Base'), None)
     arquivos_alteradores = [a for a in triagem_dados if a['tipo'] == 'Alteradora']
     arquivos_alteradores.sort(key=lambda x: x['data_oficial_iso'])
@@ -278,14 +301,8 @@ def analisar_lote_arquivos(arquivos, key):
 
     if not arquivos_alteradores:
         conteudo_loop = [f"Texto Base:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}"]
-        
-        resp_loop = executar_com_fallback(
-            client=client,
-            contents=conteudo_loop + ["Gere o JSON consolidado preservando rigidamente o layout, ementa, preâmbulo e tags <b> e <br/>."],
-            response_schema=AnaliseGlobal
-        )
+        resp_loop = executar_com_fallback(client=client, contents=conteudo_loop + ["Gere o JSON consolidado preservando rigidamente o layout, ementa, preâmbulo e tags <b> e <br/>."], response_schema=AnaliseGlobal)
         return json.loads(resp_loop.text)
-    
     else:
         for i, alt in enumerate(arquivos_alteradores):
             conteudo_loop = []
@@ -300,16 +317,11 @@ def analisar_lote_arquivos(arquivos, key):
             prompt_loop = f"""
             Execute o passo {i+1} de {len(arquivos_alteradores)} aplicando as modificações desta portaria alteradora sobre o texto atual de forma acumulativa.
             REGRAS CRÍTICAS DE FORMATAÇÃO (OCR):
-            1. PREÂMBULO E EMENTA: Mantenha exatamente o fluxo original. O título, ementa e preâmbulo (cada "CONSIDERANDO") devem manter a estrutura com a tag `<br/>` separando as ideias.
+            1. PREÂMBULO E EMENTA: Mantenha exatamente o fluxo original. O título, ementa e preâmbulo devem manter a estrutura com a tag `<br/>` separando as ideias.
             2. Mantenha os negritos em `<b>` (especialmente "CONSIDERANDO" e "Resolve:") e use `<font color='red'><strike>texto revogado</strike></font>` para revogações.
             """
             conteudo_loop.append(prompt_loop)
-            
-            resp_loop = executar_com_fallback(
-                client=client,
-                contents=conteudo_loop,
-                response_schema=AnaliseGlobal
-            )
+            resp_loop = executar_com_fallback(client=client, contents=conteudo_loop, response_schema=AnaliseGlobal)
             estado_json_atual = resp_loop.text 
 
         return json.loads(resp_loop.text)
@@ -528,7 +540,7 @@ def salvar_no_supabase(cons):
         st.error(f"Erro ao salvar: {e}")
         return False
 
-# ----------------- FRONT-END -----------------
+# ----------------- FRONT-END COM EDITOR VISUAL -----------------
 if "dados_processados" not in st.session_state: st.session_state.dados_processados = None
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -538,7 +550,7 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     elif not arquivos_enviados: 
         st.warning("⚠️ Envie os arquivos normativos primeiro.")
     else:
-        with st.spinner("⚡ Executando Análise e Extração Estrutural..."):
+        with st.spinner("⚡ Executando OCR Estrutural e Varredura Completa..."):
             try:
                 st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip())
                 st.success("✨ Processamento Concluído com Sucesso!")
@@ -559,28 +571,34 @@ if st.session_state.dados_processados:
         
         with st.expander(f"📁 **{nome_exibicao_base}** alterada por **{nome_exibicao_alt}**", expanded=True):
             
-            # --- INÍCIO DO EDITOR WEB INTEGRADO ---
-            st.markdown("### 📝 Editor de Documento (Ajuste Fino)")
-            st.info("Revise e edite o texto abaixo. Você pode corrigir palavras ou ajustar as marcações estruturais (`<b>`, `<i>`, `<br/>`, `<font color='red'><strike>`).")
+            # --- INÍCIO DO EDITOR WEB WYSIWYG ---
+            st.markdown("### 📝 Editor Visual de Documento")
+            st.info("Utilize a barra de ferramentas para formatar o texto livremente. As edições serão salvas automaticamente nos PDFs gerados.")
             
-            with st.form(key=f"form_editor_{i}"):
-                cons['titulo_portaria'] = st.text_area("Título da Portaria", cons.get('titulo_portaria', ''), height=68)
-                cons['ementa_preambulo'] = st.text_area("Ementa e Preâmbulo", cons.get('ementa_preambulo', ''), height=250)
-                
-                st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos)")
-                for j, disp in enumerate(cons.get("dispositivos", [])):
-                    st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
-                    c_alt, c_cons = st.columns(2)
-                    with c_alt:
-                        disp['texto_principal_alterada'] = st.text_area(f"Versão Alterada", disp.get('texto_principal_alterada', ''), height=150, key=f"alt_{i}_{j}")
-                    with c_cons:
-                        disp['texto_principal_consolidada'] = st.text_area(f"Versão Consolidada", disp.get('texto_principal_consolidada', ''), height=150, key=f"cons_{i}_{j}")
-                
-                salvar_edicoes = st.form_submit_button("💾 Aplicar Ajustes Manuais", type="primary")
+            cons['titulo_portaria'] = st.text_input("Título da Portaria", cons.get('titulo_portaria', ''))
             
-            if salvar_edicoes:
-                st.success("✅ Documento atualizado! As alterações foram gravadas na memória. Você já pode realizar o download abaixo.")
-            # --- FIM DO EDITOR WEB INTEGRADO ---
+            st.markdown("**Ementa e Preâmbulo**")
+            val_ementa = ia_para_editor(cons.get('ementa_preambulo', ''))
+            ementa_editada = st_quill(value=val_ementa, key=f"q_ementa_{i}")
+            if ementa_editada: cons['ementa_preambulo'] = editor_para_pdf(ementa_editada)
+            
+            st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos)")
+            for j, disp in enumerate(cons.get("dispositivos", [])):
+                st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
+                c_alt, c_cons = st.columns(2)
+                
+                with c_alt:
+                    st.markdown("*Versão Alterada*")
+                    val_alt = ia_para_editor(disp.get('texto_principal_alterada', ''))
+                    alt_editada = st_quill(value=val_alt, key=f"q_alt_{i}_{j}")
+                    if alt_editada: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
+                    
+                with c_cons:
+                    st.markdown("*Versão Consolidada*")
+                    val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
+                    cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
+                    if cons_editada: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
+            # --- FIM DO EDITOR WEB WYSIWYG ---
 
             st.markdown("### 📥 Opções de Exportação")
             if st.button(f"💾 Salvar Cascata Inteira no Banco de Dados", key=f"btn_sup_{i}"):
