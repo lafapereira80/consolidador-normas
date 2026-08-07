@@ -5,6 +5,12 @@ from typing import Optional
 
 st.set_page_config(page_title="Histórico de Normas", page_icon="🗄️", layout="wide")
 
+# PROTEÇÃO DE ACESSO
+if "autenticado" not in st.session_state or not st.session_state.autenticado:
+    st.warning("⚠️ Acesso negado. Você precisa fazer login na página principal para acessar o histórico.")
+    st.page_link("app.py", label="Ir para a Tela de Login", icon="🔒")
+    st.stop()
+
 st.markdown("""
 <style>
     .main-header {
@@ -34,7 +40,7 @@ def init_supabase() -> Optional[Client]:
 supabase = init_supabase()
 
 if not supabase:
-    st.error("⚠️ Não foi possível conectar ao Supabase. Verifique suas credenciais em st.secrets.")
+    st.error("⚠️ Não foi possível conectar ao Supabase.")
     st.stop()
 
 # --- BARRA DE BUSCA ---
@@ -44,11 +50,9 @@ with c_busca:
 
 st.markdown("---")
 
-# Busca TODAS as portarias base
 res_base = supabase.table("portarias_base").select("*").order("data_assinatura", desc=True).execute()
 portarias_base = res_base.data if res_base.data else []
 
-# Aplica o filtro de busca localmente (case-insensitive)
 if termo_busca:
     termo_lower = termo_busca.lower()
     portarias_base = [
@@ -77,10 +81,8 @@ else:
                 st.markdown(f"**Órgão Emissor:** {pb.get('orgao_emissor', '')}")
             
             with c2:
-                # Botão para deletar a norma base INTEIRA
                 if st.button(f"🗑️ Apagar Cascata Completa", key=f"del_base_{base_id}", type="primary"):
                     try:
-                        # Deleta primeiro as filhas para evitar erro de chave estrangeira
                         supabase.table("portarias_alteradoras").delete().eq("portaria_base_id", base_id).execute()
                         supabase.table("portarias_base").delete().eq("id", base_id).execute()
                         st.success("Cascata apagada com sucesso!")
@@ -88,7 +90,6 @@ else:
                     except Exception as e:
                         st.error(f"Erro ao apagar: {e}")
 
-            # Busca as alteradoras atreladas a esta base
             res_alt = supabase.table("portarias_alteradoras").select("*").eq("portaria_base_id", base_id).order("data_assinatura", desc=True).execute()
             alteradoras = res_alt.data if res_alt.data else []
             
@@ -100,7 +101,6 @@ else:
                     with ca1:
                         st.write(f"- {pa.get('nome_padronizado', '')} (Assinatura: {pa.get('data_assinatura', 'N/A')})")
                     with ca2:
-                        # Botão para deletar APENAS a alteradora específica
                         if st.button("❌ Desvincular", key=f"del_alt_{alt_id}"):
                             try:
                                 supabase.table("portarias_alteradoras").delete().eq("id", alt_id).execute()
