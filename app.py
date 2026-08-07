@@ -45,7 +45,7 @@ st.markdown("""
 </style>
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
-    <p>Motor Híbrido com OCR Estrutural e Preservação de Layout Original</p>
+    <p>Motor Híbrido com OCR Estrutural Rigoroso (Layout Idêntico ao Original)</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -77,7 +77,7 @@ def render_botao_historico():
 
 col_info, col_nav = st.columns([2, 1])
 with col_info:
-    st.info("💡 **Leitura OCR Estrutural Ativada:** Preservação milimétrica da disposição de textos, ementas e preâmbulos.")
+    st.info("💡 **Layout Preservado:** Extração determinística aprimorada para manter a exata estrutura visual do documento.")
 with col_nav:
     render_botao_historico()
 
@@ -142,7 +142,7 @@ def converter_para_iso(data_str):
     except:
         return None
 
-# ----------------- EXTRAÇÃO DETERMINÍSTICA COM LAYOUT PRESERVADO (ESTILO OCR) -----------------
+# ----------------- EXTRAÇÃO OCR ESTRUTURAL MILIMÉTRICA -----------------
 def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
     if nome_arquivo.lower().endswith(".docx"):
         return f"ARQUIVO DOCX: {nome_arquivo}"
@@ -151,13 +151,14 @@ def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         html_text = f"CONTEÚDO DO ARQUIVO {nome_arquivo}:\n\n"
         for page_num, page in enumerate(doc):
-            html_text += f"--- PÁGINA {page_num + 1} ---\n"
-            # Utiliza o modo block ordenado para respeitar rigorosamente a geometria visual original
+            html_text += f"=== PÁGINA {page_num + 1} ===\n"
+            # Extração organizada por blocos ordenados para manter a estrutura original exata do SEI
             blocks = page.get_text("dict", sort=True).get("blocks", [])
             for b in blocks:
-                if b.get('type') == 0:  # Bloco de texto
+                if b.get('type') == 0:  # Bloco de texto puro
+                    bloco_linhas = ""
                     for l in b.get("lines", []):
-                        line_text = ""
+                        linha_span = ""
                         for s in l.get("spans", []):
                             texto = s.get("text", "")
                             if not texto: continue
@@ -167,10 +168,13 @@ def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
                             
                             if is_bold: texto = f"<b>{texto}</b>"
                             if is_italic: texto = f"<i>{texto}</i>"
-                            line_text += texto
-                        if line_text.strip():
-                            html_text += line_text + "<br/>\n"
-                    html_text += "<br/>\n"  # Garante espaçamento limpo entre parágrafos
+                            linha_span += texto
+                        if linha_span.strip():
+                            bloco_linhas += linha_span + " "
+                    if bloco_linhas.strip():
+                        # Adiciona o bloco respeitando a quebra natural do documento original
+                        html_text += bloco_linhas.strip() + "<br/>\n"
+            html_text += "<br/>\n"
         return html_text
     except Exception as e:
         return f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"
@@ -192,9 +196,9 @@ class MetadadosNorma(BaseModel):
     nome_padronizado: str
 
 class Dispositivo(BaseModel):
-    tipo: str
-    texto_principal_alterada: str = Field(description="Mantenha <b> e <i>. Use <br/> para separar parágrafos e incisos. NUNCA use '\\n'.")
-    texto_principal_consolidada: str = Field(description="Texto limpo em vigor. Mantenha <b> e <i>. Use <br/> para quebras.")
+    tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', 'inciso'.")
+    texto_principal_alterada: str = Field(description="Texto fiel ao original com <b>, <i> e <br/> estruturados.")
+    texto_principal_consolidada: str = Field(description="Texto limpo e consolidado com <b>, <i> e <br/>.")
     is_tabela: bool
     tabela_alterada: Optional[List[List[str]]] = None
     tabela_consolidada: Optional[List[List[str]]] = None
@@ -210,7 +214,7 @@ class Consolidacao(BaseModel):
     cabecalho_complemento: str
     orgaos_emissores: str
     titulo_portaria: str
-    ementa_preambulo: str = Field(description="Ementa e preâmbulo mantendo o fluxo natural do documento original, separando blocos com <br/> e mantendo negritos intocados.")
+    ementa_preambulo: str = Field(description="Estrutura idêntica ao original contendo a ementa, os considerandos e o 'Resolve:' perfeitamente separados por <br/> e com negritos mantidos.")
     assinatura_nome: str
     assinatura_cargo: str
     dispositivos: List[Dispositivo]
@@ -237,7 +241,7 @@ def injetar_nota_remissiva(texto, nota):
             return f"<font color='red'>{n}</font>"
     return texto
 
-# ----------------- PIPELINE DE EXECUÇÃO ROBUSTO PARA MÚLTIPLAS PORTARIAS -----------------
+# ----------------- PIPELINE DE EXECUÇÃO RIGOROSO -----------------
 def analisar_lote_arquivos(arquivos, key):
     client = genai.Client(api_key=key)
     
@@ -278,7 +282,7 @@ def analisar_lote_arquivos(arquivos, key):
         conteudo_loop = [f"Texto Base:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}"]
         resp_loop = executar_com_fallback(
             client=client,
-            contents=conteudo_loop + ["Gere o JSON consolidado preservando rigidamente o layout, ementa, preâmbulo e tags <b> e <br/>."],
+            contents=conteudo_loop + ["Gere o JSON consolidado preservando rigidamente o layout estrutural original."],
             response_schema=AnaliseGlobal
         )
         return json.loads(resp_loop.text)
@@ -295,13 +299,12 @@ def analisar_lote_arquivos(arquivos, key):
             conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({nome_alt_atual}):\n{textos_extraidos[nome_alt_atual]}")
             
             prompt_loop = f"""
-            Você está executando o passo {i+1} de {len(arquivos_alteradores)} no pipeline de consolidação em cascata.
-            Pegue o Estado Atual do Documento e aplique cirurgicamente as modificações contidas nesta portaria alteradora.
+            Você é um especialista em técnica legislativa. Execute o passo {i+1} de {len(arquivos_alteradores)} aplicando as modificações desta portaria alteradora sobre o texto atual.
             
-            REGRAS OBRIGATÓRIAS DE LEIAUTE E FORMATAÇÃO (ESTILO OCR):
-            1. PREÂMBULO E EMENTA: Mantenha o fluxo exato e limpo do texto original, separando os blocos (ementa, considerandos, 'Resolve:') com a tag `<br/>`. Preserve todos os negritos originais encontrados no topo do documento (ex: nomes de órgãos, ementas, etc).
-            2. CASCATA COMPLETA: Processe integralmente esta portaria alteradora {i+1}, acumulando as revogações e alterações sobre o texto anterior sem omitir nenhuma diretriz.
-            3. Use `<font color='red'><strike>texto revogado</strike></font>` para revogações e preserve todas as tags <b> e <i>.
+            REGRAS ABSOLUTAS DE ESTRUTURA E FORMATAÇÃO (LAYOUT ORIGINAL):
+            1. PREÂMBULO E EMENTA FIÉIS: Mantenha exatamente a disposição visual dos textos originais. O título da portaria, a ementa (em formato de bloco descritivo), o preâmbulo (cada "CONSIDERANDO..." em um parágrafo próprio separado por `<br/>`) e o "Resolve:" devem manter a exata estrutura corporativa padrão SEI.
+            2. PRESERVAÇÃO DE NEGRITOS: Mantenha as tags `<b>` exatamente onde os termos aparecem em negrito no texto original (como títulos, artigos, incisos e termos destacados).
+            3. CASCATA SEM OMISSÕES: Processe integralmente todas as revogações e alterações desta portaria, acumulando-as sem falhas. Use `<font color='red'><strike>texto revogado</strike></font>` para revogações.
             """
             conteudo_loop.append(prompt_loop)
             
@@ -538,7 +541,7 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     elif not arquivos_enviados: 
         st.warning("⚠️ Envie os arquivos normativos primeiro.")
     else:
-        with st.spinner("⚡ Executando OCR Estrutural e Varredura Completa de Múltiplas Portarias..."):
+        with st.spinner("⚡ Executando OCR Estrutural Rigoroso..."):
             try:
                 st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip())
                 st.success("✨ Processamento Concluído com Sucesso!")
