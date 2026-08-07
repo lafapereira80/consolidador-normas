@@ -25,9 +25,19 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide")
 
-# ----------------- LAYOUT MODERNO (CSS) -----------------
+# ----------------- LAYOUT MODERNO E OCULTAÇÃO DA BARRA LATERAL (CSS) -----------------
 st.markdown("""
 <style>
+    /* Esconde a barra lateral padrão do Streamlit em todo o app */
+    [data-testid="stSidebar"] {
+        display: none;
+    }
+    
+    /* Ajusta o espaçamento superior para colar o visual mais no topo */
+    .block-container {
+        padding-top: 2rem;
+    }
+
     .main-header {
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
         padding: 30px 20px;
@@ -194,7 +204,7 @@ def analisar_lote_arquivos(arquivos, key):
         st.toast("🔍 Cruzando dados com o Histórico do Supabase...", icon="⏳")
         
         resp_pre = client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-2.0-flash',
             contents=conteudos_iniciais + [prompt_pre_analise],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
