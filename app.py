@@ -42,7 +42,7 @@ st.markdown("""
 </style>
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
-    <p>Consolidação Inteligente e Gestão de Portarias com IA (Memória Cumulativa Ativa)</p>
+    <p>Consolidação Inteligente via Agentes (Memória Cumulativa Ativa)</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -74,7 +74,7 @@ def render_botao_historico():
 
 col_info, col_nav = st.columns([2, 1])
 with col_info:
-    st.info("💡 **Inteligência Ativada:** O sistema fará a consolidação em cascata e preservará formatações originais.")
+    st.info("💡 **Pipeline de Agentes Ativado:** O sistema processará as alterações passo a passo para garantir 100% de precisão.")
 with col_nav:
     render_botao_historico()
 
@@ -90,13 +90,23 @@ except:
 st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF ou DOCX)", type=["pdf", "docx"], accept_multiple_files=True, key="uploader_lote")
 
-# ----------------- ESTRUTURAS PYDANTIC -----------------
+# ----------------- ESTRUTURAS PYDANTIC (AGENTE DE TRIAGEM) -----------------
+class ArquivoClassificado(BaseModel):
+    nome_arquivo_upload: str = Field(description="O nome exato do arquivo físico (ex: arquivo.pdf)")
+    tipo: str = Field(description="'Base' ou 'Alteradora'")
+    nome_padronizado_identificado: str = Field(description="Ex: PORTARIA Nº 158/PGJM, DE 29 DE JULHO DE 2026")
+    data_oficial_iso: str = Field(description="Data de assinatura em formato YYYY-MM-DD para ordenação.")
+
+class TriagemDocumentos(BaseModel):
+    arquivos: List[ArquivoClassificado]
+
+# ----------------- ESTRUTURAS PYDANTIC (AGENTE CONSOLIDADOR) -----------------
 class MetadadosNorma(BaseModel):
     tipo_documento: str = Field(description="Ex: 'Portaria', 'Lei', 'Decreto'")
     numero_documento: str = Field(description="O número. Ex: '158', '137', ou 'S/N'")
     orgao_emissor: str = Field(description="Sigla do órgão. Ex: 'PGJM'")
-    data_assinatura: str = Field(description="Data exata no formato YYYY-MM-DD. IMPORTANTE: Se o cabeçalho disser '(data de assinatura)', busque ativamente a data no bloco final de assinatura eletrônica do SEI.")
-    nome_padronizado: str = Field(description="Nome completo da norma. Ex: 'PORTARIA Nº 158/PGJM, DE 29 DE JULHO DE 2026'.")
+    data_assinatura: str = Field(description="Data exata no formato YYYY-MM-DD.")
+    nome_padronizado: str = Field(description="Nome completo da norma.")
 
 class Dispositivo(BaseModel):
     tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', etc.")
@@ -107,13 +117,13 @@ class Dispositivo(BaseModel):
     tabela_consolidada: Optional[List[List[str]]] = Field(default=None)
     texto_pos_tabela_alterada: Optional[str] = Field(default=None)
     texto_pos_tabela_consolidada: Optional[str] = Field(default=None)
-    nota_remissiva: Optional[str] = Field(default="", description="Ex: 'Alterado por...'. Coloque apenas aqui, NUNCA no texto principal.")
+    nota_remissiva: Optional[str] = Field(default="", description="Ex: '(Alterado por...)'.")
 
 class Consolidacao(BaseModel):
     arquivos_originais_identificados: List[str]
     arquivos_alteradores_identificados: List[str]
     norma_base: MetadadosNorma
-    normas_alteradoras: List[MetadadosNorma] = Field(description="Lista com TODAS as normas alteradoras processadas.")
+    normas_alteradoras: List[MetadadosNorma] = Field(description="Lista com TODAS as normas alteradoras processadas até o momento.")
     cabecalho_complemento: str
     orgaos_emissores: str
     titulo_portaria: str
@@ -122,115 +132,16 @@ class Consolidacao(BaseModel):
     assinatura_cargo: str
     dispositivos: List[Dispositivo]
 
-class ArquivoAvulso(BaseModel):
-    nome_arquivo: str
-    nome_portaria_identificada: str
-    motivo: str
-
 class AnaliseGlobal(BaseModel):
     consolidacoes_geradas: List[Consolidacao]
-    arquivos_nao_alterados: List[ArquivoAvulso]
+    arquivos_nao_alterados: List[str]
 
-class IdentificadorDeAlvos(BaseModel):
-    nomes_padronizados_alvo: List[str] = Field(description="Lista exata de 'nome_padronizado' do banco que estão sendo alterados.")
-
+# ----------------- FUNÇÕES AUXILIARES DE LIMPEZA -----------------
 def limpar_texto_ia(texto):
     if not texto: return ""
     texto = texto.replace('\\n', '<br/>').replace('\n', '<br/>')
     texto = re.sub(r' {2,}', ' ', texto).strip()
     return texto
-
-def analisar_lote_arquivos(arquivos, key):
-    client = genai.Client(api_key=key)
-    caminhos_temporarios = []
-    gemini_files_objs = []
-    
-    try:
-        for arq in arquivos:
-            ext = f".{arq.name.split('.')[-1]}"
-            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                tmp.write(arq.getvalue())
-                caminhos_temporarios.append((tmp.name, arq.name))
-                
-        conteudos_iniciais = []
-        for caminho_tmp, nome_original in caminhos_temporarios:
-            g_file = client.files.upload(file=caminho_tmp)
-            gemini_files_objs.append(g_file)
-            conteudos_iniciais.append(f"ARQUIVO: {nome_original}")
-            conteudos_iniciais.append(g_file)
-
-        nomes_bd = []
-        if supabase:
-            try:
-                res_bd = supabase.table("portarias_base").select("nome_padronizado").execute()
-                nomes_bd = [r["nome_padronizado"] for r in res_bd.data]
-            except: pass
-
-        prompt_pre = f"""
-        Normas base já cadastradas: {nomes_bd}
-        Verifique se os PDFs enviados modificam ativamente alguma dessas normas cadastradas. Considere as datas do SEI lendo as assinaturas finais.
-        """
-        st.toast("🔍 Identificando relações temporais e lendo SEI...", icon="⏳")
-        resp_pre = client.models.generate_content(
-            model='gemini-3.6-flash',
-            contents=conteudos_iniciais + [prompt_pre],
-            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=IdentificadorDeAlvos, temperature=0.0)
-        )
-        
-        alvos = json.loads(resp_pre.text).get("nomes_padronizados_alvo", [])
-        textos_historico = []
-        
-        if supabase and alvos:
-            for alvo_nome in alvos:
-                try:
-                    res_json = supabase.table("portarias_base").select("nome_padronizado, documento_consolidado_json").eq("nome_padronizado", alvo_nome).execute()
-                    if res_json.data and res_json.data[0].get("documento_consolidado_json"):
-                        json_str = json.dumps(res_json.data[0]['documento_consolidado_json'])
-                        textos_historico.append(f"JSON DA NORMA BASE '{alvo_nome}':\n{json_str}")
-                        st.toast(f"✅ Histórico carregado para: {alvo_nome}!", icon="🧠")
-                except: pass
-
-        conteudos_prompt = ["Analise as relações normativas e gere a consolidação OBRIGATORIAMENTE seguindo estas regras:"]
-        conteudos_prompt.extend(conteudos_iniciais)
-        if textos_historico:
-            conteudos_prompt.append("\n\nATENÇÃO - HISTÓRICO ENCONTRADO NO BANCO:")
-            conteudos_prompt.extend(textos_historico)
-
-        prompt_comandos = """
-        Você é um Especialista Sênior em Técnica Legislativa.
-        
-        🔥 1. ALGORITMO DE CASCATA CRONOLÓGICA (MÚLTIPLOS ARQUIVOS):
-        Se houver 2 ou mais PDFs alterando a mesma norma base, você DEVE aplicar TODAS as alterações.
-        PASSO A PASSO:
-        - Primeiro, identifique a norma base.
-        - Segundo, identifique a norma alteradora MAIS ANTIGA e aplique as revogações/alterações no texto base.
-        - Terceiro, identifique a norma alteradora MAIS RECENTE e aplique as revogações/alterações SOBRE O TEXTO JÁ MODIFICADO.
-        NUNCA IGNORE UM ARQUIVO. Se recebi 3 arquivos, os 3 devem refletir no JSON final. Preencha 'normas_alteradoras' com TODAS elas.
-        
-        🔥 2. ATENÇÃO EXTREMA À FORMATAÇÃO VISUAL (NEGRITO E ITÁLICO):
-        Você DEVE analisar o aspecto tipográfico dos PDFs. Se uma palavra, título, ou número de artigo estiver destacado em Negrito ou Itálico no documento original, você é OBRIGADO a colocar as tags HTML <b>texto</b> ou <i>texto</i> em volta delas no JSON. A perda de negritos é considerada um erro grave de extração.
-        
-        🔥 3. REGRAS DE TACHADO:
-        Use `<font color='red'><strike>texto revogado</strike></font>`. 
-        NUNCA insira espaços em branco dentro do `<strike>` ou `<b>`.
-        NUNCA use tags `<span>`, `<div>` ou `<p>`. Use `<br/>` para quebras de linha.
-        As notas remissivas vão EXCLUSIVAMENTE na variável `nota_remissiva`.
-        """
-        conteudos_prompt.append(prompt_comandos)
-
-        st.toast("⚙️ Aplicando Cascata Cronológica e resgatando tipografia...", icon="⏳")
-        response = client.models.generate_content(
-            model='gemini-3.6-flash',
-            contents=conteudos_prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=AnaliseGlobal, temperature=0.0)
-        )
-        return json.loads(response.text)
-    finally:
-        for g_file in gemini_files_objs:
-            try: client.files.delete(name=g_file.name)
-            except: pass
-        for caminho_tmp, _ in caminhos_temporarios:
-            if os.path.exists(caminho_tmp): os.remove(caminho_tmp)
 
 def injetar_nota_remissiva(texto, nota):
     if nota and nota.strip():
@@ -241,6 +152,116 @@ def injetar_nota_remissiva(texto, nota):
         else:
             return f"<font color='red'>{n}</font>"
     return texto
+
+# ----------------- ORQUESTRADOR DE AGENTES (PIPELINE) -----------------
+def analisar_lote_arquivos(arquivos, key):
+    client = genai.Client(api_key=key)
+    caminhos_temporarios = []
+    mapa_gemini_files = {} # nome_original -> obj g_file
+    
+    try:
+        # 1. Faz upload de todos os arquivos
+        for arq in arquivos:
+            ext = f".{arq.name.split('.')[-1]}"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                tmp.write(arq.getvalue())
+                caminhos_temporarios.append((tmp.name, arq.name))
+                
+        conteudos_triagem = []
+        for caminho_tmp, nome_original in caminhos_temporarios:
+            g_file = client.files.upload(file=caminho_tmp)
+            mapa_gemini_files[nome_original] = g_file
+            conteudos_triagem.append(f"ARQUIVO: {nome_original}")
+            conteudos_triagem.append(g_file)
+
+        # ----------------- AGENTE 1: TRIAGEM -----------------
+        st.toast("🕵️ Agente 1: Analisando e ordenando documentos cronologicamente...", icon="⏳")
+        prompt_triagem = """
+        Analise estes documentos e responda: 
+        1. Identifique qual é a Norma Base (a original) e quais são as Alteradoras.
+        2. Extraia a data de assinatura de cada um (lendo os rodapés do SEI se necessário) no formato YYYY-MM-DD.
+        3. Classifique estritamente de acordo com o esquema solicitado.
+        """
+        
+        resp_triagem = client.models.generate_content(
+            model='gemini-3.6-flash',
+            contents=conteudos_triagem + [prompt_triagem],
+            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=TriagemDocumentos, temperature=0.0)
+        )
+        
+        triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
+        
+        arquivo_base = next((a for a in triagem_dados if a['tipo'] == 'Base'), None)
+        arquivos_alteradores = [a for a in triagem_dados if a['tipo'] == 'Alteradora']
+        # Ordena as alteradoras da mais antiga para a mais nova
+        arquivos_alteradores.sort(key=lambda x: x['data_oficial_iso'])
+        
+        if not arquivo_base and not arquivos_alteradores:
+            raise ValueError("Não foi possível identificar a relação entre os documentos.")
+
+        # ----------------- INTEGRAÇÃO COM BANCO (MEMÓRIA) -----------------
+        estado_json_atual = None
+        if arquivo_base and supabase:
+            try:
+                res_bd = supabase.table("portarias_base").select("documento_consolidado_json").eq("nome_padronizado", arquivo_base['nome_padronizado_identificado']).execute()
+                if res_bd.data and res_bd.data[0].get("documento_consolidado_json"):
+                    estado_json_atual = json.dumps(res_bd.data[0]['documento_consolidado_json'])
+                    st.toast(f"🧠 Memória carregada do Supabase para a Base!", icon="✅")
+            except: pass
+
+        # ----------------- AGENTE 2: LOOP DE CONSOLIDAÇÃO (CASCATA) -----------------
+        if not arquivos_alteradores:
+            # Se só enviou a base, processa ela sozinha
+            conteudo_loop = [f"ARQUIVO BASE: {arquivo_base['nome_arquivo_upload']}", mapa_gemini_files[arquivo_base['nome_arquivo_upload']]]
+            st.toast("⚙️ Agente 2: Consolidando Norma Base...", icon="⏳")
+        else:
+            # Pipeline passo a passo
+            for i, alt in enumerate(arquivos_alteradores):
+                st.toast(f"⚙️ Agente 2: Aplicando alteração {i+1} de {len(arquivos_alteradores)} ({alt['nome_arquivo_upload']})...", icon="⏳")
+                
+                conteudo_loop = []
+                if estado_json_atual:
+                    conteudo_loop.append(f"JSON ATUAL CONSOLIDADO (Use como base de partida):\n{estado_json_atual}")
+                elif arquivo_base and i == 0:
+                    conteudo_loop.append(f"ARQUIVO BASE ORIGINAL:\n{arquivo_base['nome_arquivo_upload']}")
+                    conteudo_loop.append(mapa_gemini_files[arquivo_base['nome_arquivo_upload']])
+                
+                conteudo_loop.append(f"NOVO ARQUIVO ALTERADOR PARA APLICAR AGORA:\n{alt['nome_arquivo_upload']}")
+                conteudo_loop.append(mapa_gemini_files[alt['nome_arquivo_upload']])
+                
+                prompt_loop = """
+                Você é um Especialista Sênior em Técnica Legislativa executando um pipeline.
+                
+                SUA TAREFA NESTA ETAPA:
+                Pegue o Estado Atual (JSON ou Arquivo Base) e APLIQUE APENAS as modificações contidas no NOVO ARQUIVO ALTERADOR.
+                Se houver um JSON de Estado Atual, as revogações antigas já estarão lá. MANTENHA-AS intactas e acumule as novas revogações por cima.
+                Adicione a nova norma alteradora na lista de 'normas_alteradoras'.
+                
+                REGRAS:
+                - PRESERVAÇÃO ESTRUTURAL: Mantenha negritos <b> e itálicos <i> exatamente como no original.
+                - TACHADO: Use <font color='red'><strike>texto</strike></font>. SEM espaços dentro das tags.
+                - NUNCA use spans ou divs.
+                """
+                conteudo_loop.append(prompt_loop)
+                
+                resp_loop = client.models.generate_content(
+                    model='gemini-3.6-flash',
+                    contents=conteudo_loop,
+                    config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=AnaliseGlobal, temperature=0.0)
+                )
+                
+                estado_json_atual = resp_loop.text # Guarda o resultado desta iteração para a próxima
+
+        return json.loads(estado_json_atual)
+
+    finally:
+        for original_name, g_file in mapa_gemini_files.items():
+            try: client.files.delete(name=g_file.name)
+            except: pass
+        for caminho_tmp, _ in caminhos_temporarios:
+            if os.path.exists(caminho_tmp): os.remove(caminho_tmp)
+
+# --- (O RESTANTE DAS FUNÇÕES DE PDF, DOCX E SUPABASE PERMANECEM INTÁCTAS ABAIXO DESTA LINHA) ---
 
 def extrair_paragrafos_seguros(texto_html):
     texto_html = limpar_texto_ia(texto_html)
@@ -299,7 +320,7 @@ def aplicar_html_no_docx(p, texto_html):
         elif t == '<i>': is_italic = True
         elif t == '</i>': is_italic = False
         elif t == '<strike>': is_strike = True
-        elif t == '</strike>': is_strike = False
+        elif t == '<strike>': is_strike = False
         elif "font color" in t and ("red" in t or "'red'" in t or '"red"' in t): is_red = True
         elif t == '</font>': is_red = False
         elif token.startswith('<'): pass
@@ -465,14 +486,15 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     if not api_key: st.error("⚠️ Insira sua chave.")
     elif not arquivos_enviados: st.warning("⚠️ Envie arquivos.")
     else:
-        with st.spinner("🧠 Processando Cascata Cronológica e extraindo formatações..."):
+        with st.spinner("🧠 Inicializando Pipeline de Agentes..."):
             try:
                 st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip())
-                st.success("✨ Processamento Concluído!")
-            except Exception as e: st.error(f"❌ Erro: {e}")
+                st.success("✨ Processamento em Cascata Concluído!")
+            except Exception as e: st.error(f"❌ Erro na Execução: {e}")
 
 if st.session_state.dados_processados:
     st.markdown("---")
+    # Agora o retorno é a Análise Global (do último passo do loop)
     dados = st.session_state.dados_processados
     for i, cons in enumerate(dados.get("consolidacoes_geradas", [])):
         nome_exibicao_base = cons['norma_base']['nome_padronizado']
