@@ -45,7 +45,7 @@ st.markdown("""
 </style>
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
-    <p>Motor Híbrido Blindado (Correção de Preâmbulo + Cascata Completa de Múltiplas Portarias)</p>
+    <p>Motor Híbrido com OCR Estrutural e Preservação de Layout Original</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -77,7 +77,7 @@ def render_botao_historico():
 
 col_info, col_nav = st.columns([2, 1])
 with col_info:
-    st.info("💡 **Análise Rigorosa Ativada:** Preservação completa do preâmbulo e processamento forçado de todas as portarias alteradoras.")
+    st.info("💡 **Leitura OCR Estrutural Ativada:** Preservação milimétrica da disposição de textos, ementas e preâmbulos.")
 with col_nav:
     render_botao_historico()
 
@@ -142,7 +142,7 @@ def converter_para_iso(data_str):
     except:
         return None
 
-# ----------------- EXTRAÇÃO DETERMINÍSTICA DE PDF -----------------
+# ----------------- EXTRAÇÃO DETERMINÍSTICA COM LAYOUT PRESERVADO (ESTILO OCR) -----------------
 def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
     if nome_arquivo.lower().endswith(".docx"):
         return f"ARQUIVO DOCX: {nome_arquivo}"
@@ -150,23 +150,27 @@ def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         html_text = f"CONTEÚDO DO ARQUIVO {nome_arquivo}:\n\n"
-        for page in doc:
-            blocks = page.get_text("dict").get("blocks", [])
+        for page_num, page in enumerate(doc):
+            html_text += f"--- PÁGINA {page_num + 1} ---\n"
+            # Utiliza o modo block ordenado para respeitar rigorosamente a geometria visual original
+            blocks = page.get_text("dict", sort=True).get("blocks", [])
             for b in blocks:
-                if b.get('type') == 0:
+                if b.get('type') == 0:  # Bloco de texto
                     for l in b.get("lines", []):
                         line_text = ""
                         for s in l.get("spans", []):
                             texto = s.get("text", "")
-                            if not texto.strip(): continue
+                            if not texto: continue
                             flags = s.get("flags", 0)
                             is_bold = flags & 2**4
                             is_italic = flags & 2**1
                             
                             if is_bold: texto = f"<b>{texto}</b>"
                             if is_italic: texto = f"<i>{texto}</i>"
-                            line_text += texto + " "
-                        html_text += line_text.strip() + "<br/>\n"
+                            line_text += texto
+                        if line_text.strip():
+                            html_text += line_text + "<br/>\n"
+                    html_text += "<br/>\n"  # Garante espaçamento limpo entre parágrafos
         return html_text
     except Exception as e:
         return f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"
@@ -206,7 +210,7 @@ class Consolidacao(BaseModel):
     cabecalho_complemento: str
     orgaos_emissores: str
     titulo_portaria: str
-    ementa_preambulo: str = Field(description="Ementa e preâmbulo perfeitamente formatados com <br/> entre os blocos (como CONSIDERANDO, O PROCURADOR-GERAL, Resolve) e negritos estritamente preservados.")
+    ementa_preambulo: str = Field(description="Ementa e preâmbulo mantendo o fluxo natural do documento original, separando blocos com <br/> e mantendo negritos intocados.")
     assinatura_nome: str
     assinatura_cargo: str
     dispositivos: List[Dispositivo]
@@ -242,8 +246,8 @@ def analisar_lote_arquivos(arquivos, key):
         textos_extraidos[arq.name] = extrair_texto_com_formatacao(arq.getvalue(), arq.name)
 
     prompt_triagem = f"""
-    Analise a lista de arquivos abaixo. ATENÇÃO: Pode haver uma Norma Base e MÚLTIPLAS portarias alteradoras (ex: duas ou mais portarias modificando a base). 
-    Identifique TODAS as alteradoras e classifique corretamente cada uma, extraindo a data de assinatura no formato YYYY-MM-DD.
+    Analise os textos estruturados abaixo (extraídos preservando o layout original). 
+    Identifique a Norma Base e TODAS as portarias alteradoras presentes no lote. Ordene e classifique cada uma, extraindo a data de assinatura no formato YYYY-MM-DD.
     TEXTOS: {" | ".join([f"[{k}]" for k in textos_extraidos.keys()])}
     """
     
@@ -256,7 +260,6 @@ def analisar_lote_arquivos(arquivos, key):
     triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
     arquivo_base = next((a for a in triagem_dados if a['tipo'] == 'Base'), None)
     arquivos_alteradores = [a for a in triagem_dados if a['tipo'] == 'Alteradora']
-    # Ordena as alteradoras cronologicamente da mais antiga para a mais nova
     arquivos_alteradores.sort(key=lambda x: x['data_oficial_iso'])
     
     if not arquivo_base and not arquivos_alteradores:
@@ -271,18 +274,16 @@ def analisar_lote_arquivos(arquivos, key):
                 estado_json_atual = json.dumps(res_bd.data[0]['documento_consolidado_json'])
         except: pass
 
-    # Se não houver alteradoras, processa apenas a base
     if not arquivos_alteradores:
         conteudo_loop = [f"Texto Base:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}"]
         resp_loop = executar_com_fallback(
             client=client,
-            contents=conteudo_loop + ["Gere o JSON consolidado preservando rigidamente a formatação da ementa, preâmbulo e tags <b> e <br/>."],
+            contents=conteudo_loop + ["Gere o JSON consolidado preservando rigidamente o layout, ementa, preâmbulo e tags <b> e <br/>."],
             response_schema=AnaliseGlobal
         )
         return json.loads(resp_loop.text)
     
     else:
-        # Loop obrigatório por CADA portaria alteradora identificada na triagem
         for i, alt in enumerate(arquivos_alteradores):
             conteudo_loop = []
             if estado_json_atual:
@@ -290,7 +291,6 @@ def analisar_lote_arquivos(arquivos, key):
             elif arquivo_base and i == 0:
                 conteudo_loop.append(f"DOCUMENTO BASE ORIGINAL:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}")
             
-            # Adiciona especificamente a portaria da vez
             nome_alt_atual = alt['nome_arquivo_upload']
             conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({nome_alt_atual}):\n{textos_extraidos[nome_alt_atual]}")
             
@@ -298,9 +298,9 @@ def analisar_lote_arquivos(arquivos, key):
             Você está executando o passo {i+1} de {len(arquivos_alteradores)} no pipeline de consolidação em cascata.
             Pegue o Estado Atual do Documento e aplique cirurgicamente as modificações contidas nesta portaria alteradora.
             
-            REGRAS OBRIGATÓRIAS DE LEIAUTE E FORMATAÇÃO:
-            1. PREÂMBULO E EMENTA: Mantenha espaçamentos limpos usando estritamente a tag `<br/>` entre os considerandos. Garanta que termos como <b>CONSIDERANDO...</b>, <b>O PROCURADOR-GERAL DE JUSTIÇA MILITAR...</b> e <b>Resolve:</b> fiquem devidamente em negrito estrutural.
-            2. NUNCA ignore portarias: Se esta é a alteradora {i+1}, certifique-se de processar todas as suas diretrizes de alteração ou revogação acumulando-as sobre o texto anterior.
+            REGRAS OBRIGATÓRIAS DE LEIAUTE E FORMATAÇÃO (ESTILO OCR):
+            1. PREÂMBULO E EMENTA: Mantenha o fluxo exato e limpo do texto original, separando os blocos (ementa, considerandos, 'Resolve:') com a tag `<br/>`. Preserve todos os negritos originais encontrados no topo do documento (ex: nomes de órgãos, ementas, etc).
+            2. CASCATA COMPLETA: Processe integralmente esta portaria alteradora {i+1}, acumulando as revogações e alterações sobre o texto anterior sem omitir nenhuma diretriz.
             3. Use `<font color='red'><strike>texto revogado</strike></font>` para revogações e preserve todas as tags <b> e <i>.
             """
             conteudo_loop.append(prompt_loop)
@@ -538,7 +538,7 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     elif not arquivos_enviados: 
         st.warning("⚠️ Envie os arquivos normativos primeiro.")
     else:
-        with st.spinner("⚡ Executando Pipeline com Varredura Total de Portarias..."):
+        with st.spinner("⚡ Executando OCR Estrutural e Varredura Completa de Múltiplas Portarias..."):
             try:
                 st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip())
                 st.success("✨ Processamento Concluído com Sucesso!")
