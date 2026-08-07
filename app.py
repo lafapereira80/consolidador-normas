@@ -22,8 +22,56 @@ import docx
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-# Configuração da página web
-st.set_page_config(page_title="Consolidador Normativo", layout="wide")
+# ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
+st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide")
+
+# ----------------- LAYOUT "SURPRESA" (CSS CUSTOMIZADO) -----------------
+st.markdown("""
+<style>
+    .main-header {
+        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+        padding: 30px 20px;
+        border-radius: 12px;
+        color: white;
+        text-align: center;
+        box-shadow: 0 8px 16px rgba(0,0,0,0.15);
+        margin-bottom: 25px;
+    }
+    .main-header h1 {
+        color: #00FF87;
+        font-weight: 800;
+        font-size: 2.8rem;
+        margin-bottom: 10px;
+    }
+    .main-header p {
+        font-size: 1.2rem;
+        color: #f1f1f1;
+        margin-bottom: 0;
+    }
+    .btn-html-fallback {
+        display: block;
+        text-align: center;
+        background-color: #ff4b4b;
+        color: white !important;
+        padding: 0.6rem 1rem;
+        border-radius: 0.5rem;
+        text-decoration: none;
+        font-weight: bold;
+        font-family: sans-serif;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        transition: 0.3s;
+    }
+    .btn-html-fallback:hover {
+        background-color: #ff3333;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+    }
+</style>
+
+<div class="main-header">
+    <h1>⚖️ Autopilot Normativo</h1>
+    <p>Consolidação Inteligente e Gestão de Portarias com IA</p>
+</div>
+""", unsafe_allow_html=True)
 
 # ----------------- CONEXÃO COM SUPABASE -----------------
 @st.cache_resource
@@ -37,36 +85,37 @@ def init_supabase() -> Optional[Client]:
 
 supabase = init_supabase()
 
-# ----------------- CONFIGURAÇÃO DA API GEMINI -----------------
+# ----------------- NAVEGAÇÃO E CONFIGURAÇÕES -----------------
+col_info, col_nav = st.columns([2, 1])
+
+with col_info:
+    st.info("💡 **Como usar:** Arraste seus arquivos (Base e Alteradoras) logo abaixo. O sistema cruzará os dados automaticamente.")
+
+with col_nav:
+    # Sistema triplo de segurança para garantir o link da página
+    try:
+        st.page_link("pages/1_Historico.py", label="🗄️ Acessar Banco de Dados", icon="➡️", use_container_width=True)
+    except KeyError:
+        try:
+            st.page_link("pages/1_historico.py", label="🗄️ Acessar Banco de Dados", icon="➡️", use_container_width=True)
+        except KeyError:
+            # Fallback em HTML puro caso o roteador do Streamlit não ache a pasta
+            st.markdown('<a href="1_Historico" class="btn-html-fallback" target="_self">🗄️ Acessar Banco de Dados</a>', unsafe_allow_html=True)
+
+st.markdown("---")
+
+# Configuração da API Key Oculta no Expander
 api_key = None
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
 except:
-    with st.sidebar:
-        st.header("Configuração de IA")
-        api_key = st.text_input("Chave da API do Google GenAI", type="password")
-        st.markdown("[Obtenha sua chave gratuita no Google AI Studio](https://aistudio.google.com/)")
+    with st.expander("⚙️ Configurações do Sistema (Chave API)", expanded=True):
+        st.markdown("Para o sistema funcionar, insira sua chave da API do Google Gemini abaixo:")
+        api_key = st.text_input("Chave da API", type="password", placeholder="Cole sua chave AI Studio aqui...")
 
-# ----------------- CABEÇALHO E NAVEGAÇÃO -----------------
-col1, col2 = st.columns([3, 1])
-with col1:
-    st.title("⚖️ Sistema Inteligente de Consolidação Normativa")
-with col2:
-    st.write("") # Espaçamento
-    
-    # Bloco de segurança para evitar que o app trave por erro de maiúscula/minúscula no arquivo
-    try:
-        st.page_link("pages/1_Historico.py", label="🗄️ Acessar Histórico e Gestão", icon="➡️")
-    except KeyError:
-        try:
-            st.page_link("pages/1_historico.py", label="🗄️ Acessar Histórico e Gestão", icon="➡️")
-        except KeyError:
-            st.warning("👈 Acesse o Histórico no menu lateral.")
-
-st.markdown("Faça o upload de **quantos arquivos normativos quiser**. A Inteligência Artificial fará o cruzamento automático, descobrirá as relações e permitirá salvar o histórico diretamente no Supabase.")
-st.markdown("---")
-    
-arquivos_enviados = st.file_uploader("📥 Arraste todos os documentos de uma vez (PDF ou DOCX)", type=["pdf", "docx"], accept_multiple_files=True, key="uploader_lote")
+# ----------------- ÁREA DE UPLOAD E PROCESSAMENTO -----------------
+st.markdown("### 📥 Upload de Arquivos Normativos")
+arquivos_enviados = st.file_uploader("Arraste todos os documentos de uma vez (PDF ou DOCX)", type=["pdf", "docx"], accept_multiple_files=True, key="uploader_lote")
 
 # Estruturas Pydantic
 class Dispositivo(BaseModel):
@@ -479,9 +528,11 @@ def salvar_no_supabase(cons):
 if "dados_processados" not in st.session_state:
     st.session_state.dados_processados = None
 
+st.markdown("<br>", unsafe_allow_html=True)
+
 if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_width=True):
     if not api_key:
-        st.error("⚠️ Insira sua chave da API do Google GenAI no menu lateral.")
+        st.error("⚠️ Insira sua chave da API do Google GenAI em 'Configurações do Sistema'.")
     elif not arquivos_enviados or len(arquivos_enviados) < 1:
         st.warning("⚠️ Envie pelo menos um arquivo normativo.")
     else:
