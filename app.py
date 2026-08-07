@@ -197,7 +197,7 @@ def analisar_lote_arquivos(arquivos, key):
         1. Identifique pares e extraia todos os metadados (tipo, número, orgao, data formato ISO, nome padronizado real).
         2. ATENÇÃO PARA O SEI: Se a data no cabeçalho for genérica '(data da assinatura)', busque ativamente no rodapé do documento pela assinatura eletrônica.
         3. Se houver 'JSON DA NORMA BASE' no prompt, APLIQUE AS ALTERAÇÕES EM CIMA DELE (Memória Cumulativa).
-        4. Tache revogações em vermelho. Preserve formatação <b> e <i>.
+        4. Tache revogações em vermelho. Use APENAS <font color='red'><strike> para tachado e <b> ou <i> para formatação. NUNCA use tags <span>, <div>, ou estilos CSS, pois eles quebram o gerador de PDF.
         """
         conteudos_prompt.append(prompt_comandos)
 
@@ -215,9 +215,15 @@ def analisar_lote_arquivos(arquivos, key):
         for caminho_tmp, _ in caminhos_temporarios:
             if os.path.exists(caminho_tmp): os.remove(caminho_tmp)
 
-# --- FUNÇÕES DE PDF/DOCX (MANTIDAS EXATAMENTE IGUAIS) ---
+# --- FUNÇÕES DE PDF/DOCX (AJUSTADAS CONTRA O ERRO DO SPAN) ---
 def extrair_paragrafos_seguros(texto_html):
-    texto_html = (texto_html or "").replace("</font></strike>", "</strike></font>").replace("</b></i>", "</i></b>").replace('<em>', '<i>').replace('</em>', '</i>').replace('<strong>', '<b>').replace('</strong>', '</b>').replace('<s>', '<strike>').replace('</s>', '</strike>')
+    texto_html = texto_html or ""
+    # Blindagem 1: Arrancar spans, divs, p que a IA possa gerar indevidamente
+    texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE)
+    
+    # Blindagem 2: Correção de fechamentos cruzados
+    texto_html = texto_html.replace("</font></strike>", "</strike></font>").replace("</b></i>", "</i></b>").replace('<em>', '<i>').replace('</em>', '</i>').replace('<strong>', '<b>').replace('</strong>', '</b>').replace('<s>', '<strike>').replace('</s>', '</strike>')
+    
     tokens = re.split(r'(<[^>]+>)', texto_html)
     paragrafos, pilha, texto_atual = [], [], ""
     def fechar_todas(p_tags):
@@ -265,6 +271,8 @@ def renderizar_paragrafos_pdf(story, texto_html, estilo):
 
 def aplicar_html_no_docx(p, texto_html):
     texto_html = (texto_html or "").replace("&nbsp;", "\xa0")
+    # Limpa span para o docx também
+    texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE)
     tokens = re.split(r'(<[^>]+>)', texto_html)
     is_bold = is_strike = is_red = is_italic = False
     for token in tokens:
