@@ -9,7 +9,7 @@ import io
 import json
 import os
 import re
-import time
+from datetime import datetime
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
@@ -44,7 +44,7 @@ st.markdown("""
 </style>
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
-    <p>Motor Híbrido: Extração Determinística + IA em Cascata Controlada</p>
+    <p>Motor Híbrido com Fallback Automático (Gemini 3.6 Flash ➔ 3.5 Flash)</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -76,7 +76,7 @@ def render_botao_historico():
 
 col_info, col_nav = st.columns([2, 1])
 with col_info:
-    st.info("💡 **Garantia de Fidelidade:** O Python preservará os negritos nativos e a IA orquestrará a cascata passo a passo.")
+    st.info("💡 **Resiliência Ativada:** O sistema alterna automaticamente para o modelo secundário se houver esgotamento de cota.")
 with col_nav:
     render_botao_historico()
 
@@ -92,10 +92,56 @@ except:
 st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF ou DOCX)", type=["pdf", "docx"], accept_multiple_files=True, key="uploader_lote")
 
-# ----------------- EXTRAÇÃO DETERMINÍSTICA DE PDF (O SEGREDO DOS NEGRITOS) -----------------
+# ----------------- FUNÇÃO INTELIGENTE DE FALLBACK (3.6 ➔ 3.5) -----------------
+def executar_com_fallback(client, contents, response_schema):
+    """Tenta executar o 3.6-flash. Se der RESOURCE_EXHAUSTED, muda silenciosamente para o 3.5-flash."""
+    config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=response_schema, temperature=0.0)
+    
+    try:
+        # Tenta o modelo padrão principal
+        return client.models.generate_content(
+            model='gemini-3.6-flash',
+            contents=contents,
+            config=config
+        )
+    except Exception as e:
+        mensagem_erro = str(e)
+        if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
+            # Alterna automaticamente sem exibir erro na tela
+            st.toast("⚡ Cota do 3.6 esgotada. Mudando para o Gemini 3.5 Flash...", icon="🔄")
+            try:
+                return client.models.generate_content(
+                    model='gemini-3.5-flash',
+                    contents=contents,
+                    config=config
+                )
+            except Exception as e_secundario:
+                # Se o 3.5 também falhar por cota, propaga o erro final
+                raise Exception(f"Erro crítico: Ambos os modelos esgotaram a cota (RESOURCE_EXHAUSTED). Detalhes: {e_secundario}")
+        else:
+            # Se for outro tipo de erro, repassa imediatamente
+            raise e
+
+# ----------------- FUNÇÃO DE CONVERSÃO DE DATA PARA SQL (YYYY-MM-DD) -----------------
+def converter_para_iso(data_str):
+    if not data_str: return None
+    data_str = data_str.strip()
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', data_str):
+        return data_str
+    match_br = re.match(r'^(\d{2})/(\d{2})/(\d{4})$', data_str)
+    if match_br:
+        d, m, a = match_br.groups()
+        return f"{a}-{m}-{d}"
+    try:
+        dt = datetime.strptime(data_str, "%d/%m/%Y")
+        return dt.strftime("%Y-%m-%d")
+    except:
+        return None
+
+# ----------------- EXTRAÇÃO DETERMINÍSTICA DE PDF -----------------
 def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
     if nome_arquivo.lower().endswith(".docx"):
-        return f"ARQUIVO DOCX: {nome_arquivo} (Apenas IA aplicável no momento)"
+        return f"ARQUIVO DOCX: {nome_arquivo}"
     
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -103,15 +149,13 @@ def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
         for page in doc:
             blocks = page.get_text("dict").get("blocks", [])
             for b in blocks:
-                if b.get('type') == 0:  # Bloco de texto
+                if b.get('type') == 0:
                     for l in b.get("lines", []):
                         line_text = ""
                         for s in l.get("spans", []):
                             texto = s.get("text", "")
                             if not texto.strip(): continue
                             flags = s.get("flags", 0)
-                            
-                            # Bit 4 é Negrito, Bit 1 é Itálico no PyMuPDF
                             is_bold = flags & 2**4
                             is_italic = flags & 2**1
                             
@@ -127,22 +171,22 @@ def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
 class ArquivoClassificado(BaseModel):
     nome_arquivo_upload: str
     tipo: str = Field(description="'Base' ou 'Alteradora'")
-    data_oficial_iso: str = Field(description="Data YYYY-MM-DD para ordenação.")
+    data_oficial_iso: str = Field(description="Data formatada estritamente em YYYY-MM-DD.")
 
 class TriagemDocumentos(BaseModel):
     arquivos: List[ArquivoClassificado]
 
 class MetadadosNorma(BaseModel):
-    tipo_documento: str = Field(description="Ex: 'Portaria', 'Lei'")
+    tipo_documento: str
     numero_documento: str
     orgao_emissor: str
-    data_assinatura: str
+    data_assinatura: str = Field(description="Data estritamente no formato YYYY-MM-DD.")
     nome_padronizado: str
 
 class Dispositivo(BaseModel):
     tipo: str
-    texto_principal_alterada: str = Field(description="Mantenha as tags <b> e <i> recebidas. Adicione <font color='red'><strike> para revogações.")
-    texto_principal_consolidada: str = Field(description="Texto limpo da versão consolidada.")
+    texto_principal_alterada: str = Field(description="Mantenha <b> e <i>. Use <br/> para separar parágrafos e incisos. NUNCA use '\\n'.")
+    texto_principal_consolidada: str = Field(description="Texto limpo em vigor. Mantenha <b> e <i>. Use <br/> para quebras.")
     is_tabela: bool
     tabela_alterada: Optional[List[List[str]]] = None
     tabela_consolidada: Optional[List[List[str]]] = None
@@ -158,7 +202,7 @@ class Consolidacao(BaseModel):
     cabecalho_complemento: str
     orgaos_emissores: str
     titulo_portaria: str
-    ementa_preambulo: str
+    ementa_preambulo: str = Field(description="Preâmbulo com negritos estruturais (CONSIDERANDO, O PROCURADOR-GERAL, etc) em <b> e separados por <br/>.")
     assinatura_nome: str
     assinatura_cargo: str
     dispositivos: List[Dispositivo]
@@ -167,11 +211,11 @@ class AnaliseGlobal(BaseModel):
     consolidacoes_geradas: List[Consolidacao]
     arquivos_nao_alterados: List[str]
 
-# ----------------- FUNÇÕES DE LIMPEZA -----------------
+# ----------------- FUNÇÃO DE LIMPEZA BLINDADA ANTI-\N -----------------
 def limpar_texto_ia(texto):
     if not texto: return ""
+    texto = texto.replace('\\n', ' ').replace('\n', ' ')
     texto = texto.replace('<br>', '<br/>').replace('<br >', '<br/>')
-    texto = texto.replace('\n', ' ')
     texto = re.sub(r' {2,}', ' ', texto).strip()
     return texto
 
@@ -185,32 +229,24 @@ def injetar_nota_remissiva(texto, nota):
             return f"<font color='red'>{n}</font>"
     return texto
 
-# ----------------- PIPELINE DE AGENTES CONTROLADO -----------------
+# ----------------- PIPELINE DE EXECUÇÃO COM FALLBACK -----------------
 def analisar_lote_arquivos(arquivos, key):
     client = genai.Client(api_key=key)
     
-    # 1. Extração Determinística Local (Garante Formatação 100%)
-    st.toast("🔍 Lendo formatação nativa dos PDFs...", icon="⚙️")
     textos_extraidos = {}
     for arq in arquivos:
-        texto_html = extrair_texto_com_formatacao(arq.getvalue(), arq.name)
-        textos_extraidos[arq.name] = texto_html
+        textos_extraidos[arq.name] = extrair_texto_com_formatacao(arq.getvalue(), arq.name)
 
-    # 2. Agente 1: Triagem
-    st.toast("🕵️ Agente de Triagem: Organizando linha do tempo...", icon="⏳")
     prompt_triagem = f"""
-    Abaixo estão os textos extraídos dos arquivos enviados.
-    Identifique quem é a Norma Base e quem são as Alteradoras. 
-    Extraia a data de assinatura (leia os rodapés se necessário) para formatar no padrão YYYY-MM-DD.
-    
-    TEXTOS:
-    {" | ".join([f"[{k}]" for k in textos_extraidos.keys()])}
+    Identifique a Norma Base e as Alteradoras dos textos abaixo. Extraia a data de assinatura estritamente no formato YYYY-MM-DD.
+    TEXTOS: {" | ".join([f"[{k}]" for k in textos_extraidos.keys()])}
     """
     
-    resp_triagem = client.models.generate_content(
-        model='gemini-3.5-flash',
+    # Chamada com fallback automático para a triagem
+    resp_triagem = executar_com_fallback(
+        client=client,
         contents=[prompt_triagem] + list(textos_extraidos.values()),
-        config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=TriagemDocumentos, temperature=0.0)
+        response_schema=TriagemDocumentos
     )
     
     triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
@@ -219,43 +255,30 @@ def analisar_lote_arquivos(arquivos, key):
     arquivos_alteradores.sort(key=lambda x: x['data_oficial_iso'])
     
     if not arquivo_base and not arquivos_alteradores:
-        raise ValueError("Não foi possível identificar a relação normativa entre os documentos.")
+        raise ValueError("Não foi possível identificar a relação normativa.")
 
-    # 3. Resgate da Memória Cumulativa
     estado_json_atual = None
     if arquivo_base and supabase:
         try:
-            # Busca nome base hipotético
             nome_hipotetico = arquivo_base.get('nome_arquivo_upload', '')
             res_bd = supabase.table("portarias_base").select("documento_consolidado_json").ilike("arquivo_original_identificado", f"%{nome_hipotetico}%").execute()
             if res_bd.data and res_bd.data[0].get("documento_consolidado_json"):
                 estado_json_atual = json.dumps(res_bd.data[0]['documento_consolidado_json'])
-                st.toast(f"🧠 Memória carregada do Supabase!", icon="✅")
         except: pass
 
-    # 4. Agente 2: Loop de Consolidação Cascata
     if not arquivos_alteradores:
-        st.toast("⚙️ Consolidando Norma Base Única...", icon="⏳")
         conteudo_loop = [f"Texto Base:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}"]
-        prompt_final = "Gere o JSON consolidado. Mantenha TODAS as tags <b> e <br/> extraídas do texto."
-        resp_loop = client.models.generate_content(
-            model='gemini-3.5-flash',
-            contents=conteudo_loop + [prompt_final],
-            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=AnaliseGlobal, temperature=0.0)
+        
+        # Chamada com fallback automático para base única
+        resp_loop = executar_com_fallback(
+            client=client,
+            contents=conteudo_loop + ["Gere o JSON consolidado. Garanta <b> nos termos preambulares (CONSIDERANDO, O PROCURADOR-GERAL, Resolve) e <br/> nas quebras."],
+            response_schema=AnaliseGlobal
         )
         return json.loads(resp_loop.text)
     
     else:
-        # Loop Passo a Passo para não esquecer arquivos
         for i, alt in enumerate(arquivos_alteradores):
-            if i > 0:
-                # Controle de Rotação de API (Evita Erro 429)
-                msg_pausa = st.info(f"⏳ Pausa estratégica de 15s para evitar bloqueio da API do Google (Erro 429). Preparando alteração {i+1} de {len(arquivos_alteradores)}...")
-                time.sleep(15)
-                msg_pausa.empty()
-            
-            st.toast(f"⚙️ Aplicando alteração {i+1} de {len(arquivos_alteradores)}...", icon="⏳")
-            
             conteudo_loop = []
             if estado_json_atual:
                 conteudo_loop.append(f"ESTADO ATUAL DO DOCUMENTO (JSON):\n{estado_json_atual}")
@@ -265,36 +288,29 @@ def analisar_lote_arquivos(arquivos, key):
             conteudo_loop.append(f"ARQUIVO ALTERADOR PARA APLICAR AGORA:\n{textos_extraidos[alt['nome_arquivo_upload']]}")
             
             prompt_loop = """
-            Você é um Especialista Sênior em Técnica Legislativa em um pipeline passo a passo.
-            
-            TAREFA: Pegue o Estado Atual do Documento e aplique APENAS as modificações contidas no ARQUIVO ALTERADOR.
-            Se houver um JSON de Estado Atual, mantenha as revogações antigas e ACUMULE as novas por cima.
-            Adicione esta norma alteradora na lista de 'normas_alteradoras'.
-            
-            PRESERVAÇÃO ESTRUTURAL OBRIGATÓRIA:
-            O texto que eu te enviei já contém tags <b> (negrito) e <i> (itálico). VOCÊ É OBRIGADO A MANTER ESSAS TAGS EXATAMENTE ONDE ELAS ESTÃO no JSON de saída.
-            Use <font color='red'><strike>texto</strike></font> para revogar.
+            Aplique as modificações contidas no ARQUIVO ALTERADOR sobre o Estado Atual do Documento de forma acumulativa.
+            REGRAS CRÍTICAS DE FORMATAÇÃO:
+            - NUNCA emita caracteres '\\n' literais no texto. Use estritamente a tag HTML `<br/>` para quebrar linhas e parágrafos.
+            - Garanta que termos chaves no preâmbulo como <b>CONSIDERANDO...</b>, <b>O PROCURADOR-GERAL...</b> e <b>Resolve:</b> estejam devidamente em negrito.
+            - Use <font color='red'><strike>texto</strike></font> para revogações.
             """
             conteudo_loop.append(prompt_loop)
             
-            resp_loop = client.models.generate_content(
-                model='gemini-3.5-flash',
+            # Chamada com fallback automático para cada alteração na cascata
+            resp_loop = executar_com_fallback(
+                client=client,
                 contents=conteudo_loop,
-                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=AnaliseGlobal, temperature=0.0)
+                response_schema=AnaliseGlobal
             )
             estado_json_atual = resp_loop.text 
 
-        return json.loads(estado_json_atual)
+        return json.loads(resp_loop.text)
 
-# --- FUNÇÕES DE RENDERIZAÇÃO BLINDADAS ---
+# --- FUNÇÕES DE RENDERIZAÇÃO PDF E DOCX ---
 def extrair_paragrafos_seguros(texto_html):
     texto_html = limpar_texto_ia(texto_html)
     texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE)
-    texto_html = texto_html.replace("</font></strike>", "</strike></font>")
-    texto_html = texto_html.replace("</b></i>", "</i></b>")
-    texto_html = texto_html.replace('<em>', '<i>').replace('</em>', '</i>')
-    texto_html = texto_html.replace('<strong>', '<b>').replace('</strong>', '</b>')
-    texto_html = texto_html.replace('<s>', '<strike>').replace('</s>', '</strike>')
+    texto_html = texto_html.replace("</font></strike>", "</strike></font>").replace("</b></i>", "</i></b>")
     
     tokens = re.split(r'(<[^>]+>)', texto_html)
     paragrafos, pilha, texto_atual = [], [], ""
@@ -461,20 +477,19 @@ def salvar_no_supabase(cons):
         base = cons['norma_base']
         alteradoras = cons.get('normas_alteradoras', [])
         
+        data_base_iso = converter_para_iso(base.get('data_assinatura'))
+        
         res_busca = supabase.table("portarias_base").select("id").eq("nome_padronizado", base['nome_padronizado']).execute()
         
         if res_busca.data:
             base_id = res_busca.data[0]['id']
             supabase.table("portarias_base").update({"documento_consolidado_json": cons}).eq("id", base_id).execute()
         else:
-            data_ass = base.get('data_assinatura')
-            if not data_ass or data_ass.strip() == "": data_ass = None
-            
             res_ins = supabase.table("portarias_base").insert({
                 "tipo_documento": base['tipo_documento'],
                 "numero_documento": base['numero_documento'],
                 "orgao_emissor": base['orgao_emissor'],
-                "data_assinatura": data_ass,
+                "data_assinatura": data_base_iso,
                 "nome_padronizado": base['nome_padronizado'],
                 "titulo_original": cons.get("titulo_portaria"),
                 "orgaos_emissores": cons.get("orgaos_emissores"),
@@ -488,15 +503,14 @@ def salvar_no_supabase(cons):
             res_alt = supabase.table("portarias_alteradoras").select("id").eq("portaria_base_id", base_id).eq("nome_padronizado", alt['nome_padronizado']).execute()
             
             if not res_alt.data:
-                data_alt = alt.get('data_assinatura')
-                if not data_alt or data_alt.strip() == "": data_alt = None
+                data_alt_iso = converter_para_iso(alt.get('data_assinatura'))
                 
                 supabase.table("portarias_alteradoras").insert({
                     "portaria_base_id": base_id,
                     "tipo_documento": alt['tipo_documento'],
                     "numero_documento": alt['numero_documento'],
                     "orgao_emissor": alt['orgao_emissor'],
-                    "data_assinatura": data_alt,
+                    "data_assinatura": data_alt_iso,
                     "nome_padronizado": alt['nome_padronizado'],
                     "arquivo_nome_original": "Múltiplos Documentos"
                 }).execute()
@@ -516,14 +530,15 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     elif not arquivos_enviados: 
         st.warning("⚠️ Envie os arquivos normativos primeiro.")
     else:
-        with st.spinner("🧠 Executando Pipeline Híbrido (Python + IA)..."):
+        with st.spinner("⚡ Executando Motor Híbrido com Fallback Automático (3.6 ➔ 3.5)..."):
             try:
                 st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip())
                 st.success("✨ Processamento Concluído com Sucesso!")
             except Exception as e:
                 mensagem_erro = str(e)
+                # Só exibe o erro se ambos os modelos falharem por cota
                 if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
-                    st.warning("⏳ Limite de requisições gratuitas da API atingido. Aguarde cerca de 1 minuto antes de tentar novamente.")
+                    st.error("❌ Limite de cota esgotado em ambos os modelos (Gemini 3.6 e Gemini 3.5). Por favor, aguarde alguns instantes antes de tentar novamente.")
                 else:
                     st.error(f"❌ Ocorreu um erro: {mensagem_erro}")
 
