@@ -3,7 +3,15 @@ from utils import analisar_lote_arquivos, gerar_pdf_dinamico, gerar_docx_dinamic
 
 st.set_page_config(page_title="Autopilot Normativo", layout="wide")
 
-st.title("⚖️ Autopilot: Consolidador Normativo")
+# Cabeçalho com o título e o link direto para a página na pasta pages/
+col_titulo, col_link = st.columns([3, 1])
+with col_titulo:
+    st.title("⚖️ Autopilot: Consolidador Normativo")
+with col_link:
+    st.markdown("<br>", unsafe_allow_html=True)
+    # No Streamlit moderno, o caminho para páginas na pasta pages/ usa o nome do arquivo
+    st.page_link("pages/1_Historico.py", label="Ver Histórico", icon="🗄️")
+
 st.markdown("Arraste os arquivos normativos. O sistema cruza os dados com o histórico acumulado do Supabase.")
 st.markdown("---")
 
