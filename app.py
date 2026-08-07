@@ -9,6 +9,7 @@ import io
 import json
 import os
 import re
+import time
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -44,7 +45,7 @@ st.markdown("""
 </style>
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
-    <p>Motor Híbrido com Fallback Automático (Gemini 3.6 Flash ➔ 3.5 Flash)</p>
+    <p>Motor Híbrido com 5 Tentativas Obrigatórias no Gemini 3.6 Flash + Fallback</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -76,7 +77,7 @@ def render_botao_historico():
 
 col_info, col_nav = st.columns([2, 1])
 with col_info:
-    st.info("💡 **Resiliência Ativada:** O sistema alterna automaticamente para o modelo secundário se houver esgotamento de cota.")
+    st.info("💡 **Resiliência Avançada:** O sistema força até 5 tentativas no Gemini 3.6 Flash antes de recorrer ao fallback.")
 with col_nav:
     render_botao_historico()
 
@@ -92,35 +93,42 @@ except:
 st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF ou DOCX)", type=["pdf", "docx"], accept_multiple_files=True, key="uploader_lote")
 
-# ----------------- FUNÇÃO INTELIGENTE DE FALLBACK (3.6 ➔ 3.5) -----------------
+# ----------------- FUNÇÃO INTELIGENTE DE FALLBACK (5 TENTATIVAS NO 3.6 ➔ 3.5) -----------------
 def executar_com_fallback(client, contents, response_schema):
-    """Tenta executar o 3.6-flash. Se der RESOURCE_EXHAUSTED, muda silenciosamente para o 3.5-flash."""
+    """Força 5 tentativas no gemini-3.6-flash. Se todas falharem por RESOURCE_EXHAUSTED, muda para o 3.5-flash."""
     config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=response_schema, temperature=0.0)
     
+    # Etapa 1: Força até 5 tentativas no Gemini 3.6 Flash
+    max_tentativas_36 = 5
+    for tentativa in range(1, max_tentativas_36 + 1):
+        try:
+            return client.models.generate_content(
+                model='gemini-3.6-flash',
+                contents=contents,
+                config=config
+            )
+        except Exception as e:
+            mensagem_erro = str(e)
+            if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
+                if tentativa < max_tentativas_36:
+                    st.toast(f"⚡ Tentativa {tentativa}/{max_tentativas_36} no 3.6 esgotada. Tentando novamente...", icon="⏳")
+                    time.sleep(3) # Pausa curta de respiro entre as tentativas
+                    continue
+                else:
+                    st.toast("⚡ 5 tentativas esgotadas no Gemini 3.6. Alternando para o Gemini 3.5 Flash...", icon="🔄")
+            else:
+                # Se for outro tipo de erro que não seja cota, propaga imediatamente
+                raise e
+
+    # Etapa 2: Se esgotou as 5 tentativas no 3.6, tenta o Gemini 3.5 Flash como retaguarda
     try:
-        # Tenta o modelo padrão principal
         return client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-3.5-flash',
             contents=contents,
             config=config
         )
-    except Exception as e:
-        mensagem_erro = str(e)
-        if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
-            # Alterna automaticamente sem exibir erro na tela
-            st.toast("⚡ Cota do 3.6 esgotada. Mudando para o Gemini 3.5 Flash...", icon="🔄")
-            try:
-                return client.models.generate_content(
-                    model='gemini-3.5-flash',
-                    contents=contents,
-                    config=config
-                )
-            except Exception as e_secundario:
-                # Se o 3.5 também falhar por cota, propaga o erro final
-                raise Exception(f"Erro crítico: Ambos os modelos esgotaram a cota (RESOURCE_EXHAUSTED). Detalhes: {e_secundario}")
-        else:
-            # Se for outro tipo de erro, repassa imediatamente
-            raise e
+    except Exception as e_secundario:
+        raise Exception(f"Erro crítico: O sistema tentou 5 vezes no Gemini 3.6 e falhou no 3.5 por cota (RESOURCE_EXHAUSTED). Detalhes: {e_secundario}")
 
 # ----------------- FUNÇÃO DE CONVERSÃO DE DATA PARA SQL (YYYY-MM-DD) -----------------
 def converter_para_iso(data_str):
@@ -229,7 +237,7 @@ def injetar_nota_remissiva(texto, nota):
             return f"<font color='red'>{n}</font>"
     return texto
 
-# ----------------- PIPELINE DE EXECUÇÃO COM FALLBACK -----------------
+# ----------------- PIPELINE DE EXECUÇÃO -----------------
 def analisar_lote_arquivos(arquivos, key):
     client = genai.Client(api_key=key)
     
@@ -242,7 +250,6 @@ def analisar_lote_arquivos(arquivos, key):
     TEXTOS: {" | ".join([f"[{k}]" for k in textos_extraidos.keys()])}
     """
     
-    # Chamada com fallback automático para a triagem
     resp_triagem = executar_com_fallback(
         client=client,
         contents=[prompt_triagem] + list(textos_extraidos.values()),
@@ -269,7 +276,6 @@ def analisar_lote_arquivos(arquivos, key):
     if not arquivos_alteradores:
         conteudo_loop = [f"Texto Base:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}"]
         
-        # Chamada com fallback automático para base única
         resp_loop = executar_com_fallback(
             client=client,
             contents=conteudo_loop + ["Gere o JSON consolidado. Garanta <b> nos termos preambulares (CONSIDERANDO, O PROCURADOR-GERAL, Resolve) e <br/> nas quebras."],
@@ -296,7 +302,6 @@ def analisar_lote_arquivos(arquivos, key):
             """
             conteudo_loop.append(prompt_loop)
             
-            # Chamada com fallback automático para cada alteração na cascata
             resp_loop = executar_com_fallback(
                 client=client,
                 contents=conteudo_loop,
@@ -530,17 +535,13 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     elif not arquivos_enviados: 
         st.warning("⚠️ Envie os arquivos normativos primeiro.")
     else:
-        with st.spinner("⚡ Executando Motor Híbrido com Fallback Automático (3.6 ➔ 3.5)..."):
+        with st.spinner("⚡ Executando com 5 tentativas obrigatórias no Gemini 3.6 Flash..."):
             try:
                 st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip())
                 st.success("✨ Processamento Concluído com Sucesso!")
             except Exception as e:
                 mensagem_erro = str(e)
-                # Só exibe o erro se ambos os modelos falharem por cota
-                if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
-                    st.error("❌ Limite de cota esgotado em ambos os modelos (Gemini 3.6 e Gemini 3.5). Por favor, aguarde alguns instantes antes de tentar novamente.")
-                else:
-                    st.error(f"❌ Ocorreu um erro: {mensagem_erro}")
+                st.error(f"❌ Ocorreu um erro crítico: {mensagem_erro}")
 
 if st.session_state.dados_processados:
     st.markdown("---")
