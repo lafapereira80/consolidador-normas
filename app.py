@@ -100,20 +100,20 @@ class MetadadosNorma(BaseModel):
 
 class Dispositivo(BaseModel):
     tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', etc.")
-    texto_principal_alterada: str = Field(description="Texto com formatações preservadas e tachado.")
+    texto_principal_alterada: str = Field(description="Texto com <b> e <i> rigorosamente preservados do original. Tache em vermelho com <font color='red'><strike> as revogações.")
     texto_principal_consolidada: str = Field(description="Texto limpo da versão em vigor.")
     is_tabela: bool = Field(description="True se houver tabela.")
     tabela_alterada: Optional[List[List[str]]] = Field(default=None)
     tabela_consolidada: Optional[List[List[str]]] = Field(default=None)
     texto_pos_tabela_alterada: Optional[str] = Field(default=None)
     texto_pos_tabela_consolidada: Optional[str] = Field(default=None)
-    nota_remissiva: Optional[str] = Field(default="", description="A nota remissiva (ex: 'Revogado por...'). NÃO coloque a nota no texto principal, coloque apenas aqui.")
+    nota_remissiva: Optional[str] = Field(default="", description="Ex: 'Alterado por...'. Coloque apenas aqui, NUNCA no texto principal.")
 
 class Consolidacao(BaseModel):
     arquivos_originais_identificados: List[str]
     arquivos_alteradores_identificados: List[str]
     norma_base: MetadadosNorma
-    normas_alteradoras: List[MetadadosNorma] = Field(description="Lista de TODAS as normas que alteraram esta norma base, em ordem cronológica.")
+    normas_alteradoras: List[MetadadosNorma] = Field(description="Lista com TODAS as normas alteradoras processadas.")
     cabecalho_complemento: str
     orgaos_emissores: str
     titulo_portaria: str
@@ -135,11 +135,8 @@ class IdentificadorDeAlvos(BaseModel):
     nomes_padronizados_alvo: List[str] = Field(description="Lista exata de 'nome_padronizado' do banco que estão sendo alterados.")
 
 def limpar_texto_ia(texto):
-    """Limpeza inteligente: troca quebras por <br/> em vez de apagar."""
     if not texto: return ""
-    # Transforma \n explícito ou quebra real em tag de parágrafo HTML
     texto = texto.replace('\\n', '<br/>').replace('\n', '<br/>')
-    # Evita de apagar tags seguidas
     texto = re.sub(r' {2,}', ' ', texto).strip()
     return texto
 
@@ -193,27 +190,35 @@ def analisar_lote_arquivos(arquivos, key):
                         st.toast(f"✅ Histórico carregado para: {alvo_nome}!", icon="🧠")
                 except: pass
 
-        conteudos_prompt = ["Analise as relações normativas e gere a consolidação:"]
+        conteudos_prompt = ["Analise as relações normativas e gere a consolidação OBRIGATORIAMENTE seguindo estas regras:"]
         conteudos_prompt.extend(conteudos_iniciais)
         if textos_historico:
             conteudos_prompt.append("\n\nATENÇÃO - HISTÓRICO ENCONTRADO NO BANCO:")
             conteudos_prompt.extend(textos_historico)
 
         prompt_comandos = """
-        Atue como Especialista Sênior em Técnica Legislativa e crie o documento consolidado.
+        Você é um Especialista Sênior em Técnica Legislativa.
         
-        REGRAS ABSOLUTAS:
-        1. CASCATA: Gere apenas UMA (1) 'Consolidacao' acumulando as alterações cronologicamente se houver múltiplos arquivos alterando a base.
-        2. DATA SEI: Leia o rodapé para descobrir a verdadeira data.
-        3. PRESERVAÇÃO ESTRUTURAL (CRÍTICO): Você DEVE manter a exata estrutura de parágrafos do documento original. Use `<br/>` para separar os parágrafos, incisos e alíneas (nunca use '\\n').
-        4. NEGRITO E ITÁLICO: Respeite rigorosamente e preserve os textos que estão em negrito (use `<b>`) e itálico (use `<i>`).
-        5. TACHADO: Use `<font color='red'><strike>` para revogações. NUNCA coloque espaços soltos dentro ou no final das tags.
-        6. NOTAS REMISSIVAS: Coloque as expressões "(Alterado pela...)" APENAS no campo 'nota_remissiva'.
-        7. NENHUMA TAG <span>!
+        🔥 1. ALGORITMO DE CASCATA CRONOLÓGICA (MÚLTIPLOS ARQUIVOS):
+        Se houver 2 ou mais PDFs alterando a mesma norma base, você DEVE aplicar TODAS as alterações.
+        PASSO A PASSO:
+        - Primeiro, identifique a norma base.
+        - Segundo, identifique a norma alteradora MAIS ANTIGA e aplique as revogações/alterações no texto base.
+        - Terceiro, identifique a norma alteradora MAIS RECENTE e aplique as revogações/alterações SOBRE O TEXTO JÁ MODIFICADO.
+        NUNCA IGNORE UM ARQUIVO. Se recebi 3 arquivos, os 3 devem refletir no JSON final. Preencha 'normas_alteradoras' com TODAS elas.
+        
+        🔥 2. ATENÇÃO EXTREMA À FORMATAÇÃO VISUAL (NEGRITO E ITÁLICO):
+        Você DEVE analisar o aspecto tipográfico dos PDFs. Se uma palavra, título, ou número de artigo estiver destacado em Negrito ou Itálico no documento original, você é OBRIGADO a colocar as tags HTML <b>texto</b> ou <i>texto</i> em volta delas no JSON. A perda de negritos é considerada um erro grave de extração.
+        
+        🔥 3. REGRAS DE TACHADO:
+        Use `<font color='red'><strike>texto revogado</strike></font>`. 
+        NUNCA insira espaços em branco dentro do `<strike>` ou `<b>`.
+        NUNCA use tags `<span>`, `<div>` ou `<p>`. Use `<br/>` para quebras de linha.
+        As notas remissivas vão EXCLUSIVAMENTE na variável `nota_remissiva`.
         """
         conteudos_prompt.append(prompt_comandos)
 
-        st.toast("⚙️ Gerando Textos Consolidados Unificados...", icon="⏳")
+        st.toast("⚙️ Aplicando Cascata Cronológica e resgatando tipografia...", icon="⏳")
         response = client.models.generate_content(
             model='gemini-3.6-flash',
             contents=conteudos_prompt,
@@ -407,7 +412,6 @@ def salvar_no_supabase(cons):
         base = cons['norma_base']
         alteradoras = cons.get('normas_alteradoras', [])
         
-        # 1. Atualiza ou insere a Norma Base
         res_busca = supabase.table("portarias_base").select("id").eq("nome_padronizado", base['nome_padronizado']).execute()
         
         if res_busca.data:
@@ -431,7 +435,6 @@ def salvar_no_supabase(cons):
             }).execute()
             base_id = res_ins.data[0]['id']
             
-        # 2. Registra TODAS as Normas Alteradoras em Cascata
         for alt in alteradoras:
             res_alt = supabase.table("portarias_alteradoras").select("id").eq("portaria_base_id", base_id).eq("nome_padronizado", alt['nome_padronizado']).execute()
             
@@ -462,7 +465,7 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     if not api_key: st.error("⚠️ Insira sua chave.")
     elif not arquivos_enviados: st.warning("⚠️ Envie arquivos.")
     else:
-        with st.spinner("🧠 Processando Cascata Cronológica e lendo assinaturas SEI..."):
+        with st.spinner("🧠 Processando Cascata Cronológica e extraindo formatações..."):
             try:
                 st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip())
                 st.success("✨ Processamento Concluído!")
@@ -473,8 +476,6 @@ if st.session_state.dados_processados:
     dados = st.session_state.dados_processados
     for i, cons in enumerate(dados.get("consolidacoes_geradas", [])):
         nome_exibicao_base = cons['norma_base']['nome_padronizado']
-        
-        # Junta todas as alteradoras processadas nesta cascata
         nomes_alteradoras = [alt['nome_padronizado'] for alt in cons.get('normas_alteradoras', [])]
         nome_exibicao_alt = " e ".join(nomes_alteradoras) if nomes_alteradoras else "Desconhecido"
         
