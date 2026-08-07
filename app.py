@@ -208,7 +208,7 @@ def analisar_lote_arquivos(arquivos, key):
     """
     
     resp_triagem = client.models.generate_content(
-        model='gemini-3.6-flash',
+        model='gemini-3.5-flash',
         contents=[prompt_triagem] + list(textos_extraidos.values()),
         config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=TriagemDocumentos, temperature=0.0)
     )
@@ -239,7 +239,7 @@ def analisar_lote_arquivos(arquivos, key):
         conteudo_loop = [f"Texto Base:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}"]
         prompt_final = "Gere o JSON consolidado. Mantenha TODAS as tags <b> e <br/> extraídas do texto."
         resp_loop = client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-3.5-flash',
             contents=conteudo_loop + [prompt_final],
             config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=AnaliseGlobal, temperature=0.0)
         )
@@ -278,7 +278,7 @@ def analisar_lote_arquivos(arquivos, key):
             conteudo_loop.append(prompt_loop)
             
             resp_loop = client.models.generate_content(
-                model='gemini-3.6-flash',
+                model='gemini-3.5-flash',
                 contents=conteudo_loop,
                 config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=AnaliseGlobal, temperature=0.0)
             )
