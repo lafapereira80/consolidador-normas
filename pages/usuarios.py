@@ -4,7 +4,8 @@ import time
 from supabase import create_client, Client
 from typing import Optional
 
-st.set_page_config(page_title="Gerenciar Usuários", page_icon="👥", layout="wide")
+# Esconde a barra lateral desde o carregamento
+st.set_page_config(page_title="Gerenciar Usuários", page_icon="👥", layout="wide", initial_sidebar_state="collapsed")
 
 # PROTEÇÃO DE ACESSO
 if "autenticado" not in st.session_state or not st.session_state.autenticado:
@@ -12,8 +13,11 @@ if "autenticado" not in st.session_state or not st.session_state.autenticado:
     st.page_link("app.py", label="Ir para a Tela de Login", icon="🔒")
     st.stop()
 
+# BLOQUEIO DO MENU LATERAL E ESTILOS
 st.markdown("""
 <style>
+    [data-testid="stSidebar"] { display: none !important; }
+    [data-testid="collapsedControl"] { display: none !important; }
     .main-header {
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
         padding: 20px 20px;
@@ -29,6 +33,26 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# --- MENU DE NAVEGAÇÃO SUPERIOR FIXO ---
+col_home, col_hist, col_logout, col_vazio = st.columns([1.5, 1.5, 1, 4])
+
+with col_home:
+    st.page_link("app.py", label="Início (Upload)", icon="⬅️")
+
+with col_hist:
+    try:
+        st.page_link("pages/historico.py", label="Histórico", icon="🗄️")
+    except:
+        st.markdown('<a href="historico" target="_top" style="display: block; text-align: center; background-color: #f0f2f6; border: 1px solid #d0d4dc; color: #31333F !important; padding: 0.5rem; border-radius: 0.5rem; text-decoration: none; font-weight: 500;">🗄️ Histórico</a>', unsafe_allow_html=True)
+
+with col_logout:
+    if st.button("Sair", key="btn_sair_usr", type="secondary", use_container_width=True):
+        st.session_state.autenticado = False
+        st.rerun()
+
+st.markdown("---")
+
+# CONEXÃO COM BANCO DE DADOS
 @st.cache_resource
 def init_supabase() -> Optional[Client]:
     try:
@@ -44,14 +68,12 @@ if not supabase:
     st.error("⚠️ Não foi possível conectar ao Supabase.")
     st.stop()
 
-# Função para converter a senha digitada em Criptografia de mão única
 def gerar_hash(senha):
     return hashlib.sha256(senha.encode()).hexdigest()
 
-# Criando abas para organizar a tela
 tab_lista, tab_novo = st.tabs(["📋 Lista de Usuários", "➕ Cadastrar Novo Usuário"])
 
-# --- ABA 1: LISTAGEM, ALTERAÇÃO E EXCLUSÃO ---
+# --- ABA 1: LISTAGEM E EDIÇÃO ---
 with tab_lista:
     st.markdown("### Usuários Cadastrados no Sistema")
     try:
@@ -69,12 +91,10 @@ with tab_lista:
             username = usr['username']
             data_criacao = usr.get('created_at', 'N/A')
             if data_criacao != 'N/A':
-                data_criacao = data_criacao[:10] # Pega apenas a data (YYYY-MM-DD)
+                data_criacao = data_criacao[:10]
 
             with st.expander(f"👤 {username} (Criado em: {data_criacao})"):
                 c1, c2 = st.columns(2)
-
-                # Coluna 1: Alterar Senha
                 with c1:
                     st.markdown("**🔑 Redefinir Senha**")
                     with st.form(key=f"form_senha_{user_id}"):
@@ -89,8 +109,6 @@ with tab_lista:
                                     st.error(f"Erro ao atualizar: {e}")
                             else:
                                 st.warning("A senha não pode ficar em branco.")
-
-                # Coluna 2: Excluir Usuário
                 with c2:
                     st.markdown("**🗑️ Excluir Conta**")
                     if username.lower() == 'admin':
@@ -100,12 +118,12 @@ with tab_lista:
                             try:
                                 supabase.table("usuarios").delete().eq("id", user_id).execute()
                                 st.success(f"Usuário '{username}' apagado permanentemente!")
-                                time.sleep(1.5) # Pausa rápida para exibir a mensagem de sucesso
-                                st.rerun() # Atualiza a página para remover o item da lista
+                                time.sleep(1.5)
+                                st.rerun()
                             except Exception as e:
                                 st.error(f"Erro ao excluir: {e}")
 
-# --- ABA 2: CRIAÇÃO DE NOVOS USUÁRIOS ---
+# --- ABA 2: CRIAÇÃO ---
 with tab_novo:
     st.markdown("### ➕ Criar Nova Conta de Acesso")
     with st.form("form_novo_usuario"):
@@ -127,6 +145,6 @@ with tab_novo:
                 except Exception as e:
                     mensagem_erro = str(e).lower()
                     if "duplicate key" in mensagem_erro or "unique constraint" in mensagem_erro:
-                        st.error(f"❌ O nome de usuário '{novo_login}' já está em uso no banco de dados. Escolha outro nome.")
+                        st.error(f"❌ O nome de usuário '{novo_login}' já está em uso.")
                     else:
                         st.error(f"❌ Ocorreu um erro interno: {e}")
