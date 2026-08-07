@@ -74,7 +74,7 @@ def render_botao_historico():
 
 col_info, col_nav = st.columns([2, 1])
 with col_info:
-    st.info("💡 **Inteligência Ativada:** O sistema fará a consolidação em cascata caso envie múltiplas alterações simultâneas.")
+    st.info("💡 **Inteligência Ativada:** O sistema fará a consolidação em cascata e preservará formatações originais.")
 with col_nav:
     render_botao_historico()
 
@@ -90,7 +90,7 @@ except:
 st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF ou DOCX)", type=["pdf", "docx"], accept_multiple_files=True, key="uploader_lote")
 
-# ----------------- ESTRUTURAS PYDANTIC (NOVA INTELIGÊNCIA CASCATA) -----------------
+# ----------------- ESTRUTURAS PYDANTIC -----------------
 class MetadadosNorma(BaseModel):
     tipo_documento: str = Field(description="Ex: 'Portaria', 'Lei', 'Decreto'")
     numero_documento: str = Field(description="O número. Ex: '158', '137', ou 'S/N'")
@@ -100,7 +100,7 @@ class MetadadosNorma(BaseModel):
 
 class Dispositivo(BaseModel):
     tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', etc.")
-    texto_principal_alterada: str = Field(description="Texto com <b>, <i> e <strike> em vermelho. NUNCA envie '\\n'.")
+    texto_principal_alterada: str = Field(description="Texto com formatações preservadas e tachado.")
     texto_principal_consolidada: str = Field(description="Texto limpo da versão em vigor.")
     is_tabela: bool = Field(description="True se houver tabela.")
     tabela_alterada: Optional[List[List[str]]] = Field(default=None)
@@ -135,10 +135,12 @@ class IdentificadorDeAlvos(BaseModel):
     nomes_padronizados_alvo: List[str] = Field(description="Lista exata de 'nome_padronizado' do banco que estão sendo alterados.")
 
 def limpar_texto_ia(texto):
-    """Limpeza extrema para remover \n literal e lixo da IA"""
+    """Limpeza inteligente: troca quebras por <br/> em vez de apagar."""
     if not texto: return ""
-    texto = texto.replace('\\n', ' ').replace('\n', ' ')
-    texto = re.sub(r'\s+', ' ', texto).strip()
+    # Transforma \n explícito ou quebra real em tag de parágrafo HTML
+    texto = texto.replace('\\n', '<br/>').replace('\n', '<br/>')
+    # Evita de apagar tags seguidas
+    texto = re.sub(r' {2,}', ' ', texto).strip()
     return texto
 
 def analisar_lote_arquivos(arquivos, key):
@@ -201,12 +203,13 @@ def analisar_lote_arquivos(arquivos, key):
         Atue como Especialista Sênior em Técnica Legislativa e crie o documento consolidado.
         
         REGRAS ABSOLUTAS:
-        1. MÚLTIPLAS ALTERAÇÕES (CASCATA): Se os PDFs enviados contiverem DUAS OU MAIS normas que alteram a MESMA norma base, você DEVE gerar apenas UMA (1) 'Consolidacao'. Aplique todas as alterações de forma sequencial (cronológica) no texto, acumulando as revogações e redações sucessivas. Adicione todas as normas alteradoras na lista 'normas_alteradoras'.
-        2. DATA SEI: Leia o rodapé para descobrir a verdadeira data se o cabeçalho tiver "(data de assinatura)".
-        3. ESPAÇAMENTO DO TACHADO: NUNCA coloque espaço em branco dentro das tags <strike> ou <b>. 
-        4. NOTAS REMISSIVAS: Coloque as expressões "(Alterado pela...)" ou "(Revogado pela...)" APENAS no campo 'nota_remissiva'. Não suje o texto principal com elas.
-        5. LIXO LITERAL: Não retorne caracteres literais como '\\n' ou ' ' no texto.
-        6. Se houver 'JSON DA NORMA BASE', atualize-o acumulando as novas mudanças. Use <font color='red'><strike> para revogar. NENHUMA TAG <span>!
+        1. CASCATA: Gere apenas UMA (1) 'Consolidacao' acumulando as alterações cronologicamente se houver múltiplos arquivos alterando a base.
+        2. DATA SEI: Leia o rodapé para descobrir a verdadeira data.
+        3. PRESERVAÇÃO ESTRUTURAL (CRÍTICO): Você DEVE manter a exata estrutura de parágrafos do documento original. Use `<br/>` para separar os parágrafos, incisos e alíneas (nunca use '\\n').
+        4. NEGRITO E ITÁLICO: Respeite rigorosamente e preserve os textos que estão em negrito (use `<b>`) e itálico (use `<i>`).
+        5. TACHADO: Use `<font color='red'><strike>` para revogações. NUNCA coloque espaços soltos dentro ou no final das tags.
+        6. NOTAS REMISSIVAS: Coloque as expressões "(Alterado pela...)" APENAS no campo 'nota_remissiva'.
+        7. NENHUMA TAG <span>!
         """
         conteudos_prompt.append(prompt_comandos)
 
@@ -225,11 +228,9 @@ def analisar_lote_arquivos(arquivos, key):
             if os.path.exists(caminho_tmp): os.remove(caminho_tmp)
 
 def injetar_nota_remissiva(texto, nota):
-    """Injeta a nota garantindo o espaço físico exato e evitando quebra de formatação."""
     if nota and nota.strip():
         n = f"({nota.strip()})" if not nota.strip().startswith("(") else nota.strip()
         if texto:
-            # Remove brs e espaços finais indesejados antes de injetar a nota
             texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
             return f"{texto_limpo} &nbsp;<font color='red'>{n}</font>"
         else:
