@@ -9,6 +9,7 @@ import io
 import json
 import os
 import re
+import time
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -44,7 +45,7 @@ st.markdown("""
 </style>
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
-    <p>Motor Híbrido com Fallback Automático (Gemini 3.6 Flash ➔ 3.5 Flash)</p>
+    <p>Motor Híbrido com OCR Estrutural, Fallback Automático e Editor Web Integrado</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -76,7 +77,7 @@ def render_botao_historico():
 
 col_info, col_nav = st.columns([2, 1])
 with col_info:
-    st.info("💡 **Resiliência Ativada:** O sistema alterna automaticamente para o modelo secundário se houver esgotamento de cota.")
+    st.info("💡 **Fluxo Completo:** Análise Inteligente → Edição Manual via Web → Geração de PDF/DOCX.")
 with col_nav:
     render_botao_historico()
 
@@ -94,33 +95,37 @@ arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF ou DOCX)"
 
 # ----------------- FUNÇÃO INTELIGENTE DE FALLBACK (3.6 ➔ 3.5) -----------------
 def executar_com_fallback(client, contents, response_schema):
-    """Tenta executar o 3.6-flash. Se der RESOURCE_EXHAUSTED, muda silenciosamente para o 3.5-flash."""
+    """Força 5 tentativas no 3.6-flash. Se todas falharem, muda para o 3.5-flash."""
     config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=response_schema, temperature=0.0)
     
+    max_tentativas_36 = 5
+    for tentativa in range(1, max_tentativas_36 + 1):
+        try:
+            return client.models.generate_content(
+                model='gemini-3.6-flash',
+                contents=contents,
+                config=config
+            )
+        except Exception as e:
+            mensagem_erro = str(e)
+            if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
+                if tentativa < max_tentativas_36:
+                    st.toast(f"⚡ Tentativa {tentativa}/{max_tentativas_36} no 3.6 esgotada. Tentando novamente...", icon="⏳")
+                    time.sleep(3)
+                    continue
+                else:
+                    st.toast("⚡ 5 tentativas esgotadas no Gemini 3.6. Alternando para o Gemini 3.5 Flash...", icon="🔄")
+            else:
+                raise e
+
     try:
-        # Tenta o modelo padrão principal
         return client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-3.5-flash',
             contents=contents,
             config=config
         )
-    except Exception as e:
-        mensagem_erro = str(e)
-        if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
-            # Alterna automaticamente sem exibir erro na tela
-            st.toast("⚡ Cota do 3.6 esgotada. Mudando para o Gemini 3.5 Flash...", icon="🔄")
-            try:
-                return client.models.generate_content(
-                    model='gemini-3.5-flash',
-                    contents=contents,
-                    config=config
-                )
-            except Exception as e_secundario:
-                # Se o 3.5 também falhar por cota, propaga o erro final
-                raise Exception(f"Erro crítico: Ambos os modelos esgotaram a cota (RESOURCE_EXHAUSTED). Detalhes: {e_secundario}")
-        else:
-            # Se for outro tipo de erro, repassa imediatamente
-            raise e
+    except Exception as e_secundario:
+        raise Exception(f"Erro crítico: O sistema tentou 5 vezes no Gemini 3.6 e falhou no 3.5 por cota. Detalhes: {e_secundario}")
 
 # ----------------- FUNÇÃO DE CONVERSÃO DE DATA PARA SQL (YYYY-MM-DD) -----------------
 def converter_para_iso(data_str):
@@ -138,7 +143,7 @@ def converter_para_iso(data_str):
     except:
         return None
 
-# ----------------- EXTRAÇÃO DETERMINÍSTICA DE PDF -----------------
+# ----------------- EXTRAÇÃO OCR ESTRUTURAL MILIMÉTRICA -----------------
 def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
     if nome_arquivo.lower().endswith(".docx"):
         return f"ARQUIVO DOCX: {nome_arquivo}"
@@ -146,23 +151,29 @@ def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         html_text = f"CONTEÚDO DO ARQUIVO {nome_arquivo}:\n\n"
-        for page in doc:
-            blocks = page.get_text("dict").get("blocks", [])
+        for page_num, page in enumerate(doc):
+            html_text += f"=== PÁGINA {page_num + 1} ===\n"
+            blocks = page.get_text("dict", sort=True).get("blocks", [])
             for b in blocks:
-                if b.get('type') == 0:
+                if b.get('type') == 0:  
+                    bloco_linhas = ""
                     for l in b.get("lines", []):
-                        line_text = ""
+                        linha_span = ""
                         for s in l.get("spans", []):
                             texto = s.get("text", "")
-                            if not texto.strip(): continue
+                            if not texto: continue
                             flags = s.get("flags", 0)
                             is_bold = flags & 2**4
                             is_italic = flags & 2**1
                             
                             if is_bold: texto = f"<b>{texto}</b>"
                             if is_italic: texto = f"<i>{texto}</i>"
-                            line_text += texto + " "
-                        html_text += line_text.strip() + "<br/>\n"
+                            linha_span += texto
+                        if linha_span.strip():
+                            bloco_linhas += linha_span + " "
+                    if bloco_linhas.strip():
+                        html_text += bloco_linhas.strip() + "<br/>\n"
+            html_text += "<br/>\n"
         return html_text
     except Exception as e:
         return f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"
@@ -190,8 +201,8 @@ class Dispositivo(BaseModel):
     is_tabela: bool
     tabela_alterada: Optional[List[List[str]]] = None
     tabela_consolidada: Optional[List[List[str]]] = None
-    texto_pos_tabela_alterada: Optional[str] = None
-    texto_pos_tabela_consolidada: Optional[str] = None
+    texto_pos_tabela_alterada: Optional[List[List[str]]] = None
+    texto_pos_tabela_consolidada: Optional[List[List[str]]] = None
     nota_remissiva: Optional[str] = Field(default="", description="Ex: '(Alterado por...)'")
 
 class Consolidacao(BaseModel):
@@ -202,7 +213,7 @@ class Consolidacao(BaseModel):
     cabecalho_complemento: str
     orgaos_emissores: str
     titulo_portaria: str
-    ementa_preambulo: str = Field(description="Preâmbulo com negritos estruturais (CONSIDERANDO, O PROCURADOR-GERAL, etc) em <b> e separados por <br/>.")
+    ementa_preambulo: str = Field(description="Ementa e preâmbulo mantendo o fluxo natural do documento original, separando blocos com <br/> e mantendo negritos intocados.")
     assinatura_nome: str
     assinatura_cargo: str
     dispositivos: List[Dispositivo]
@@ -229,7 +240,7 @@ def injetar_nota_remissiva(texto, nota):
             return f"<font color='red'>{n}</font>"
     return texto
 
-# ----------------- PIPELINE DE EXECUÇÃO COM FALLBACK -----------------
+# ----------------- PIPELINE DE EXECUÇÃO COM FALLBACK E OCR -----------------
 def analisar_lote_arquivos(arquivos, key):
     client = genai.Client(api_key=key)
     
@@ -238,11 +249,10 @@ def analisar_lote_arquivos(arquivos, key):
         textos_extraidos[arq.name] = extrair_texto_com_formatacao(arq.getvalue(), arq.name)
 
     prompt_triagem = f"""
-    Identifique a Norma Base e as Alteradoras dos textos abaixo. Extraia a data de assinatura estritamente no formato YYYY-MM-DD.
+    Analise os textos estruturados abaixo. Identifique a Norma Base e TODAS as portarias alteradoras presentes no lote. Ordene e classifique cada uma, extraindo a data de assinatura no formato YYYY-MM-DD.
     TEXTOS: {" | ".join([f"[{k}]" for k in textos_extraidos.keys()])}
     """
     
-    # Chamada com fallback automático para a triagem
     resp_triagem = executar_com_fallback(
         client=client,
         contents=[prompt_triagem] + list(textos_extraidos.values()),
@@ -269,10 +279,9 @@ def analisar_lote_arquivos(arquivos, key):
     if not arquivos_alteradores:
         conteudo_loop = [f"Texto Base:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}"]
         
-        # Chamada com fallback automático para base única
         resp_loop = executar_com_fallback(
             client=client,
-            contents=conteudo_loop + ["Gere o JSON consolidado. Garanta <b> nos termos preambulares (CONSIDERANDO, O PROCURADOR-GERAL, Resolve) e <br/> nas quebras."],
+            contents=conteudo_loop + ["Gere o JSON consolidado preservando rigidamente o layout, ementa, preâmbulo e tags <b> e <br/>."],
             response_schema=AnaliseGlobal
         )
         return json.loads(resp_loop.text)
@@ -285,18 +294,17 @@ def analisar_lote_arquivos(arquivos, key):
             elif arquivo_base and i == 0:
                 conteudo_loop.append(f"DOCUMENTO BASE ORIGINAL:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}")
             
-            conteudo_loop.append(f"ARQUIVO ALTERADOR PARA APLICAR AGORA:\n{textos_extraidos[alt['nome_arquivo_upload']]}")
+            nome_alt_atual = alt['nome_arquivo_upload']
+            conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({nome_alt_atual}):\n{textos_extraidos[nome_alt_atual]}")
             
-            prompt_loop = """
-            Aplique as modificações contidas no ARQUIVO ALTERADOR sobre o Estado Atual do Documento de forma acumulativa.
-            REGRAS CRÍTICAS DE FORMATAÇÃO:
-            - NUNCA emita caracteres '\\n' literais no texto. Use estritamente a tag HTML `<br/>` para quebrar linhas e parágrafos.
-            - Garanta que termos chaves no preâmbulo como <b>CONSIDERANDO...</b>, <b>O PROCURADOR-GERAL...</b> e <b>Resolve:</b> estejam devidamente em negrito.
-            - Use <font color='red'><strike>texto</strike></font> para revogações.
+            prompt_loop = f"""
+            Execute o passo {i+1} de {len(arquivos_alteradores)} aplicando as modificações desta portaria alteradora sobre o texto atual de forma acumulativa.
+            REGRAS CRÍTICAS DE FORMATAÇÃO (OCR):
+            1. PREÂMBULO E EMENTA: Mantenha exatamente o fluxo original. O título, ementa e preâmbulo (cada "CONSIDERANDO") devem manter a estrutura com a tag `<br/>` separando as ideias.
+            2. Mantenha os negritos em `<b>` (especialmente "CONSIDERANDO" e "Resolve:") e use `<font color='red'><strike>texto revogado</strike></font>` para revogações.
             """
             conteudo_loop.append(prompt_loop)
             
-            # Chamada com fallback automático para cada alteração na cascata
             resp_loop = executar_com_fallback(
                 client=client,
                 contents=conteudo_loop,
@@ -530,13 +538,12 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     elif not arquivos_enviados: 
         st.warning("⚠️ Envie os arquivos normativos primeiro.")
     else:
-        with st.spinner("⚡ Executando Motor Híbrido com Fallback Automático (3.6 ➔ 3.5)..."):
+        with st.spinner("⚡ Executando Análise e Extração Estrutural..."):
             try:
                 st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip())
                 st.success("✨ Processamento Concluído com Sucesso!")
             except Exception as e:
                 mensagem_erro = str(e)
-                # Só exibe o erro se ambos os modelos falharem por cota
                 if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
                     st.error("❌ Limite de cota esgotado em ambos os modelos (Gemini 3.6 e Gemini 3.5). Por favor, aguarde alguns instantes antes de tentar novamente.")
                 else:
@@ -551,10 +558,36 @@ if st.session_state.dados_processados:
         nome_exibicao_alt = " e ".join(nomes_alteradoras) if nomes_alteradoras else "Desconhecido"
         
         with st.expander(f"📁 **{nome_exibicao_base}** alterada por **{nome_exibicao_alt}**", expanded=True):
-            if st.button(f"💾 Salvar Cascata Inteira no Supabase", key=f"btn_sup_{i}"):
+            
+            # --- INÍCIO DO EDITOR WEB INTEGRADO ---
+            st.markdown("### 📝 Editor de Documento (Ajuste Fino)")
+            st.info("Revise e edite o texto abaixo. Você pode corrigir palavras ou ajustar as marcações estruturais (`<b>`, `<i>`, `<br/>`, `<font color='red'><strike>`).")
+            
+            with st.form(key=f"form_editor_{i}"):
+                cons['titulo_portaria'] = st.text_area("Título da Portaria", cons.get('titulo_portaria', ''), height=68)
+                cons['ementa_preambulo'] = st.text_area("Ementa e Preâmbulo", cons.get('ementa_preambulo', ''), height=250)
+                
+                st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos)")
+                for j, disp in enumerate(cons.get("dispositivos", [])):
+                    st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
+                    c_alt, c_cons = st.columns(2)
+                    with c_alt:
+                        disp['texto_principal_alterada'] = st.text_area(f"Versão Alterada", disp.get('texto_principal_alterada', ''), height=150, key=f"alt_{i}_{j}")
+                    with c_cons:
+                        disp['texto_principal_consolidada'] = st.text_area(f"Versão Consolidada", disp.get('texto_principal_consolidada', ''), height=150, key=f"cons_{i}_{j}")
+                
+                salvar_edicoes = st.form_submit_button("💾 Aplicar Ajustes Manuais", type="primary")
+            
+            if salvar_edicoes:
+                st.success("✅ Documento atualizado! As alterações foram gravadas na memória. Você já pode realizar o download abaixo.")
+            # --- FIM DO EDITOR WEB INTEGRADO ---
+
+            st.markdown("### 📥 Opções de Exportação")
+            if st.button(f"💾 Salvar Cascata Inteira no Banco de Dados", key=f"btn_sup_{i}"):
                 if salvar_no_supabase(cons): st.success(f"Banco atualizado com as alterações em cascata!")
             
             c1, c2 = st.columns(2)
+            
             pdf_alt, docx_alt = gerar_pdf_dinamico(cons, "alterada"), gerar_docx_dinamico(cons, "alterada")
             pdf_cons, docx_cons = gerar_pdf_dinamico(cons, "consolidada"), gerar_docx_dinamico(cons, "consolidada")
             
