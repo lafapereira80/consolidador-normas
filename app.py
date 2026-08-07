@@ -42,7 +42,7 @@ st.markdown("""
 </style>
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
-    <p>Consolidação Inteligente Single-Pass (Memória Cumulativa Rápida)</p>
+    <p>Motor de Consolidação Avançada (Powered by Gemini 3.6 Flash)</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -74,7 +74,7 @@ def render_botao_historico():
 
 col_info, col_nav = st.columns([2, 1])
 with col_info:
-    st.info("💡 **Performance Maximizada:** Consolidação em cascata executada em etapa única (Single-Pass) para maior velocidade.")
+    st.info("💡 **Extração de Alta Fidelidade:** O sistema escaneia visualmente o PDF para preservar negritos, itálicos e parágrafos.")
 with col_nav:
     render_botao_historico()
 
@@ -90,35 +90,36 @@ except:
 st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF ou DOCX)", type=["pdf", "docx"], accept_multiple_files=True, key="uploader_lote")
 
-# ----------------- ESTRUTURAS PYDANTIC (CHAIN OF THOUGHT) -----------------
+# ----------------- ESTRUTURAS PYDANTIC ULTRA-RIGOROSAS -----------------
 class MetadadosNorma(BaseModel):
     tipo_documento: str = Field(description="Ex: 'Portaria', 'Lei', 'Decreto'")
     numero_documento: str = Field(description="O número. Ex: '158', '137', ou 'S/N'")
     orgao_emissor: str = Field(description="Sigla do órgão. Ex: 'PGJM'")
-    data_assinatura: str = Field(description="Data exata no formato YYYY-MM-DD. IMPORTANTE: Se o cabeçalho disser '(data de assinatura)', busque ativamente a data no bloco final de assinatura eletrônica do SEI.")
-    nome_padronizado: str = Field(description="Nome completo da norma. Ex: 'PORTARIA Nº 158/PGJM, DE 29 DE JULHO DE 2026'.")
+    data_assinatura: str = Field(description="Data exata no formato YYYY-MM-DD lida do bloco de assinatura SEI.")
+    nome_padronizado: str = Field(description="Nome completo da norma.")
 
 class LogAlteracao(BaseModel):
-    nome_norma_alteradora: str = Field(description="O nome da norma que está aplicando a alteração neste passo.")
-    resumo_acoes: str = Field(description="Explique brevemente o que esta norma revogou ou alterou na base. Pensar passo a passo evita que você esqueça de aplicar a alteração.")
+    nome_norma_alteradora: str = Field(description="Qual norma está atuando neste passo.")
+    analise_estrutural: str = Field(description="PENSE ANTES DE ESCREVER: Identifique visualmente onde estão os negritos e quebras de parágrafo na norma alteradora para não perdê-los ao aplicar.")
+    resumo_acoes: str = Field(description="O que foi revogado/alterado e onde.")
 
 class Dispositivo(BaseModel):
-    tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', etc.")
-    texto_principal_alterada: str = Field(description="Texto com <b> e <i> rigorosamente preservados do original. Tache em vermelho com <font color='red'><strike> as revogações.")
-    texto_principal_consolidada: str = Field(description="Texto limpo da versão em vigor.")
+    tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', 'inciso'.")
+    texto_principal_alterada: str = Field(description="OBRIGATÓRIO: Use <b>texto</b> para negritos nativos do PDF. Use <i>texto</i> para itálicos. Use <font color='red'><strike>texto</strike></font> para tachado. Separe parágrafos/incisos diferentes com <br/>.")
+    texto_principal_consolidada: str = Field(description="Texto limpo da versão em vigor. OBRIGATÓRIO preservar <b> e <i> e <br/>.")
     is_tabela: bool = Field(description="True se houver tabela.")
     tabela_alterada: Optional[List[List[str]]] = Field(default=None)
     tabela_consolidada: Optional[List[List[str]]] = Field(default=None)
     texto_pos_tabela_alterada: Optional[str] = Field(default=None)
     texto_pos_tabela_consolidada: Optional[str] = Field(default=None)
-    nota_remissiva: Optional[str] = Field(default="", description="Ex: '(Alterado por...)'. Coloque apenas aqui, NUNCA no texto principal.")
+    nota_remissiva: Optional[str] = Field(default="", description="Ex: '(Alterado por...)'. NÃO coloque no texto principal.")
 
 class Consolidacao(BaseModel):
     arquivos_originais_identificados: List[str]
     arquivos_alteradores_identificados: List[str]
     norma_base: MetadadosNorma
-    normas_alteradoras: List[MetadadosNorma] = Field(description="Lista com TODAS as normas alteradoras processadas.")
-    logs_de_processamento: List[LogAlteracao] = Field(description="OBRIGATÓRIO: Liste aqui o passo a passo cronológico de cada alteração aplicada ANTES de gerar o texto final. Isso garante a cascata perfeita.")
+    normas_alteradoras: List[MetadadosNorma] = Field(description="Todas as alteradoras.")
+    logs_de_processamento: List[LogAlteracao] = Field(description="O raciocínio passo a passo de cada alteração para garantir a cascata.")
     cabecalho_complemento: str
     orgaos_emissores: str
     titulo_portaria: str
@@ -137,12 +138,16 @@ class AnaliseGlobal(BaseModel):
     arquivos_nao_alterados: List[ArquivoAvulso]
 
 class IdentificadorDeAlvos(BaseModel):
-    nomes_padronizados_alvo: List[str] = Field(description="Lista exata de 'nome_padronizado' do banco que estão sendo alterados.")
+    nomes_padronizados_alvo: List[str] = Field(description="Alvos no banco.")
 
-# ----------------- FUNÇÕES AUXILIARES DE LIMPEZA -----------------
+# ----------------- FUNÇÕES DE LIMPEZA INTELIGENTE -----------------
 def limpar_texto_ia(texto):
     if not texto: return ""
-    texto = texto.replace('\\n', '<br/>').replace('\n', '<br/>')
+    # Protege quebras HTML explícitas
+    texto = texto.replace('<br>', '<br/>').replace('<br >', '<br/>')
+    # Remove quebras de linha literais indesejadas geradas pela IA que quebram o fluxo
+    texto = texto.replace('\n', ' ')
+    # Limpa espaços duplos
     texto = re.sub(r' {2,}', ' ', texto).strip()
     return texto
 
@@ -156,14 +161,13 @@ def injetar_nota_remissiva(texto, nota):
             return f"<font color='red'>{n}</font>"
     return texto
 
-# ----------------- MOTOR PRINCIPAL (SINGLE-PASS) -----------------
+# ----------------- MOTOR PRINCIPAL (3.6 FLASH CASCATA) -----------------
 def analisar_lote_arquivos(arquivos, key):
     client = genai.Client(api_key=key)
     caminhos_temporarios = []
     gemini_files_objs = []
     
     try:
-        # Upload rápido
         for arq in arquivos:
             ext = f".{arq.name.split('.')[-1]}"
             with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
@@ -177,7 +181,6 @@ def analisar_lote_arquivos(arquivos, key):
             conteudos_iniciais.append(f"ARQUIVO: {nome_original}")
             conteudos_iniciais.append(g_file)
 
-        # Resgate de Memória do Banco de Dados
         nomes_bd = []
         if supabase:
             try:
@@ -185,7 +188,7 @@ def analisar_lote_arquivos(arquivos, key):
                 nomes_bd = [r["nome_padronizado"] for r in res_bd.data]
             except: pass
 
-        prompt_pre = f"Normas base já cadastradas: {nomes_bd}. Liste o 'nome_padronizado' exato das normas listadas que sofrem alteração pelos PDFs."
+        prompt_pre = f"Normas cadastradas: {nomes_bd}. Informe quais sofrem alteração."
         resp_pre = client.models.generate_content(
             model='gemini-3.6-flash',
             contents=conteudos_iniciais + [prompt_pre],
@@ -204,35 +207,35 @@ def analisar_lote_arquivos(arquivos, key):
                         textos_historico.append(f"JSON DA NORMA BASE '{alvo_nome}':\n{json_str}")
                 except: pass
 
-        # Geração Single-Pass (Super Rápida)
-        conteudos_prompt = ["Analise as relações normativas e gere a consolidação OBRIGATORIAMENTE seguindo estas regras:"]
+        conteudos_prompt = ["Gere a consolidação final seguindo estritamente as regras de alta fidelidade visual:"]
         conteudos_prompt.extend(conteudos_iniciais)
         if textos_historico:
-            conteudos_prompt.append("\n\nATENÇÃO - HISTÓRICO ENCONTRADO NO BANCO:")
+            conteudos_prompt.append("\n\nMEMÓRIA CUMULATIVA (APLIQUE POR CIMA DESTE HISTÓRICO):")
             conteudos_prompt.extend(textos_historico)
 
         prompt_comandos = """
-        Você é um Especialista Sênior em Técnica Legislativa. Você processará todos os arquivos em uma única rodada.
+        Você é um Especialista Legislativo com leitura visual avançada.
         
-        🔥 1. ALGORITMO DE CASCATA CRONOLÓGICA (SINGLE-PASS):
-        Se houver 2 ou mais PDFs alterando a mesma norma base, você DEVE aplicar TODAS as alterações de forma cumulativa. 
-        Para garantir que você não esqueça de nenhum arquivo, VOCÊ É OBRIGADO a preencher o campo 'logs_de_processamento' detalhando o que CADA norma alteradora (da mais antiga para a mais nova) modificou na norma base, ANTES de começar a redigir os 'dispositivos'.
+        REGRAS DE OURO DA ARQUITETURA 3.6-FLASH:
         
-        🔥 2. ATENÇÃO EXTREMA À FORMATAÇÃO VISUAL (NEGRITO E ITÁLICO):
-        Você DEVE analisar o aspecto tipográfico dos PDFs. Se uma palavra, título, ou número de artigo estiver destacado em Negrito ou Itálico no documento original, você é OBRIGADO a colocar as tags HTML <b>texto</b> ou <i>texto</i> em volta delas no JSON. A perda de negritos é um erro gravíssimo.
+        1. FIDELIDADE VISUAL E TIPOGRÁFICA (CRÍTICO): 
+        Como você lê PDFs nativamente, ESCANEIE o documento. Tudo que for visualmente **Negrito** deve virar `<b>texto</b>`. Tudo que for *Itálico* deve virar `<i>texto</i>`. Se o título do artigo for negrito no PDF, DEVE ser `<b>Art. 1º</b>` no JSON. A omissão dessas tags é falha grave.
         
-        🔥 3. REGRAS DE TACHADO:
-        Use `<font color='red'><strike>texto revogado</strike></font>`. 
-        NUNCA insira espaços em branco dentro do `<strike>` ou `<b>`.
-        NUNCA use tags `<span>`, `<div>` ou `<p>`. Use `<br/>` para quebras de linha.
-        As notas remissivas vão EXCLUSIVAMENTE na variável `nota_remissiva`.
+        2. ESTRUTURA DE BLOCOS (PARÁGRAFOS E INCISOS):
+        Nunca junte blocos de texto distintos. Se o documento traz um "Caput" e logo abaixo um "Inciso I", você DEVE separá-los usando a tag `<br/>`. Exemplo: `O Procurador resolve:<br/>I - Determinar que...`
         
-        🔥 4. DATA SEI:
-        Leia o rodapé para descobrir a verdadeira data se o cabeçalho tiver "(data de assinatura)".
+        3. CUMULAÇÃO EM CASCATA:
+        Se você identificou 2 arquivos alteradores da mesma base, você é OBRIGADO a preencher o `logs_de_processamento` para a Alteradora 1 e depois para a Alteradora 2, empilhando as revogações de forma sequencial, antes de gerar os dispositivos.
+        
+        4. TACHADO SEGURO:
+        Use estritamente `<font color='red'><strike>texto</strike></font>`. Nunca insira espaços em branco adjacentes às tags HTML.
+        
+        5. LIXO LITERAL:
+        Não emita caracteres soltos de escape como '\\n' no texto. Se precisar quebrar linha, use `<br/>`.
         """
         conteudos_prompt.append(prompt_comandos)
 
-        st.toast("⚙️ Consolidando Cascata Múltipla (Processamento de Alta Velocidade)...", icon="⚡")
+        st.toast("⚙️ Extraindo topologia do PDF e executando Cascata...", icon="⚡")
         response = client.models.generate_content(
             model='gemini-3.6-flash',
             contents=conteudos_prompt,
@@ -246,12 +249,19 @@ def analisar_lote_arquivos(arquivos, key):
         for caminho_tmp, _ in caminhos_temporarios:
             if os.path.exists(caminho_tmp): os.remove(caminho_tmp)
 
-# --- (FUNÇÕES DE PDF, DOCX E SUPABASE INTACTAS) ---
+# --- FUNÇÕES DE RENDERIZAÇÃO BLINDADAS CONTRA ERROS HTML ---
 
 def extrair_paragrafos_seguros(texto_html):
     texto_html = limpar_texto_ia(texto_html)
+    # Remove tags inseguras para o ReportLab
     texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE)
-    texto_html = texto_html.replace("</font></strike>", "</strike></font>").replace("</b></i>", "</i></b>").replace('<em>', '<i>').replace('</em>', '</i>').replace('<strong>', '<b>').replace('</strong>', '</b>').replace('<s>', '<strike>').replace('</s>', '</strike>')
+    
+    # Correção de tags encavaladas pelo LLM
+    texto_html = texto_html.replace("</font></strike>", "</strike></font>")
+    texto_html = texto_html.replace("</b></i>", "</i></b>")
+    texto_html = texto_html.replace('<em>', '<i>').replace('</em>', '</i>')
+    texto_html = texto_html.replace('<strong>', '<b>').replace('</strong>', '</b>')
+    texto_html = texto_html.replace('<s>', '<strike>').replace('</s>', '</strike>')
     
     tokens = re.split(r'(<[^>]+>)', texto_html)
     paragrafos, pilha, texto_atual = [], [], ""
@@ -471,7 +481,7 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     if not api_key: st.error("⚠️ Insira sua chave.")
     elif not arquivos_enviados: st.warning("⚠️ Envie arquivos.")
     else:
-        with st.spinner("🧠 Processando em Single-Pass de Alta Velocidade..."):
+        with st.spinner("🧠 Executando Leitura Nativa e Cascata Estrutural..."):
             try:
                 st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip())
                 st.success("✨ Processamento Concluído com Sucesso!")
