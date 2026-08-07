@@ -115,25 +115,24 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-def render_botao_historico():
-    caminho_real = None
-    if os.path.exists("pages"):
-        for arquivo in os.listdir("pages"):
-            if "historico" in arquivo.lower() and arquivo.endswith(".py"):
-                caminho_real = f"pages/{arquivo}"
-                break
-    if caminho_real:
-        try:
-            st.page_link(caminho_real, label="🗄️ Acessar Banco de Dados", icon="➡️")
-        except Exception:
-            nome_pagina = caminho_real.replace("pages/", "").replace(".py", "")
-            st.markdown(f'<a href="{nome_pagina}" target="_top" style="display: block; text-align: center; background-color: #ff4b4b; color: white !important; padding: 0.6rem 1rem; border-radius: 0.5rem; text-decoration: none; font-weight: bold;">➡️ 🗄️ Acessar Banco de Dados</a>', unsafe_allow_html=True)
+# --- NOVO MENU DE NAVEGAÇÃO SUPERIOR ---
+col_info, col_hist, col_usr, col_logout = st.columns([2, 1, 1, 0.5])
 
-col_info, col_nav, col_logout = st.columns([2, 1, 0.5])
 with col_info:
     st.info("💡 **Sistema Autenticado:** Proteção de dados ativa.")
-with col_nav:
-    render_botao_historico()
+
+with col_hist:
+    try:
+        st.page_link("pages/historico.py", label="🗄️ Histórico", icon="➡️")
+    except Exception:
+        pass # Previne interrupção se a página estiver carregando
+
+with col_usr:
+    try:
+        st.page_link("pages/usuarios.py", label="👥 Usuários", icon="➡️")
+    except Exception:
+        pass
+
 with col_logout:
     if st.button("Sair", type="secondary"):
         st.session_state.autenticado = False
