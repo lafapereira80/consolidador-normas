@@ -53,8 +53,15 @@ with col1:
     st.title("⚖️ Sistema Inteligente de Consolidação Normativa")
 with col2:
     st.write("") # Espaçamento
-    # Link apontando para o arquivo dentro da pasta pages
-    st.page_link("pages/1_Historico.py", label="🗄️ Acessar Histórico e Gestão", icon="➡️")
+    
+    # Bloco de segurança para evitar que o app trave por erro de maiúscula/minúscula no arquivo
+    try:
+        st.page_link("pages/1_Historico.py", label="🗄️ Acessar Histórico e Gestão", icon="➡️")
+    except KeyError:
+        try:
+            st.page_link("pages/1_historico.py", label="🗄️ Acessar Histórico e Gestão", icon="➡️")
+        except KeyError:
+            st.warning("👈 Acesse o Histórico no menu lateral.")
 
 st.markdown("Faça o upload de **quantos arquivos normativos quiser**. A Inteligência Artificial fará o cruzamento automático, descobrirá as relações e permitirá salvar o histórico diretamente no Supabase.")
 st.markdown("---")
