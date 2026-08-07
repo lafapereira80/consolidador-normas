@@ -478,14 +478,22 @@ if "dados_processados" not in st.session_state: st.session_state.dados_processad
 st.markdown("<br>", unsafe_allow_html=True)
 
 if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_width=True):
-    if not api_key: st.error("⚠️ Insira sua chave.")
-    elif not arquivos_enviados: st.warning("⚠️ Envie arquivos.")
+    if not api_key: 
+        st.error("⚠️ Insira sua chave da API nas configurações.")
+    elif not arquivos_enviados: 
+        st.warning("⚠️ Envie os arquivos normativos primeiro.")
     else:
         with st.spinner("🧠 Executando Leitura Nativa e Cascata Estrutural..."):
             try:
                 st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip())
                 st.success("✨ Processamento Concluído com Sucesso!")
-            except Exception as e: st.error(f"❌ Erro: {e}")
+            except Exception as e:
+                mensagem_erro = str(e)
+                # Verifica se é o erro de limite de cota
+                if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
+                    st.warning("⏳ Limite de requisições gratuitas da API atingido. O Google pede que você aguarde cerca de 1 minuto antes de tentar novamente.")
+                else:
+                    st.error(f"❌ Ocorreu um erro inesperado: {mensagem_erro}")
 
 if st.session_state.dados_processados:
     st.markdown("---")
