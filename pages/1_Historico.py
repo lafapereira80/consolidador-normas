@@ -3,7 +3,8 @@ import json
 from supabase import create_client, Client
 from typing import Optional
 
-st.set_page_config(page_title="Histórico de Normas", page_icon="🗄️", layout="wide")
+# Esconde a barra lateral desde o carregamento
+st.set_page_config(page_title="Histórico de Normas", page_icon="🗄️", layout="wide", initial_sidebar_state="collapsed")
 
 # PROTEÇÃO DE ACESSO
 if "autenticado" not in st.session_state or not st.session_state.autenticado:
@@ -11,8 +12,11 @@ if "autenticado" not in st.session_state or not st.session_state.autenticado:
     st.page_link("app.py", label="Ir para a Tela de Login", icon="🔒")
     st.stop()
 
+# BLOQUEIO DO MENU LATERAL E ESTILOS
 st.markdown("""
 <style>
+    [data-testid="stSidebar"] { display: none !important; }
+    [data-testid="collapsedControl"] { display: none !important; }
     .main-header {
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
         padding: 20px 20px;
@@ -28,6 +32,26 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# --- MENU DE NAVEGAÇÃO SUPERIOR FIXO ---
+col_home, col_usr, col_logout, col_vazio = st.columns([1.5, 1.5, 1, 4])
+
+with col_home:
+    st.page_link("app.py", label="Início (Upload)", icon="⬅️")
+
+with col_usr:
+    try:
+        st.page_link("pages/usuarios.py", label="Usuários", icon="👥")
+    except:
+        st.markdown('<a href="usuarios" target="_top" style="display: block; text-align: center; background-color: #f0f2f6; border: 1px solid #d0d4dc; color: #31333F !important; padding: 0.5rem; border-radius: 0.5rem; text-decoration: none; font-weight: 500;">👥 Usuários</a>', unsafe_allow_html=True)
+
+with col_logout:
+    if st.button("Sair", key="btn_sair_hist", type="secondary", use_container_width=True):
+        st.session_state.autenticado = False
+        st.rerun()
+
+st.markdown("---")
+
+# CONEXÃO COM BANCO DE DADOS
 @st.cache_resource
 def init_supabase() -> Optional[Client]:
     try:
