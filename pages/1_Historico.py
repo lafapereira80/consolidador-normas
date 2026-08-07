@@ -37,13 +37,35 @@ if not supabase:
     st.error("⚠️ Não foi possível conectar ao Supabase. Verifique suas credenciais em st.secrets.")
     st.stop()
 
-# Busca as portarias base
+# --- BARRA DE BUSCA ---
+c_busca, c_vazio = st.columns([2, 1])
+with c_busca:
+    termo_busca = st.text_input("🔍 Buscar norma (nome, número ou órgão)...", placeholder="Ex: Portaria 221, PGJM...")
+
+st.markdown("---")
+
+# Busca TODAS as portarias base
 res_base = supabase.table("portarias_base").select("*").order("data_assinatura", desc=True).execute()
 portarias_base = res_base.data if res_base.data else []
 
+# Aplica o filtro de busca localmente (case-insensitive)
+if termo_busca:
+    termo_lower = termo_busca.lower()
+    portarias_base = [
+        pb for pb in portarias_base 
+        if termo_lower in str(pb.get('nome_padronizado', '')).lower() 
+        or termo_lower in str(pb.get('numero_documento', '')).lower()
+        or termo_lower in str(pb.get('orgao_emissor', '')).lower()
+    ]
+
 if not portarias_base:
-    st.info("Nenhuma norma encontrada no banco de dados.")
+    if termo_busca:
+        st.warning(f"Nenhum resultado encontrado para a busca: **{termo_busca}**.")
+    else:
+        st.info("Nenhuma norma encontrada no banco de dados.")
 else:
+    st.caption(f"Exibindo {len(portarias_base)} norma(s) encontrada(s).")
+    
     for pb in portarias_base:
         base_id = pb['id']
         nome_padrao = pb.get('nome_padronizado', f"Norma ID {base_id}")
