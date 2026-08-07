@@ -3,14 +3,14 @@ from utils import analisar_lote_arquivos, gerar_pdf_dinamico, gerar_docx_dinamic
 
 st.set_page_config(page_title="Autopilot Normativo", layout="wide")
 
-# Cabeçalho com navegação rápida para a página de histórico
+# Cabeçalho com botão de navegação seguro para a página de histórico
 col_titulo, col_link = st.columns([3, 1])
 with col_titulo:
     st.title("⚖️ Autopilot: Consolidador Normativo & Histórico")
 with col_link:
     st.markdown("<br>", unsafe_allow_html=True)
-    # Link direto para a página dentro da pasta pages/
-    st.page_link("pages/1_Historico.py", label="📜 Acessar Histórico", icon="🗄️")
+    if st.button("🗄️ Acessar Histórico", use_container_width=True):
+        st.switch_page("pages/1_Historico.py")
 
 st.markdown("Arraste todos os documentos normativos de uma vez. O sistema cruzará os dados considerando o histórico acumulado salvo no Supabase.")
 st.markdown("---")
