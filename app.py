@@ -3,9 +3,21 @@ from utils import analisar_lote_arquivos, gerar_pdf_dinamico, gerar_docx_dinamic
 
 st.set_page_config(page_title="Autopilot Normativo", layout="wide")
 
-st.title("⚖️ Autopilot: Consolidador Normativo")
+# Barra lateral com link rápido de navegação
+with st.sidebar:
+    st.header("Navegação")
+    st.page_link("pages/1_Historico.py", label="Acessar Histórico", icon="🗄️")
+    st.markdown("---")
+
+# Cabeçalho principal com link direto
+col_titulo, col_link = st.columns([3, 1])
+with col_titulo:
+    st.title("⚖️ Autopilot: Consolidador Normativo")
+with col_link:
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.page_link("pages/1_Historico.py", label="Ver Histórico Supabase", icon="🗄️")
+
 st.markdown("Arraste os arquivos normativos. O sistema cruzará os dados considerando o histórico salvo no Supabase.")
-st.info("💡 Use o menu na barra lateral esquerda para acessar a página de **Historico**.")
 st.markdown("---")
 
 # Configuração da API
@@ -39,12 +51,37 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
 if st.session_state.dados_processados:
     st.markdown("---")
     consolidacoes = st.session_state.dados_processados.get("consolidacoes_geradas", [])
-    for i, cons in enumerate(consolidacoes):
-        with st.expander(f"📁 **{cons['nome_portaria_base']}** ({cons['ano_portaria_base']})", expanded=True):
-            st.info(f"**Cadeia:** {cons['cabecalho_complemento']}")
-            if st.button(f"💾 Salvar no Histórico", key=f"btn_{i}"):
-                if salvar_no_supabase(cons)[0]: st.success("Salvo!")
-            
-            c1, c2 = st.columns(2)
-            c1.download_button("PDF Alterada", data=gerar_pdf_dinamico(cons, "alterada"), file_name=f"Alt_{i}.pdf", mime="application/pdf")
-            c2.download_button("PDF Consolidada", data=gerar_pdf_dinamico(cons, "consolidada"), file_name=f"Cons_{i}.pdf", mime="application/pdf")
+    avulsos = st.session_state.dados_processados.get("arquivos_nao_alterados", [])
+    
+    if len(consolidacoes) > 0:
+        st.header("📑 Documentos Consolidados Prontos")
+        for i, cons in enumerate(consolidacoes):
+            with st.expander(f"📁 **{cons['nome_portaria_base']}** ({cons['ano_portaria_base']}) atualizada pela **{cons['nome_portaria_alteradora']}** ({cons['ano_portaria_alteradora']})", expanded=True):
+                st.info(f"**Cadeia:** {cons['cabecalho_complemento']}")
+                
+                if st.button(f"💾 Salvar no Histórico", key=f"btn_{i}"):
+                    sucesso, msg = salvar_no_supabase(cons)
+                    if sucesso:
+                        st.success("Histórico salvo/atualizado com sucesso no Supabase!")
+                    else:
+                        st.error(f"Erro: {msg}")
+                
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("#### Versão Alterada")
+                    st.download_button("Baixar PDF", data=gerar_pdf_dinamico(cons, "alterada"), file_name=f"Alt_{i}.pdf", mime="application/pdf", key=f"pdf_alt_{i}")
+                    st.download_button("Baixar DOCX", data=gerar_docx_dinamico(cons, "alterada"), file_name=f"Alt_{i}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key=f"docx_alt_{i}")
+                with c2:
+                    st.markdown("#### Versão Consolidada")
+                    st.download_button("Baixar PDF", data=gerar_pdf_dinamico(cons, "consolidada"), file_name=f"Cons_{i}.pdf", mime="application/pdf", key=f"pdf_cons_{i}")
+                    st.download_button("Baixar DOCX", data=gerar_docx_dinamico(cons, "consolidada"), file_name=f"Cons_{i}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key=f"docx_cons_{i}")
+
+    if len(avulsos) > 0:
+        st.header("🗂️ Arquivos Sem Alteração Detectada")
+        for avulso in avulsos:
+            st.warning(f"**Arquivo:** `{avulso.get('nome_arquivo')}` | **Portaria:** {avulso.get('nome_portaria_identificada')}")
+
+    st.markdown("---")
+    if st.button("🔄 Nova Análise"):
+        st.session_state.dados_processados = None
+        st.rerun()
