@@ -52,7 +52,7 @@ st.markdown("""
 
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
-    <p>Consolidação Inteligente e Gestão de Portarias com IA</p>
+    <p>Consolidação Inteligente e Gestão de Portarias com IA (Memória Cumulativa Ativa)</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -71,21 +71,16 @@ supabase = init_supabase()
 # ----------------- AUTO-DETECÇÃO DA PÁGINA HISTÓRICO -----------------
 def render_botao_historico():
     caminho_real = None
-    
-    # 1. Procura dinamicamente pela pasta pages e pelo arquivo
     if os.path.exists("pages"):
         for arquivo in os.listdir("pages"):
             if "historico" in arquivo.lower() and arquivo.endswith(".py"):
                 caminho_real = f"pages/{arquivo}"
                 break
     
-    # 2. Se achou, cria o botão com múltiplas camadas de segurança
     if caminho_real:
         try:
-            # Tenta usar o componente nativo oficial do Streamlit
             st.page_link(caminho_real, label="🗄️ Acessar Banco de Dados", icon="➡️")
         except Exception:
-            # Se o componente falhar (comum na nuvem), cria um botão em HTML que força a navegação pelo navegador
             nome_pagina = caminho_real.replace("pages/", "").replace(".py", "")
             st.markdown(f'''
                 <a href="{nome_pagina}" target="_top" style="display: block; text-align: center; background-color: #ff4b4b; color: white !important; padding: 0.6rem 1rem; border-radius: 0.5rem; text-decoration: none; font-weight: bold; font-family: sans-serif; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">
@@ -93,21 +88,19 @@ def render_botao_historico():
                 </a>
             ''', unsafe_allow_html=True)
     else:
-        # 3. Se não achou a pasta, avisa o usuário (Isso explica porque o menu lateral sumiu!)
         st.warning("⚠️ **Atenção:** O Streamlit não encontrou a pasta `pages` ou o arquivo de histórico. Certifique-se de que a estrutura seja exata: `pages/1_Historico.py`.")
 
 # ----------------- NAVEGAÇÃO E CONFIGURAÇÕES -----------------
 col_info, col_nav = st.columns([2, 1])
 
 with col_info:
-    st.info("💡 **Como usar:** Arraste seus arquivos (Base e Alteradoras) logo abaixo. O sistema cruzará os dados automaticamente.")
+    st.info("💡 **Inteligência Ativada:** Envie os novos arquivos. O sistema buscará automaticamente o texto base no Supabase se houver histórico.")
 
 with col_nav:
     render_botao_historico()
 
 st.markdown("---")
 
-# Configuração da API Key Oculta no Expander
 api_key = None
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
@@ -120,7 +113,7 @@ except:
 st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos de uma vez (PDF ou DOCX)", type=["pdf", "docx"], accept_multiple_files=True, key="uploader_lote")
 
-# Estruturas Pydantic
+# Estruturas Pydantic Gerais
 class Dispositivo(BaseModel):
     tipo: str = Field(description="Ex: 'capitulo', 'artigo', 'paragrafo', 'inciso', etc.")
     texto_principal_alterada: str = Field(description="Texto da versão alterada. Manter <b> e <i>. Tache tudo em vermelho.")
@@ -156,35 +149,106 @@ class AnaliseGlobal(BaseModel):
     consolidacoes_geradas: List[Consolidacao]
     arquivos_nao_alterados: List[ArquivoAvulso]
 
+# Estrutura Pydantic para a Pré-Análise
+class IdentificadorDeAlvos(BaseModel):
+    normas_base_identificadas: List[str] = Field(description="Lista exata de nomes de normas que os arquivos estão tentando alterar e que existem no banco de dados fornecido.")
+
 def analisar_lote_arquivos(arquivos, key):
     client = genai.Client(api_key=key)
     caminhos_temporarios = []
     gemini_files_objs = []
+    
     try:
+        # Upload inicial para o Gemini
         for arq in arquivos:
             ext = f".{arq.name.split('.')[-1]}"
             with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
                 tmp.write(arq.getvalue())
                 caminhos_temporarios.append((tmp.name, arq.name))
                 
-        conteudos_prompt = ["Analise as relações entre os seguintes arquivos normativos e preserve formatações originais:"]
+        conteudos_iniciais = []
         for caminho_tmp, nome_original in caminhos_temporarios:
             g_file = client.files.upload(file=caminho_tmp)
             gemini_files_objs.append(g_file)
-            conteudos_prompt.append(f"ARQUIVO: {nome_original}")
-            conteudos_prompt.append(g_file)
+            conteudos_iniciais.append(f"ARQUIVO: {nome_original}")
+            conteudos_iniciais.append(g_file)
+
+        # -------------------------------------------------------------------
+        # ETAPA 1: Pré-Análise (O "Cérebro" procurando no Banco)
+        # -------------------------------------------------------------------
+        nomes_bd = []
+        if supabase:
+            try:
+                res_bd = supabase.table("portarias_base").select("nome_portaria").execute()
+                nomes_bd = [r["nome_portaria"] for r in res_bd.data]
+            except: pass
+
+        prompt_pre_analise = f"""
+        Abaixo temos os documentos fornecidos pelo usuário. 
+        Nós temos as seguintes normas salvas no nosso Banco de Dados de Histórico: {nomes_bd}
+        
+        Analise o texto dos arquivos PDF fornecidos e responda: Algum desses arquivos está fazendo uma alteração/revogação em alguma destas normas específicas do Banco de Dados?
+        Se sim, liste os nomes exatos das normas base (iguais à lista) que estão sendo alvo de alteração.
+        """
+        
+        st.toast("🔍 Cruzando dados com o Histórico do Supabase...", icon="⏳")
+        
+        resp_pre = client.models.generate_content(
+            model='gemini-3.6-flash',
+            contents=conteudos_iniciais + [prompt_pre_analise],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=IdentificadorDeAlvos,
+                temperature=0.0 
+            )
+        )
+        
+        alvos = json.loads(resp_pre.text).get("normas_base_identificadas", [])
+        textos_historico = []
+        
+        # Fazendo Download do JSON Histórico do Supabase se encontrou vínculo
+        if supabase and alvos:
+            for alvo_nome in alvos:
+                try:
+                    res_json = supabase.table("portarias_base").select("nome_portaria, documento_consolidado_json").eq("nome_portaria", alvo_nome).execute()
+                    if res_json.data and res_json.data[0].get("documento_consolidado_json"):
+                        json_str = json.dumps(res_json.data[0]['documento_consolidado_json'])
+                        textos_historico.append(f"JSON DA NORMA BASE '{alvo_nome}' (Memória Cumulativa):\n{json_str}")
+                        st.toast(f"✅ Histórico carregado do banco para a norma: {alvo_nome}!", icon="🧠")
+                except: pass
+
+        # -------------------------------------------------------------------
+        # ETAPA 2: Consolidação Final (Aplicando as mudanças no JSON ou criando do zero)
+        # -------------------------------------------------------------------
+        conteudos_prompt = ["Analise as relações normativas e gere a consolidação final:"]
+        conteudos_prompt.extend(conteudos_iniciais)
+        
+        if textos_historico:
+            conteudos_prompt.append("\n\nATENÇÃO MÁXIMA - HISTÓRICO ENCONTRADO NO BANCO DE DADOS:")
+            conteudos_prompt.extend(textos_historico)
 
         prompt_comandos = """
         Atue como um Especialista Sênior em Técnica Legislativa.
-        1. Identifique pares (Norma Original + Norma Alteradora) e gere 'Consolidacao'.
-        2. Extraia o ano exato de criação/publicação da portaria base e da alteradora nos campos `ano_portaria_base` e `ano_portaria_alteradora`.
+        
+        TAREFA PRINCIPAL:
+        1. Identifique pares e gere 'Consolidacao'.
+        2. Extraia o ano exato de criação da portaria base e da alteradora.
         3. Isole arquivos sem vínculo em 'arquivos_nao_alterados'.
-        REGRAS: Preserve <b> e <i>, quebras com <br/>, tachado completo em vermelho e notas remissivas exclusivamente no campo correspondente.
+        
+        REGRAS DA MEMÓRIA CUMULATIVA (CASCATA DE ALTERAÇÕES):
+        Se eu forneci o "JSON DA NORMA BASE (Memória Cumulativa)" nos dados acima, ISSO SIGNIFICA QUE A NORMA BASE JÁ FOI CONSOLIDADA ANTERIORMENTE. 
+        Você NÃO deve extrair o texto original do PDF antigo se o JSON estiver disponível. 
+        Você DEVE usar o conteúdo daquele JSON histórico como a "versão em vigor", ler o novo arquivo alterador, e aplicar as novas revogações e alterações EM CIMA daquele JSON. 
+        O novo arquivo JSON gerado por você deve acumular todas as notas remissivas antigas + as novas notas remissivas do documento de hoje.
+        
+        REGRAS DE FORMATAÇÃO: Preserve <b> e <i>, quebras com <br/>, tachado completo em vermelho e notas remissivas exclusivamente no campo correspondente.
         """
         conteudos_prompt.append(prompt_comandos)
 
+        st.toast("⚙️ Gerando Textos Consolidados Finais...", icon="⏳")
+
         response = client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-2.0-flash',
             contents=conteudos_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -200,17 +264,16 @@ def analisar_lote_arquivos(arquivos, key):
         for caminho_tmp, _ in caminhos_temporarios:
             if os.path.exists(caminho_tmp): os.remove(caminho_tmp)
 
+# ... [As funções auxiliares de PDF, DOCX e Texto continuam idênticas] ...
 def extrair_paragrafos_seguros(texto_html):
     texto_html = (texto_html or "").replace("</font></strike>", "</strike></font>")
     texto_html = texto_html.replace("</b></i>", "</i></b>")
     texto_html = texto_html.replace('<em>', '<i>').replace('</em>', '</i>')
     texto_html = texto_html.replace('<strong>', '<b>').replace('</strong>', '</b>')
     texto_html = texto_html.replace('<s>', '<strike>').replace('</s>', '</strike>')
-    
     tokens = re.split(r'(<[^>]+>)', texto_html)
     paragrafos, pilha = [], []
     texto_atual = ""
-    
     def fechar_todas(pilha_tags):
         res = ""
         for tag in reversed(pilha_tags):
@@ -220,10 +283,7 @@ def extrair_paragrafos_seguros(texto_html):
             elif tag_lower == "<b>": res += "</b>"
             elif tag_lower == "<i>": res += "</i>"
         return res
-        
-    def abrir_todas(pilha_tags):
-        return "".join(pilha_tags)
-        
+    def abrir_todas(pilha_tags): return "".join(pilha_tags)
     for token in tokens:
         if not token: continue
         t_lower = token.lower()
@@ -248,7 +308,6 @@ def extrair_paragrafos_seguros(texto_html):
             texto_atual += token
         else:
             texto_atual += token
-            
     texto_atual += fechar_todas(pilha)
     if re.sub(r'<[^>]+>', '', texto_atual).strip(): paragrafos.append(texto_atual.strip())
     return paragrafos
@@ -313,7 +372,6 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
     story, styles = [], getSampleStyleSheet()
-
     estilo_cabecalho_topo = ParagraphStyle('CabecalhoTopo', parent=styles['Normal'], fontName='Times-Bold', fontSize=10, leading=12, alignment=1, textColor=colors.HexColor('#444444'), spaceAfter=20)
     estilo_orgaos = ParagraphStyle('Orgaos', parent=styles['Normal'], fontName='Times-Bold', fontSize=11, leading=14, alignment=1, spaceAfter=25)
     estilo_titulo = ParagraphStyle('TituloPortaria', parent=styles['Normal'], fontName='Times-Bold', fontSize=11, leading=14, alignment=1, spaceAfter=20)
@@ -326,15 +384,6 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
     comp = (consolidacao_dict.get("cabecalho_complemento") or "")
     topo_texto = f"VERSÃO ALTERADA - {comp}" if tipo_versao == "alterada" else f"VERSÃO CONSOLIDADA - {comp}"
     story.append(Paragraph(topo_texto, estilo_cabecalho_topo))
-
-    caminho_imagem = "brasao.png"
-    if os.path.exists(caminho_imagem):
-        try:
-            img_brasao = Image(caminho_imagem, width=60, height=60)
-            img_brasao.hAlign = 'CENTER'
-            story.append(img_brasao)
-            story.append(Spacer(1, 10))
-        except: pass
 
     orgs = (consolidacao_dict.get("orgaos_emissores") or "").replace('\n', '<br/>')
     tit = (consolidacao_dict.get("titulo_portaria") or "").replace('\n', '<br/>')
@@ -434,7 +483,6 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
         tipo = (item.get("tipo") or "").lower()
         is_tabela = item.get("is_tabela", False)
         nota = item.get("nota_remissiva") or ""
-        
         texto_principal = (item.get(f"texto_principal_{tipo_versao}") or "").replace('\n', '<br/>')
         texto_pos = (item.get(f"texto_pos_tabela_{tipo_versao}") or "").replace('\n', '<br/>')
         
@@ -487,6 +535,7 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     buffer_docx.seek(0)
     return buffer_docx.getvalue()
 
+# ----------------- FUNÇÃO DE SALVAMENTO ATUALIZADA (COM JSON) -----------------
 def salvar_no_supabase(cons):
     if not supabase:
         st.error("⚠️ Supabase não configurado corretamente nos segredos.")
@@ -499,14 +548,22 @@ def salvar_no_supabase(cons):
         
         if res_busca.data and len(res_busca.data) > 0:
             base_id = res_busca.data[0]['id']
+            # ATUALIZAÇÃO DA MEMÓRIA CUMULATIVA: Salva o novo JSON por cima do antigo!
+            supabase.table("portarias_base").update({
+                "documento_consolidado_json": cons,
+                "titulo_original": cons.get("titulo_portaria"),
+                "orgaos_emissores": cons.get("orgaos_emissores")
+            }).eq("id", base_id).execute()
         else:
+            # INSERÇÃO INICIAL COM A MEMÓRIA CUMULATIVA
             res_ins = supabase.table("portarias_base").insert({
                 "nome_portaria": nome_base,
                 "ano_criacao": ano_base,
                 "titulo_original": cons.get("titulo_portaria"),
                 "orgaos_emissores": cons.get("orgaos_emissores"),
                 "assinatura_nome": cons.get("assinatura_nome"),
-                "assinatura_cargo": cons.get("assinatura_cargo")
+                "assinatura_cargo": cons.get("assinatura_cargo"),
+                "documento_consolidado_json": cons  # <--- Aqui está a mágica da Memória
             }).execute()
             base_id = res_ins.data[0]['id']
             
@@ -528,6 +585,7 @@ def salvar_no_supabase(cons):
         st.error(f"Erro ao salvar no banco: {e}")
         return False
 
+# ----------------- FRONT-END -----------------
 if "dados_processados" not in st.session_state:
     st.session_state.dados_processados = None
 
@@ -539,14 +597,14 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     elif not arquivos_enviados or len(arquivos_enviados) < 1:
         st.warning("⚠️ Envie pelo menos um arquivo normativo.")
     else:
-        with st.spinner("🧠 Lendo os arquivos, mapeando estruturas e formatando o texto..."):
+        with st.spinner("🧠 Ativando Autopilot e buscando conexões no Supabase..."):
             try:
                 chave_limpa = api_key.strip()
                 resultados = analisar_lote_arquivos(arquivos_enviados, chave_limpa)
                 st.session_state.dados_processados = resultados
                 st.success("✨ Processamento em Lote Concluído!")
             except Exception as e:
-                st.error(f"❌ Ocorreu um erro: {e}")
+                st.error(f"❌ Ocorreu um erro na API da Inteligência Artificial: {e}")
 
 if st.session_state.dados_processados is not None:
     st.markdown("---")
@@ -558,12 +616,12 @@ if st.session_state.dados_processados is not None:
         st.header("📑 Documentos Consolidados Prontos")
         for i, cons in enumerate(consolidacoes):
             with st.expander(f"📁 **{cons['nome_portaria_base']}** ({cons['ano_portaria_base']}) atualizada pela **{cons['nome_portaria_alteradora']}** ({cons['ano_portaria_alteradora']})", expanded=True):
-                st.info(f"**Original Identificado:** `{cons['arquivo_original_identificado']}`\n\n**Alterador Identificado:** `{cons['arquivo_alterador_identificado']}`")
+                st.info(f"**Original / Base no Banco:** `{cons['arquivo_original_identificado']}`\n\n**Novo Documento Alterador:** `{cons['arquivo_alterador_identificado']}`")
                 
-                if st.button(f"💾 Salvar no Histórico Supabase", key=f"btn_sup_{i}"):
+                if st.button(f"💾 Salvar Consolidação Atualizada no Supabase", key=f"btn_sup_{i}"):
                     sucesso = salvar_no_supabase(cons)
                     if sucesso:
-                        st.success(f"Histórico da {cons['nome_portaria_base']} atualizado com sucesso no Supabase!")
+                        st.success(f"Histórico da {cons['nome_portaria_base']} atualizado! O texto no banco agora contempla a {cons['nome_portaria_alteradora']}.")
                 
                 pdf_alt_bytes = gerar_pdf_dinamico(cons, "alterada")
                 pdf_cons_bytes = gerar_pdf_dinamico(cons, "consolidada")
@@ -581,7 +639,7 @@ if st.session_state.dados_processados is not None:
                     st.download_button("Baixar DOCX", data=docx_cons_bytes, file_name=f"{cons['nome_portaria_base'].replace(' ', '_').replace('/', '-')}_Consolidada.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key=f"dl_docx_cons_{i}")
 
     if len(avulsos) > 0:
-        st.header("🗂️ Arquivos Sem Alteração Detectada neste Lote")
+        st.header("🗂️ Arquivos Sem Alteração Detectada")
         for avulso in avulsos:
             st.warning(f"**Arquivo:** `{avulso.get('nome_arquivo', 'Desconhecido')}`\n\n**Portaria/Norma:** {avulso.get('nome_portaria_identificada', 'Não identificada')}\n\n**Motivo:** {avulso.get('motivo', '')}")
 
