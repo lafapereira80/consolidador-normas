@@ -3,9 +3,14 @@ from utils import analisar_lote_arquivos, gerar_pdf_dinamico, gerar_docx_dinamic
 
 st.set_page_config(page_title="Autopilot Normativo", layout="wide")
 
-st.title("⚖️ Autopilot: Consolidador Normativo")
+col_titulo, col_link = st.columns([3, 1])
+with col_titulo:
+    st.title("⚖️ Autopilot: Consolidador Normativo")
+with col_link:
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.page_link("pages/1_Historico.py", label="Ver Histórico", icon="🗄️")
+
 st.markdown("Arraste os arquivos normativos. O sistema cruza os dados com o histórico acumulado do Supabase.")
-st.info("👈 **Dica:** Utilize o menu na barra lateral esquerda para acessar a página de **Historico** a qualquer momento.")
 st.markdown("---")
 
 api_key = None
@@ -47,5 +52,5 @@ if st.session_state.dados_processados:
                 else: st.error(f"Erro: {msg}")
             
             c1, c2 = st.columns(2)
-            c1.download_button("Baixar PDF Alterada", data=gerar_pdf_dinamico(cons, "alterada"), file_name=f"Alt_{i}.pdf", mime="application/pdf")
-            c2.download_button("Baixar PDF Consolidada", data=gerar_pdf_dinamico(cons, "consolidada"), file_name=f"Cons_{i}.pdf", mime="application/pdf")
+            c1.download_button("Baixar PDF Alterada", data=gerar_pdf_dinamico(cons, "alterada"), file_name=f"Alt_{i}.pdf", mime="application/pdf", key=f"pdf_alt_{i}")
+            c2.download_button("Baixar PDF Consolidada", data=gerar_pdf_dinamico(cons, "consolidada"), file_name=f"Cons_{i}.pdf", mime="application/pdf", key=f"pdf_cons_{i}")
