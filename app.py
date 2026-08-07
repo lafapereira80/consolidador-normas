@@ -203,7 +203,7 @@ def analisar_lote_arquivos(arquivos, key):
 
         st.toast("⚙️ Gerando Textos Consolidados...", icon="⏳")
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-3.6-flash',
             contents=conteudos_prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=AnaliseGlobal, temperature=0.0)
         )
