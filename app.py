@@ -115,7 +115,16 @@ def executar_com_fallback(client, contents, response_schema):
                     contents=contents,
                     config=config
                 )
-            except Exception as e_secundario:
+        if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
+            # Alterna automaticamente sem exibir erro na tela
+            st.toast("⚡ Cota do 3.6 esgotada. Mudando para o Gemini 3.1 Pro...", icon="🔄")
+            try:
+                return client.models.generate_content(
+                    model='gemini-3.1-pro-preview',
+                    contents=contents,
+                    config=config
+                )
+        except Exception as e_secundario:
                 # Se o 3.5 também falhar por cota, propaga o erro final
                 raise Exception(f"Erro crítico: Ambos os modelos esgotaram a cota (RESOURCE_EXHAUSTED). Detalhes: {e_secundario}")
         else:
