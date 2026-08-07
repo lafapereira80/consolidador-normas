@@ -45,7 +45,7 @@ st.markdown("""
 </style>
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
-    <p>Motor Híbrido com 5 Tentativas Obrigatórias no Gemini 3.6 Flash + Fallback</p>
+    <p>Motor Híbrido Blindado (Correção de Preâmbulo + Cascata Completa de Múltiplas Portarias)</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -77,7 +77,7 @@ def render_botao_historico():
 
 col_info, col_nav = st.columns([2, 1])
 with col_info:
-    st.info("💡 **Resiliência Avançada:** O sistema força até 5 tentativas no Gemini 3.6 Flash antes de recorrer ao fallback.")
+    st.info("💡 **Análise Rigorosa Ativada:** Preservação completa do preâmbulo e processamento forçado de todas as portarias alteradoras.")
 with col_nav:
     render_botao_historico()
 
@@ -93,12 +93,10 @@ except:
 st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF ou DOCX)", type=["pdf", "docx"], accept_multiple_files=True, key="uploader_lote")
 
-# ----------------- FUNÇÃO INTELIGENTE DE FALLBACK (5 TENTATIVAS NO 3.6 ➔ 3.5) -----------------
+# ----------------- FUNÇÃO DE FALLBACK COM 5 TENTATIVAS NO 3.6 -----------------
 def executar_com_fallback(client, contents, response_schema):
-    """Força 5 tentativas no gemini-3.6-flash. Se todas falharem por RESOURCE_EXHAUSTED, muda para o 3.5-flash."""
     config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=response_schema, temperature=0.0)
     
-    # Etapa 1: Força até 5 tentativas no Gemini 3.6 Flash
     max_tentativas_36 = 5
     for tentativa in range(1, max_tentativas_36 + 1):
         try:
@@ -112,15 +110,13 @@ def executar_com_fallback(client, contents, response_schema):
             if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
                 if tentativa < max_tentativas_36:
                     st.toast(f"⚡ Tentativa {tentativa}/{max_tentativas_36} no 3.6 esgotada. Tentando novamente...", icon="⏳")
-                    time.sleep(3) # Pausa curta de respiro entre as tentativas
+                    time.sleep(3)
                     continue
                 else:
                     st.toast("⚡ 5 tentativas esgotadas no Gemini 3.6. Alternando para o Gemini 3.5 Flash...", icon="🔄")
             else:
-                # Se for outro tipo de erro que não seja cota, propaga imediatamente
                 raise e
 
-    # Etapa 2: Se esgotou as 5 tentativas no 3.6, tenta o Gemini 3.5 Flash como retaguarda
     try:
         return client.models.generate_content(
             model='gemini-3.5-flash',
@@ -128,9 +124,9 @@ def executar_com_fallback(client, contents, response_schema):
             config=config
         )
     except Exception as e_secundario:
-        raise Exception(f"Erro crítico: O sistema tentou 5 vezes no Gemini 3.6 e falhou no 3.5 por cota (RESOURCE_EXHAUSTED). Detalhes: {e_secundario}")
+        raise Exception(f"Erro crítico: O sistema tentou 5 vezes no Gemini 3.6 e falhou no 3.5 por cota. Detalhes: {e_secundario}")
 
-# ----------------- FUNÇÃO DE CONVERSÃO DE DATA PARA SQL (YYYY-MM-DD) -----------------
+# ----------------- CONVERSOR DE DATA SQL -----------------
 def converter_para_iso(data_str):
     if not data_str: return None
     data_str = data_str.strip()
@@ -198,8 +194,8 @@ class Dispositivo(BaseModel):
     is_tabela: bool
     tabela_alterada: Optional[List[List[str]]] = None
     tabela_consolidada: Optional[List[List[str]]] = None
-    texto_pos_tabela_alterada: Optional[str] = None
-    texto_pos_tabela_consolidada: Optional[str] = None
+    texto_pos_tabela_alterada: Optional[List[List[str]]] = None
+    texto_pos_tabela_consolidada: Optional[List[List[str]]] = None
     nota_remissiva: Optional[str] = Field(default="", description="Ex: '(Alterado por...)'")
 
 class Consolidacao(BaseModel):
@@ -210,7 +206,7 @@ class Consolidacao(BaseModel):
     cabecalho_complemento: str
     orgaos_emissores: str
     titulo_portaria: str
-    ementa_preambulo: str = Field(description="Preâmbulo com negritos estruturais (CONSIDERANDO, O PROCURADOR-GERAL, etc) em <b> e separados por <br/>.")
+    ementa_preambulo: str = Field(description="Ementa e preâmbulo perfeitamente formatados com <br/> entre os blocos (como CONSIDERANDO, O PROCURADOR-GERAL, Resolve) e negritos estritamente preservados.")
     assinatura_nome: str
     assinatura_cargo: str
     dispositivos: List[Dispositivo]
@@ -219,7 +215,7 @@ class AnaliseGlobal(BaseModel):
     consolidacoes_geradas: List[Consolidacao]
     arquivos_nao_alterados: List[str]
 
-# ----------------- FUNÇÃO DE LIMPEZA BLINDADA ANTI-\N -----------------
+# ----------------- FUNÇÃO DE LIMPEZA BLINDADA -----------------
 def limpar_texto_ia(texto):
     if not texto: return ""
     texto = texto.replace('\\n', ' ').replace('\n', ' ')
@@ -237,7 +233,7 @@ def injetar_nota_remissiva(texto, nota):
             return f"<font color='red'>{n}</font>"
     return texto
 
-# ----------------- PIPELINE DE EXECUÇÃO -----------------
+# ----------------- PIPELINE DE EXECUÇÃO ROBUSTO PARA MÚLTIPLAS PORTARIAS -----------------
 def analisar_lote_arquivos(arquivos, key):
     client = genai.Client(api_key=key)
     
@@ -246,7 +242,8 @@ def analisar_lote_arquivos(arquivos, key):
         textos_extraidos[arq.name] = extrair_texto_com_formatacao(arq.getvalue(), arq.name)
 
     prompt_triagem = f"""
-    Identifique a Norma Base e as Alteradoras dos textos abaixo. Extraia a data de assinatura estritamente no formato YYYY-MM-DD.
+    Analise a lista de arquivos abaixo. ATENÇÃO: Pode haver uma Norma Base e MÚLTIPLAS portarias alteradoras (ex: duas ou mais portarias modificando a base). 
+    Identifique TODAS as alteradoras e classifique corretamente cada uma, extraindo a data de assinatura no formato YYYY-MM-DD.
     TEXTOS: {" | ".join([f"[{k}]" for k in textos_extraidos.keys()])}
     """
     
@@ -259,10 +256,11 @@ def analisar_lote_arquivos(arquivos, key):
     triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
     arquivo_base = next((a for a in triagem_dados if a['tipo'] == 'Base'), None)
     arquivos_alteradores = [a for a in triagem_dados if a['tipo'] == 'Alteradora']
+    # Ordena as alteradoras cronologicamente da mais antiga para a mais nova
     arquivos_alteradores.sort(key=lambda x: x['data_oficial_iso'])
     
     if not arquivo_base and not arquivos_alteradores:
-        raise ValueError("Não foi possível identificar a relação normativa.")
+        raise ValueError("Não foi possível identificar a relação normativa entre os documentos.")
 
     estado_json_atual = None
     if arquivo_base and supabase:
@@ -273,32 +271,37 @@ def analisar_lote_arquivos(arquivos, key):
                 estado_json_atual = json.dumps(res_bd.data[0]['documento_consolidado_json'])
         except: pass
 
+    # Se não houver alteradoras, processa apenas a base
     if not arquivos_alteradores:
         conteudo_loop = [f"Texto Base:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}"]
-        
         resp_loop = executar_com_fallback(
             client=client,
-            contents=conteudo_loop + ["Gere o JSON consolidado. Garanta <b> nos termos preambulares (CONSIDERANDO, O PROCURADOR-GERAL, Resolve) e <br/> nas quebras."],
+            contents=conteudo_loop + ["Gere o JSON consolidado preservando rigidamente a formatação da ementa, preâmbulo e tags <b> e <br/>."],
             response_schema=AnaliseGlobal
         )
         return json.loads(resp_loop.text)
     
     else:
+        # Loop obrigatório por CADA portaria alteradora identificada na triagem
         for i, alt in enumerate(arquivos_alteradores):
             conteudo_loop = []
             if estado_json_atual:
-                conteudo_loop.append(f"ESTADO ATUAL DO DOCUMENTO (JSON):\n{estado_json_atual}")
+                conteudo_loop.append(f"ESTADO ATUAL DO DOCUMENTO CONSOLIDADO (JSON):\n{estado_json_atual}")
             elif arquivo_base and i == 0:
                 conteudo_loop.append(f"DOCUMENTO BASE ORIGINAL:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}")
             
-            conteudo_loop.append(f"ARQUIVO ALTERADOR PARA APLICAR AGORA:\n{textos_extraidos[alt['nome_arquivo_upload']]}")
+            # Adiciona especificamente a portaria da vez
+            nome_alt_atual = alt['nome_arquivo_upload']
+            conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({nome_alt_atual}):\n{textos_extraidos[nome_alt_atual]}")
             
-            prompt_loop = """
-            Aplique as modificações contidas no ARQUIVO ALTERADOR sobre o Estado Atual do Documento de forma acumulativa.
-            REGRAS CRÍTICAS DE FORMATAÇÃO:
-            - NUNCA emita caracteres '\\n' literais no texto. Use estritamente a tag HTML `<br/>` para quebrar linhas e parágrafos.
-            - Garanta que termos chaves no preâmbulo como <b>CONSIDERANDO...</b>, <b>O PROCURADOR-GERAL...</b> e <b>Resolve:</b> estejam devidamente em negrito.
-            - Use <font color='red'><strike>texto</strike></font> para revogações.
+            prompt_loop = f"""
+            Você está executando o passo {i+1} de {len(arquivos_alteradores)} no pipeline de consolidação em cascata.
+            Pegue o Estado Atual do Documento e aplique cirurgicamente as modificações contidas nesta portaria alteradora.
+            
+            REGRAS OBRIGATÓRIAS DE LEIAUTE E FORMATAÇÃO:
+            1. PREÂMBULO E EMENTA: Mantenha espaçamentos limpos usando estritamente a tag `<br/>` entre os considerandos. Garanta que termos como <b>CONSIDERANDO...</b>, <b>O PROCURADOR-GERAL DE JUSTIÇA MILITAR...</b> e <b>Resolve:</b> fiquem devidamente em negrito estrutural.
+            2. NUNCA ignore portarias: Se esta é a alteradora {i+1}, certifique-se de processar todas as suas diretrizes de alteração ou revogação acumulando-as sobre o texto anterior.
+            3. Use `<font color='red'><strike>texto revogado</strike></font>` para revogações e preserve todas as tags <b> e <i>.
             """
             conteudo_loop.append(prompt_loop)
             
@@ -535,7 +538,7 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     elif not arquivos_enviados: 
         st.warning("⚠️ Envie os arquivos normativos primeiro.")
     else:
-        with st.spinner("⚡ Executando com 5 tentativas obrigatórias no Gemini 3.6 Flash..."):
+        with st.spinner("⚡ Executando Pipeline com Varredura Total de Portarias..."):
             try:
                 st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip())
                 st.success("✨ Processamento Concluído com Sucesso!")
