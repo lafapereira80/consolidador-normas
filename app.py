@@ -204,7 +204,7 @@ def analisar_lote_arquivos(arquivos, key):
         st.toast("🔍 Cruzando dados com o Histórico do Supabase...", icon="⏳")
         
         resp_pre = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-3.6-flash',
             contents=conteudos_iniciais + [prompt_pre_analise],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
