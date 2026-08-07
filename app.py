@@ -190,7 +190,7 @@ def analisar_lote_arquivos(arquivos, key):
 
         prompt_pre = f"Normas cadastradas: {nomes_bd}. Informe quais sofrem alteração."
         resp_pre = client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-3.5-flash',
             contents=conteudos_iniciais + [prompt_pre],
             config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=IdentificadorDeAlvos, temperature=0.0)
         )
@@ -237,7 +237,7 @@ def analisar_lote_arquivos(arquivos, key):
 
         st.toast("⚙️ Extraindo topologia do PDF e executando Cascata...", icon="⚡")
         response = client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-3.5-flash',
             contents=conteudos_prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=AnaliseGlobal, temperature=0.0)
         )
