@@ -111,15 +111,6 @@ def executar_com_fallback(client, contents, response_schema):
             st.toast("⚡ Cota do 3.6 esgotada. Mudando para o Gemini 3.5 Flash...", icon="🔄")
             try:
                 return client.models.generate_content(
-                    model='gemini-3.5-flash',
-                    contents=contents,
-                    config=config
-                )
-        if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
-            # Alterna automaticamente sem exibir erro na tela
-            st.toast("⚡ Cota do 3.6 esgotada. Mudando para o Gemini 3.1 Pro...", icon="🔄")
-            try:
-                return client.models.generate_content(
                     model='gemini-3.1-pro-preview',
                     contents=contents,
                     config=config
