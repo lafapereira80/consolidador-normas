@@ -10,6 +10,7 @@ import json
 import os
 import re
 import time
+import copy
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -46,7 +47,7 @@ st.markdown("""
 </style>
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
-    <p>Motor Híbrido OCR com Editor Visual WYSIWYG Integrado</p>
+    <p>Motor Híbrido OCR com Editor Visual e Aprendizado Contínuo (Feedback Loop)</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -78,7 +79,7 @@ def render_botao_historico():
 
 col_info, col_nav = st.columns([2, 1])
 with col_info:
-    st.info("💡 **Editor Visual Ativado:** Você pode usar a barra de ferramentas para formatar o texto livremente antes de gerar os arquivos.")
+    st.info("💡 **Aprendizado Ativado:** As correções feitas no editor ensinarão a IA a não repetir os mesmos erros.")
 with col_nav:
     render_botao_historico()
 
@@ -94,9 +95,8 @@ except:
 st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF ou DOCX)", type=["pdf", "docx"], accept_multiple_files=True, key="uploader_lote")
 
-# ----------------- TRADUTORES PARA O EDITOR VISUAL (NOVIDADE) -----------------
+# ----------------- TRADUTORES PARA O EDITOR VISUAL -----------------
 def ia_para_editor(texto):
-    """Traduz o HTML simples da IA para o padrão estruturado do Quill (Editor Visual)."""
     if not texto: return ""
     texto = texto.replace("<br/>", "</p><p>").replace("<br>", "</p><p>")
     texto = f"<p>{texto}</p>"
@@ -111,39 +111,25 @@ def ia_para_editor(texto):
     return texto
 
 def editor_para_pdf(texto):
-    """Pega a saída rica do Quill e converte de volta pro padrão engessado do nosso PDF/DOCX."""
     if not texto: return ""
     texto = texto.replace("<strong>", "<b>").replace("</strong>", "</b>")
     texto = texto.replace("<em>", "<i>").replace("</em>", "</i>")
     texto = texto.replace("<s>", "<strike>").replace("</s>", "</strike>")
-    
-    # Captura cores aplicadas no editor e converte para a tag padrão do nosso sistema
     texto = re.sub(r'<span[^>]*color:[^>]*>(.*?)</span>', r"<font color='red'>\1</font>", texto, flags=re.IGNORECASE)
-    
-    # Limpa tags <p> do editor transformando em <br/>
     texto = texto.replace("<p><br></p>", "<br/>")
     texto = texto.replace("</p>", "<br/>").replace("<p>", "")
     texto = re.sub(r'</?span[^>]*>', '', texto)
-    
-    # Remove quebras fantasmas nos extremos
     texto = re.sub(r'^(<br/>)+|(<br/>)+$', '', texto).strip()
     return texto
 
-# ----------------- FUNÇÃO INTELIGENTE DE FALLBACK (3.6 ➔ 3.5) -----------------
 def executar_com_fallback(client, contents, response_schema):
     config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=response_schema, temperature=0.0)
-    
     max_tentativas_36 = 5
     for tentativa in range(1, max_tentativas_36 + 1):
         try:
-            return client.models.generate_content(
-                model='gemini-3.6-flash',
-                contents=contents,
-                config=config
-            )
+            return client.models.generate_content(model='gemini-3.6-flash', contents=contents, config=config)
         except Exception as e:
-            mensagem_erro = str(e)
-            if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
                 if tentativa < max_tentativas_36:
                     st.toast(f"⚡ Tentativa {tentativa}/{max_tentativas_36} no 3.6 esgotada. Tentando novamente...", icon="⏳")
                     time.sleep(3)
@@ -152,15 +138,10 @@ def executar_com_fallback(client, contents, response_schema):
                     st.toast("⚡ 5 tentativas esgotadas no Gemini 3.6. Alternando para o Gemini 3.5 Flash...", icon="🔄")
             else:
                 raise e
-
     try:
-        return client.models.generate_content(
-            model='gemini-3.5-flash',
-            contents=contents,
-            config=config
-        )
+        return client.models.generate_content(model='gemini-3.5-flash', contents=contents, config=config)
     except Exception as e_secundario:
-        raise Exception(f"Erro crítico: Ambos os modelos esgotaram a cota (RESOURCE_EXHAUSTED). Detalhes: {e_secundario}")
+        raise Exception(f"Erro crítico: Ambos os modelos esgotaram a cota. Detalhes: {e_secundario}")
 
 def converter_para_iso(data_str):
     if not data_str: return None
@@ -193,10 +174,8 @@ def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
                             texto = s.get("text", "")
                             if not texto: continue
                             flags = s.get("flags", 0)
-                            is_bold = flags & 2**4
-                            is_italic = flags & 2**1
-                            if is_bold: texto = f"<b>{texto}</b>"
-                            if is_italic: texto = f"<i>{texto}</i>"
+                            if flags & 2**4: texto = f"<b>{texto}</b>"
+                            if flags & 2**1: texto = f"<i>{texto}</i>"
                             linha_span += texto
                         if linha_span.strip():
                             bloco_linhas += linha_span + " "
@@ -220,19 +199,19 @@ class MetadadosNorma(BaseModel):
     tipo_documento: str
     numero_documento: str
     orgao_emissor: str
-    data_assinatura: str = Field(description="Data estritamente no formato YYYY-MM-DD.")
+    data_assinatura: str
     nome_padronizado: str
 
 class Dispositivo(BaseModel):
     tipo: str
-    texto_principal_alterada: str = Field(description="Mantenha <b> e <i>. Use <br/> para separar parágrafos e incisos. NUNCA use '\\n'.")
-    texto_principal_consolidada: str = Field(description="Texto limpo em vigor. Mantenha <b> e <i>. Use <br/> para quebras.")
+    texto_principal_alterada: str
+    texto_principal_consolidada: str
     is_tabela: bool
     tabela_alterada: Optional[List[List[str]]] = None
     tabela_consolidada: Optional[List[List[str]]] = None
     texto_pos_tabela_alterada: Optional[List[List[str]]] = None
     texto_pos_tabela_consolidada: Optional[List[List[str]]] = None
-    nota_remissiva: Optional[str] = Field(default="", description="Ex: '(Alterado por...)'")
+    nota_remissiva: Optional[str] = Field(default="")
 
 class Consolidacao(BaseModel):
     arquivos_originais_identificados: List[str]
@@ -242,7 +221,7 @@ class Consolidacao(BaseModel):
     cabecalho_complemento: str
     orgaos_emissores: str
     titulo_portaria: str
-    ementa_preambulo: str = Field(description="Ementa e preâmbulo mantendo o fluxo natural do documento original, separando blocos com <br/> e mantendo negritos intocados.")
+    ementa_preambulo: str
     assinatura_nome: str
     assinatura_cargo: str
     dispositivos: List[Dispositivo]
@@ -251,13 +230,10 @@ class AnaliseGlobal(BaseModel):
     consolidacoes_geradas: List[Consolidacao]
     arquivos_nao_alterados: List[str]
 
-# ----------------- FUNÇÃO DE LIMPEZA BLINDADA ANTI-\N -----------------
 def limpar_texto_ia(texto):
     if not texto: return ""
-    texto = texto.replace('\\n', ' ').replace('\n', ' ')
-    texto = texto.replace('<br>', '<br/>').replace('<br >', '<br/>')
-    texto = re.sub(r' {2,}', ' ', texto).strip()
-    return texto
+    texto = texto.replace('\\n', ' ').replace('\n', ' ').replace('<br>', '<br/>').replace('<br >', '<br/>')
+    return re.sub(r' {2,}', ' ', texto).strip()
 
 def injetar_nota_remissiva(texto, nota):
     if nota and nota.strip():
@@ -265,30 +241,38 @@ def injetar_nota_remissiva(texto, nota):
         if texto:
             texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
             return f"{texto_limpo} &nbsp;<font color='red'>{n}</font>"
-        else:
-            return f"<font color='red'>{n}</font>"
+        return f"<font color='red'>{n}</font>"
     return texto
+
+# ----------------- RESGATE DE MEMÓRIA (FEEDBACK LOOP) -----------------
+def resgatar_memoria():
+    memoria = ""
+    if supabase:
+        try:
+            res = supabase.table("memoria_de_correcoes").select("*").order("id", desc=True).limit(5).execute()
+            if res.data:
+                memoria = "\n\n⚠️ REGRAS APRENDIDAS (HISTÓRICO DE CORREÇÕES DO USUÁRIO):\nPreste muita atenção aos erros que você cometeu no passado e que o usuário corrigiu. Não repita os 'Erros da IA' abaixo, utilize o padrão da 'Correção do Usuário':\n"
+                for m in res.data:
+                    memoria += f"- Erro da IA: {m['texto_ia']}\n- Correção do Usuário: {m['texto_corrigido']}\n\n"
+        except: pass
+    return memoria
 
 def analisar_lote_arquivos(arquivos, key):
     client = genai.Client(api_key=key)
-    textos_extraidos = {}
-    for arq in arquivos:
-        textos_extraidos[arq.name] = extrair_texto_com_formatacao(arq.getvalue(), arq.name)
-
-    prompt_triagem = f"""
-    Analise os textos estruturados abaixo. Identifique a Norma Base e TODAS as portarias alteradoras presentes no lote. Ordene e classifique cada uma, extraindo a data de assinatura no formato YYYY-MM-DD.
-    TEXTOS: {" | ".join([f"[{k}]" for k in textos_extraidos.keys()])}
-    """
+    memoria_aprendida = resgatar_memoria()
     
-    resp_triagem = executar_com_fallback(client=client, contents=[prompt_triagem] + list(textos_extraidos.values()), response_schema=TriagemDocumentos)
+    textos_extraidos = {}
+    for arq in arquivos: textos_extraidos[arq.name] = extrair_texto_com_formatacao(arq.getvalue(), arq.name)
+
+    prompt_triagem = f"Analise os textos estruturados abaixo. Identifique a Norma Base e TODAS as portarias alteradoras. TEXTOS: {' | '.join([f'[{k}]' for k in textos_extraidos.keys()])}"
+    resp_triagem = executar_com_fallback(client, [prompt_triagem] + list(textos_extraidos.values()), TriagemDocumentos)
     triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
     
     arquivo_base = next((a for a in triagem_dados if a['tipo'] == 'Base'), None)
     arquivos_alteradores = [a for a in triagem_dados if a['tipo'] == 'Alteradora']
     arquivos_alteradores.sort(key=lambda x: x['data_oficial_iso'])
     
-    if not arquivo_base and not arquivos_alteradores:
-        raise ValueError("Não foi possível identificar a relação normativa.")
+    if not arquivo_base and not arquivos_alteradores: raise ValueError("Não foi possível identificar a relação normativa.")
 
     estado_json_atual = None
     if arquivo_base and supabase:
@@ -301,37 +285,31 @@ def analisar_lote_arquivos(arquivos, key):
 
     if not arquivos_alteradores:
         conteudo_loop = [f"Texto Base:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}"]
-        resp_loop = executar_com_fallback(client=client, contents=conteudo_loop + ["Gere o JSON consolidado preservando rigidamente o layout, ementa, preâmbulo e tags <b> e <br/>."], response_schema=AnaliseGlobal)
+        resp_loop = executar_com_fallback(client, conteudo_loop + ["Gere o JSON consolidado preservando rigidamente o layout, ementa, preâmbulo e tags <b> e <br/>." + memoria_aprendida], AnaliseGlobal)
         return json.loads(resp_loop.text)
     else:
         for i, alt in enumerate(arquivos_alteradores):
             conteudo_loop = []
-            if estado_json_atual:
-                conteudo_loop.append(f"ESTADO ATUAL DO DOCUMENTO (JSON):\n{estado_json_atual}")
-            elif arquivo_base and i == 0:
-                conteudo_loop.append(f"DOCUMENTO BASE ORIGINAL:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}")
+            if estado_json_atual: conteudo_loop.append(f"ESTADO ATUAL DO DOCUMENTO (JSON):\n{estado_json_atual}")
+            elif arquivo_base and i == 0: conteudo_loop.append(f"DOCUMENTO BASE ORIGINAL:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}")
             
-            nome_alt_atual = alt['nome_arquivo_upload']
-            conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({nome_alt_atual}):\n{textos_extraidos[nome_alt_atual]}")
-            
+            conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({alt['nome_arquivo_upload']}):\n{textos_extraidos[alt['nome_arquivo_upload']]}")
             prompt_loop = f"""
-            Execute o passo {i+1} de {len(arquivos_alteradores)} aplicando as modificações desta portaria alteradora sobre o texto atual de forma acumulativa.
+            Execute o passo {i+1} de {len(arquivos_alteradores)} aplicando as modificações desta portaria alteradora sobre o texto atual.
             REGRAS CRÍTICAS DE FORMATAÇÃO (OCR):
-            1. PREÂMBULO E EMENTA: Mantenha exatamente o fluxo original. O título, ementa e preâmbulo devem manter a estrutura com a tag `<br/>` separando as ideias.
-            2. Mantenha os negritos em `<b>` (especialmente "CONSIDERANDO" e "Resolve:") e use `<font color='red'><strike>texto revogado</strike></font>` para revogações.
+            1. PREÂMBULO E EMENTA: Mantenha exatamente o fluxo original. O título, ementa e preâmbulo devem manter a estrutura com `<br/>`.
+            2. Mantenha os negritos em `<b>` e use `<font color='red'><strike>texto revogado</strike></font>` para revogações.
+            {memoria_aprendida}
             """
             conteudo_loop.append(prompt_loop)
-            resp_loop = executar_com_fallback(client=client, contents=conteudo_loop, response_schema=AnaliseGlobal)
+            resp_loop = executar_com_fallback(client, conteudo_loop, AnaliseGlobal)
             estado_json_atual = resp_loop.text 
-
         return json.loads(resp_loop.text)
 
 # --- FUNÇÕES DE RENDERIZAÇÃO PDF E DOCX ---
 def extrair_paragrafos_seguros(texto_html):
     texto_html = limpar_texto_ia(texto_html)
-    texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE)
-    texto_html = texto_html.replace("</font></strike>", "</strike></font>").replace("</b></i>", "</i></b>")
-    
+    texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE).replace("</font></strike>", "</strike></font>").replace("</b></i>", "</i></b>")
     tokens = re.split(r'(<[^>]+>)', texto_html)
     paragrafos, pilha, texto_atual = [], [], ""
     def fechar_todas(p_tags):
@@ -356,13 +334,10 @@ def extrair_paragrafos_seguros(texto_html):
             for i in range(len(pilha)-1, -1, -1):
                 pl = pilha[i].lower()
                 if (t == "</font>" and pl.startswith("<font")) or (t == "</strike>" and pl.startswith("<strike")) or (t == "</b>" and pl == "<b>") or (t == "</i>" and pl == "<i>"):
-                    pilha.pop(i)
-                    rm = True
-                    break
+                    pilha.pop(i); rm = True; break
             if rm: texto_atual += token
         elif t.startswith("<font") or t.startswith("<strike") or t in ["<b>", "<i>"]:
-            pilha.append(token)
-            texto_atual += token
+            pilha.append(token); texto_atual += token
         else: texto_atual += token
     texto_atual += fechar_todas(pilha)
     if re.sub(r'<[^>]+>', '', texto_atual).strip(): paragrafos.append(texto_atual.strip())
@@ -399,10 +374,7 @@ def aplicar_html_no_docx(p, texto_html):
 def renderizar_paragrafos_docx(doc, texto_html, alignment, first_line_indent, space_after=Pt(6), bold_all=False):
     for p_html in extrair_paragrafos_seguros(texto_html):
         p = doc.add_paragraph()
-        p.alignment = alignment
-        p.paragraph_format.first_line_indent = first_line_indent
-        p.paragraph_format.space_after = space_after
-        p.paragraph_format.line_spacing = 1.15
+        p.alignment = alignment; p.paragraph_format.first_line_indent = first_line_indent; p.paragraph_format.space_after = space_after; p.paragraph_format.line_spacing = 1.15
         if bold_all:
             run = p.add_run(re.sub(r'<[^>]+>', '', p_html).replace("&nbsp;", "\xa0"))
             run.font.name, run.font.size, run.bold = 'Times New Roman', Pt(10), True
@@ -424,8 +396,7 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
 
     comp = consolidacao_dict.get("cabecalho_complemento", "")
     story.append(Paragraph(f"VERSÃO {'ALTERADA' if tipo_versao=='alterada' else 'CONSOLIDADA'} - {comp}", estilos['topo']))
-    if os.path.exists("brasao.png"):
-        img = Image("brasao.png", width=60, height=60); img.hAlign = 'CENTER'; story.append(img); story.append(Spacer(1, 10))
+    if os.path.exists("brasao.png"): img = Image("brasao.png", width=60, height=60); img.hAlign = 'CENTER'; story.append(img); story.append(Spacer(1, 10))
 
     story.append(Paragraph(limpar_texto_ia(consolidacao_dict.get("orgaos_emissores") or "").replace('\n', '<br/>'), estilos['orgaos']))
     story.append(Paragraph(limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or "").replace('\n', '<br/>'), estilos['tit']))
@@ -491,50 +462,46 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     buffer = io.BytesIO(); doc.save(buffer); buffer.seek(0)
     return buffer.getvalue()
 
-def salvar_no_supabase(cons):
+# ----------------- REGISTRO DE MEMÓRIA E SALVAMENTO -----------------
+def salvar_no_supabase(cons, cons_original):
     if not supabase: st.error("⚠️ Supabase não configurado."); return False
     try:
+        # FEEDBACK LOOP: Compara o que a IA gerou com o que o usuário alterou
+        if cons_original:
+            for j, disp_editado in enumerate(cons.get("dispositivos", [])):
+                disp_original = cons_original["dispositivos"][j]
+                # Verifica Consolidada
+                if disp_editado.get('texto_principal_consolidada') != disp_original.get('texto_principal_consolidada'):
+                    supabase.table("memoria_de_correcoes").insert({"texto_ia": disp_original.get('texto_principal_consolidada'), "texto_corrigido": disp_editado.get('texto_principal_consolidada')}).execute()
+        
         base = cons['norma_base']
         alteradoras = cons.get('normas_alteradoras', [])
-        
         data_base_iso = converter_para_iso(base.get('data_assinatura'))
         
         res_busca = supabase.table("portarias_base").select("id").eq("nome_padronizado", base['nome_padronizado']).execute()
-        
         if res_busca.data:
             base_id = res_busca.data[0]['id']
             supabase.table("portarias_base").update({"documento_consolidado_json": cons}).eq("id", base_id).execute()
         else:
             res_ins = supabase.table("portarias_base").insert({
-                "tipo_documento": base['tipo_documento'],
-                "numero_documento": base['numero_documento'],
-                "orgao_emissor": base['orgao_emissor'],
-                "data_assinatura": data_base_iso,
-                "nome_padronizado": base['nome_padronizado'],
-                "titulo_original": cons.get("titulo_portaria"),
-                "orgaos_emissores": cons.get("orgaos_emissores"),
-                "assinatura_nome": cons.get("assinatura_nome"),
-                "assinatura_cargo": cons.get("assinatura_cargo"),
-                "documento_consolidado_json": cons
+                "tipo_documento": base['tipo_documento'], "numero_documento": base['numero_documento'],
+                "orgao_emissor": base['orgao_emissor'], "data_assinatura": data_base_iso,
+                "nome_padronizado": base['nome_padronizado'], "titulo_original": cons.get("titulo_portaria"),
+                "orgaos_emissores": cons.get("orgaos_emissores"), "assinatura_nome": cons.get("assinatura_nome"),
+                "assinatura_cargo": cons.get("assinatura_cargo"), "documento_consolidado_json": cons
             }).execute()
             base_id = res_ins.data[0]['id']
             
         for alt in alteradoras:
             res_alt = supabase.table("portarias_alteradoras").select("id").eq("portaria_base_id", base_id).eq("nome_padronizado", alt['nome_padronizado']).execute()
-            
             if not res_alt.data:
                 data_alt_iso = converter_para_iso(alt.get('data_assinatura'))
-                
                 supabase.table("portarias_alteradoras").insert({
-                    "portaria_base_id": base_id,
-                    "tipo_documento": alt['tipo_documento'],
-                    "numero_documento": alt['numero_documento'],
-                    "orgao_emissor": alt['orgao_emissor'],
-                    "data_assinatura": data_alt_iso,
-                    "nome_padronizado": alt['nome_padronizado'],
+                    "portaria_base_id": base_id, "tipo_documento": alt['tipo_documento'],
+                    "numero_documento": alt['numero_documento'], "orgao_emissor": alt['orgao_emissor'],
+                    "data_assinatura": data_alt_iso, "nome_padronizado": alt['nome_padronizado'],
                     "arquivo_nome_original": "Múltiplos Documentos"
                 }).execute()
-                
         return True
     except Exception as e:
         st.error(f"Erro ao salvar: {e}")
@@ -542,6 +509,7 @@ def salvar_no_supabase(cons):
 
 # ----------------- FRONT-END COM EDITOR VISUAL -----------------
 if "dados_processados" not in st.session_state: st.session_state.dados_processados = None
+if "dados_originais_ia" not in st.session_state: st.session_state.dados_originais_ia = None
 st.markdown("<br>", unsafe_allow_html=True)
 
 if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_width=True):
@@ -550,33 +518,34 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     elif not arquivos_enviados: 
         st.warning("⚠️ Envie os arquivos normativos primeiro.")
     else:
-        with st.spinner("⚡ Executando OCR Estrutural e Varredura Completa..."):
+        with st.spinner("⚡ Executando OCR Estrutural e Consulta ao Histórico de Aprendizado..."):
             try:
                 st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip())
+                # Faz uma cópia da geração original da IA para comparar depois
+                st.session_state.dados_originais_ia = copy.deepcopy(st.session_state.dados_processados)
                 st.success("✨ Processamento Concluído com Sucesso!")
             except Exception as e:
                 mensagem_erro = str(e)
                 if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
-                    st.error("❌ Limite de cota esgotado em ambos os modelos (Gemini 3.6 e Gemini 3.5). Por favor, aguarde alguns instantes antes de tentar novamente.")
+                    st.error("❌ Limite de cota esgotado em ambos os modelos (Gemini 3.6 e Gemini 3.5).")
                 else:
                     st.error(f"❌ Ocorreu um erro: {mensagem_erro}")
 
 if st.session_state.dados_processados:
     st.markdown("---")
     dados = st.session_state.dados_processados
+    dados_originais = st.session_state.dados_originais_ia
+    
     for i, cons in enumerate(dados.get("consolidacoes_geradas", [])):
         nome_exibicao_base = cons['norma_base']['nome_padronizado']
         nomes_alteradoras = [alt['nome_padronizado'] for alt in cons.get('normas_alteradoras', [])]
         nome_exibicao_alt = " e ".join(nomes_alteradoras) if nomes_alteradoras else "Desconhecido"
         
         with st.expander(f"📁 **{nome_exibicao_base}** alterada por **{nome_exibicao_alt}**", expanded=True):
-            
-            # --- INÍCIO DO EDITOR WEB WYSIWYG ---
             st.markdown("### 📝 Editor Visual de Documento")
-            st.info("Utilize a barra de ferramentas para formatar o texto livremente. As edições serão salvas automaticamente nos PDFs gerados.")
+            st.info("Formate o texto livremente. Alterações manuais ensinam a IA a não errar novamente na próxima vez que você gerar.")
             
             cons['titulo_portaria'] = st.text_input("Título da Portaria", cons.get('titulo_portaria', ''))
-            
             st.markdown("**Ementa e Preâmbulo**")
             val_ementa = ia_para_editor(cons.get('ementa_preambulo', ''))
             ementa_editada = st_quill(value=val_ementa, key=f"q_ementa_{i}")
@@ -598,14 +567,14 @@ if st.session_state.dados_processados:
                     val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
                     cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
                     if cons_editada: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
-            # --- FIM DO EDITOR WEB WYSIWYG ---
 
             st.markdown("### 📥 Opções de Exportação")
             if st.button(f"💾 Salvar Cascata Inteira no Banco de Dados", key=f"btn_sup_{i}"):
-                if salvar_no_supabase(cons): st.success(f"Banco atualizado com as alterações em cascata!")
+                cons_original = dados_originais.get("consolidacoes_geradas", [])[i] if dados_originais else None
+                if salvar_no_supabase(cons, cons_original): 
+                    st.success(f"Banco atualizado e Inteligência Artificial re-treinada com seus ajustes!")
             
             c1, c2 = st.columns(2)
-            
             pdf_alt, docx_alt = gerar_pdf_dinamico(cons, "alterada"), gerar_docx_dinamico(cons, "alterada")
             pdf_cons, docx_cons = gerar_pdf_dinamico(cons, "consolidada"), gerar_docx_dinamico(cons, "consolidada")
             
@@ -615,4 +584,4 @@ if st.session_state.dados_processados:
             c2.download_button("Baixar PDF (Consolidada)", data=pdf_cons, file_name=f"{nome_arquivo_base}_Cons.pdf", mime="application/pdf", key=f"pc_{i}")
             c2.download_button("Baixar DOCX (Consolidada)", data=docx_cons, file_name=f"{nome_arquivo_base}_Cons.docx", mime="application/vnd.openxmlformats", key=f"dc_{i}")
 
-    if st.button("🔄 Nova Análise", type="secondary"): st.session_state.dados_processados = None; st.rerun()
+    if st.button("🔄 Nova Análise", type="secondary"): st.session_state.dados_processados = None; st.session_state.dados_originais_ia = None; st.rerun()
