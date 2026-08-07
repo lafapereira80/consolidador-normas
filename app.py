@@ -25,7 +25,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide")
 
-# ----------------- LAYOUT "SURPRESA" (CSS CUSTOMIZADO) -----------------
+# ----------------- LAYOUT MODERNO (CSS) -----------------
 st.markdown("""
 <style>
     .main-header {
@@ -48,23 +48,6 @@ st.markdown("""
         color: #f1f1f1;
         margin-bottom: 0;
     }
-    .btn-html-fallback {
-        display: block;
-        text-align: center;
-        background-color: #ff4b4b;
-        color: white !important;
-        padding: 0.6rem 1rem;
-        border-radius: 0.5rem;
-        text-decoration: none;
-        font-weight: bold;
-        font-family: sans-serif;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-        transition: 0.3s;
-    }
-    .btn-html-fallback:hover {
-        background-color: #ff3333;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
-    }
 </style>
 
 <div class="main-header">
@@ -85,6 +68,34 @@ def init_supabase() -> Optional[Client]:
 
 supabase = init_supabase()
 
+# ----------------- AUTO-DETECÇÃO DA PÁGINA HISTÓRICO -----------------
+def render_botao_historico():
+    caminho_real = None
+    
+    # 1. Procura dinamicamente pela pasta pages e pelo arquivo
+    if os.path.exists("pages"):
+        for arquivo in os.listdir("pages"):
+            if "historico" in arquivo.lower() and arquivo.endswith(".py"):
+                caminho_real = f"pages/{arquivo}"
+                break
+    
+    # 2. Se achou, cria o botão com múltiplas camadas de segurança
+    if caminho_real:
+        try:
+            # Tenta usar o componente nativo oficial do Streamlit
+            st.page_link(caminho_real, label="🗄️ Acessar Banco de Dados", icon="➡️")
+        except Exception:
+            # Se o componente falhar (comum na nuvem), cria um botão em HTML que força a navegação pelo navegador
+            nome_pagina = caminho_real.replace("pages/", "").replace(".py", "")
+            st.markdown(f'''
+                <a href="{nome_pagina}" target="_top" style="display: block; text-align: center; background-color: #ff4b4b; color: white !important; padding: 0.6rem 1rem; border-radius: 0.5rem; text-decoration: none; font-weight: bold; font-family: sans-serif; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">
+                    ➡️ 🗄️ Acessar Banco de Dados
+                </a>
+            ''', unsafe_allow_html=True)
+    else:
+        # 3. Se não achou a pasta, avisa o usuário (Isso explica porque o menu lateral sumiu!)
+        st.warning("⚠️ **Atenção:** O Streamlit não encontrou a pasta `pages` ou o arquivo de histórico. Certifique-se de que a estrutura seja exata: `pages/1_Historico.py`.")
+
 # ----------------- NAVEGAÇÃO E CONFIGURAÇÕES -----------------
 col_info, col_nav = st.columns([2, 1])
 
@@ -92,15 +103,7 @@ with col_info:
     st.info("💡 **Como usar:** Arraste seus arquivos (Base e Alteradoras) logo abaixo. O sistema cruzará os dados automaticamente.")
 
 with col_nav:
-    # Sistema triplo de segurança para garantir o link da página
-    try:
-        st.page_link("pages/1_Historico.py", label="🗄️ Acessar Banco de Dados", icon="➡️", use_container_width=True)
-    except KeyError:
-        try:
-            st.page_link("pages/1_historico.py", label="🗄️ Acessar Banco de Dados", icon="➡️", use_container_width=True)
-        except KeyError:
-            # Fallback em HTML puro caso o roteador do Streamlit não ache a pasta
-            st.markdown('<a href="1_Historico" class="btn-html-fallback" target="_self">🗄️ Acessar Banco de Dados</a>', unsafe_allow_html=True)
+    render_botao_historico()
 
 st.markdown("---")
 
