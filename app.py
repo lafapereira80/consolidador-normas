@@ -8,7 +8,8 @@ with col_titulo:
     st.title("⚖️ Autopilot: Consolidador Normativo")
 with col_link:
     st.markdown("<br>", unsafe_allow_html=True)
-    st.page_link("pages/1_Historico.py", label="Ver Histórico", icon="🗄️")
+    # Correção aplicada: Passando diretamente o nome do arquivo da página registrada
+    st.page_link("1_Historico.py", label="Ver Histórico", icon="🗄️")
 
 st.markdown("Arraste os arquivos normativos. O sistema cruza os dados com o histórico acumulado do Supabase.")
 st.markdown("---")
