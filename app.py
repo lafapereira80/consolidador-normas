@@ -3,23 +3,24 @@ from utils import analisar_lote_arquivos, gerar_pdf_dinamico, gerar_docx_dinamic
 
 st.set_page_config(page_title="Autopilot Normativo", layout="wide")
 
-# Cabeçalho com link direto na tela para a página de histórico
+# Oculta a barra lateral visualmente para que o usuário navegue apenas pelo link da tela principal
+st.markdown(
+    """
+    <style>
+        [data-testid="stSidebar"] {display: none;}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# Cabeçalho com o link/botão nativo funcional para o histórico
 col_titulo, col_link = st.columns([3, 1])
 with col_titulo:
     st.title("⚖️ Autopilot: Consolidador Normativo")
 with col_link:
     st.markdown("<br>", unsafe_allow_html=True)
-    # Link direto estilizado apontando para a página de histórico
-    st.markdown(
-        """
-        <div style="text-align: right;">
-            <a href="Historico" target="_self" style="background-color: #ff4b4b; color: white; padding: 0.5rem 1rem; border-radius: 0.3rem; text-decoration: none; font-weight: bold; font-family: sans-serif;">
-                🗄️ Acessar Histórico
-            </a>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    # st.page_link nativo apontando para o arquivo de histórico
+    st.page_link("pages/1_Historico.py", label="🗄️ Acessar Histórico", use_container_width=True)
 
 st.markdown("Arraste os arquivos normativos. O sistema cruza os dados com o histórico acumulado do Supabase.")
 st.markdown("---")
