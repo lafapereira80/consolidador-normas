@@ -11,6 +11,7 @@ import os
 import re
 import time
 import copy
+import hashlib
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -27,6 +28,69 @@ from streamlit_quill import st_quill
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide")
+
+# ----------------- CONEXÃO COM SUPABASE -----------------
+@st.cache_resource
+def init_supabase() -> Optional[Client]:
+    try:
+        url = st.secrets["supabase"]["url"]
+        key = st.secrets["supabase"]["key"]
+        return create_client(url, key)
+    except Exception:
+        return None
+
+supabase = init_supabase()
+
+# ----------------- SISTEMA DE AUTENTICAÇÃO (LOGIN) -----------------
+if "autenticado" not in st.session_state:
+    st.session_state.autenticado = False
+
+def verificar_login(username, password):
+    if not supabase:
+        st.error("⚠️ Erro de conexão com o Banco de Dados.")
+        return False
+    # Criptografa a senha digitada para comparar com o Hash do banco
+    senha_hash = hashlib.sha256(password.encode()).hexdigest()
+    try:
+        res = supabase.table("usuarios").select("password_hash").eq("username", username).execute()
+        if res.data and len(res.data) > 0:
+            if res.data[0]['password_hash'] == senha_hash:
+                return True
+    except Exception as e:
+        st.error(f"Erro ao verificar credenciais: {e}")
+    return False
+
+if not st.session_state.autenticado:
+    # --- TELA DE LOGIN ---
+    st.markdown("""
+    <style>
+        .login-box { max-width: 400px; margin: 5rem auto; padding: 2rem; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); border: 1px solid #e0e0e0; }
+        .login-title { text-align: center; color: #1e3c72; font-weight: 800; font-size: 1.8rem; margin-bottom: 0.5rem; }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    st.markdown('<div class="login-box">', unsafe_allow_html=True)
+    st.markdown('<div class="login-title">⚖️ Autopilot Normativo</div>', unsafe_allow_html=True)
+    st.markdown('<p style="text-align:center; color:#666; margin-bottom: 2rem;">Acesso Restrito ao Sistema</p>', unsafe_allow_html=True)
+    
+    with st.form("form_login"):
+        usuario = st.text_input("Usuário", placeholder="Digite seu usuário")
+        senha = st.text_input("Senha", type="password", placeholder="Digite sua senha")
+        btn_login = st.form_submit_button("Entrar no Sistema", use_container_width=True)
+        
+        if btn_login:
+            if verificar_login(usuario, senha):
+                st.session_state.autenticado = True
+                st.rerun()
+            else:
+                st.error("❌ Usuário ou senha incorretos.")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.stop() # Bloqueia a renderização do resto do código se não estiver logado!
+
+# =====================================================================
+# A PARTIR DAQUI, O CÓDIGO SÓ RODA SE O USUÁRIO ESTIVER AUTENTICADO
+# =====================================================================
 
 # ----------------- LAYOUT E CSS -----------------
 st.markdown("""
@@ -51,18 +115,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ----------------- CONEXÃO COM SUPABASE -----------------
-@st.cache_resource
-def init_supabase() -> Optional[Client]:
-    try:
-        url = st.secrets["supabase"]["url"]
-        key = st.secrets["supabase"]["key"]
-        return create_client(url, key)
-    except Exception:
-        return None
-
-supabase = init_supabase()
-
 def render_botao_historico():
     caminho_real = None
     if os.path.exists("pages"):
@@ -77,11 +129,15 @@ def render_botao_historico():
             nome_pagina = caminho_real.replace("pages/", "").replace(".py", "")
             st.markdown(f'<a href="{nome_pagina}" target="_top" style="display: block; text-align: center; background-color: #ff4b4b; color: white !important; padding: 0.6rem 1rem; border-radius: 0.5rem; text-decoration: none; font-weight: bold;">➡️ 🗄️ Acessar Banco de Dados</a>', unsafe_allow_html=True)
 
-col_info, col_nav = st.columns([2, 1])
+col_info, col_nav, col_logout = st.columns([2, 1, 0.5])
 with col_info:
-    st.info("💡 **Aprendizado Ativado:** As correções feitas no editor ensinarão a IA a não repetir os mesmos erros.")
+    st.info("💡 **Sistema Autenticado:** Proteção de dados ativa.")
 with col_nav:
     render_botao_historico()
+with col_logout:
+    if st.button("Sair", type="secondary"):
+        st.session_state.autenticado = False
+        st.rerun()
 
 st.markdown("---")
 
@@ -470,7 +526,6 @@ def salvar_no_supabase(cons, cons_original):
         if cons_original:
             for j, disp_editado in enumerate(cons.get("dispositivos", [])):
                 disp_original = cons_original["dispositivos"][j]
-                # Verifica Consolidada
                 if disp_editado.get('texto_principal_consolidada') != disp_original.get('texto_principal_consolidada'):
                     supabase.table("memoria_de_correcoes").insert({"texto_ia": disp_original.get('texto_principal_consolidada'), "texto_corrigido": disp_editado.get('texto_principal_consolidada')}).execute()
         
@@ -521,7 +576,6 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
         with st.spinner("⚡ Executando OCR Estrutural e Consulta ao Histórico de Aprendizado..."):
             try:
                 st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip())
-                # Faz uma cópia da geração original da IA para comparar depois
                 st.session_state.dados_originais_ia = copy.deepcopy(st.session_state.dados_processados)
                 st.success("✨ Processamento Concluído com Sucesso!")
             except Exception as e:
