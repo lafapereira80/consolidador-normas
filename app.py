@@ -27,7 +27,30 @@ import fitz  # PyMuPDF
 from streamlit_quill import st_quill
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
-st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide")
+# Adicionado initial_sidebar_state="collapsed" para forçar ocultação do menu lateral
+st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide", initial_sidebar_state="collapsed")
+
+# ----------------- BLOQUEIO TOTAL DO MENU LATERAL E CSS GLOBAL -----------------
+st.markdown("""
+<style>
+    /* Oculta completamente a Sidebar padrão do Streamlit (Menu Lateral) e o botão de expandir */
+    [data-testid="stSidebar"] { display: none !important; }
+    [data-testid="collapsedControl"] { display: none !important; }
+    
+    .block-container { padding-top: 2rem; }
+    .main-header {
+        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+        padding: 30px 20px;
+        border-radius: 12px;
+        color: white;
+        text-align: center;
+        box-shadow: 0 8px 16px rgba(0,0,0,0.15);
+        margin-bottom: 25px;
+    }
+    .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.8rem; margin-bottom: 10px; }
+    .main-header p { font-size: 1.2rem; color: #f1f1f1; margin-bottom: 0; }
+</style>
+""", unsafe_allow_html=True)
 
 # ----------------- CONEXÃO COM SUPABASE -----------------
 @st.cache_resource
@@ -92,49 +115,44 @@ if not st.session_state.autenticado:
 # A PARTIR DAQUI, O CÓDIGO SÓ RODA SE O USUÁRIO ESTIVER AUTENTICADO
 # =====================================================================
 
-# ----------------- LAYOUT E CSS -----------------
 st.markdown("""
-<style>
-    [data-testid="stSidebar"] { display: none; }
-    .block-container { padding-top: 2rem; }
-    .main-header {
-        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-        padding: 30px 20px;
-        border-radius: 12px;
-        color: white;
-        text-align: center;
-        box-shadow: 0 8px 16px rgba(0,0,0,0.15);
-        margin-bottom: 25px;
-    }
-    .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.8rem; margin-bottom: 10px; }
-    .main-header p { font-size: 1.2rem; color: #f1f1f1; margin-bottom: 0; }
-</style>
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
     <p>Motor Híbrido OCR com Editor Visual e Aprendizado Contínuo (Feedback Loop)</p>
 </div>
 """, unsafe_allow_html=True)
 
-# --- NOVO MENU DE NAVEGAÇÃO SUPERIOR ---
-col_info, col_hist, col_usr, col_logout = st.columns([2, 1, 1, 0.5])
+# --- MENU DE NAVEGAÇÃO SUPERIOR FIXO ---
+col_info, col_hist, col_usr, col_logout = st.columns([3, 1.5, 1.5, 1])
 
 with col_info:
     st.info("💡 **Sistema Autenticado:** Proteção de dados ativa.")
 
+# Busca dinâmica dos arquivos para garantir que o link funcione
+hist_path = "pages/historico.py"
+usr_path = "pages/usuarios.py"
+
+if os.path.exists("pages"):
+    for f in os.listdir("pages"):
+        if "historico" in f.lower() and f.endswith(".py"): hist_path = f"pages/{f}"
+        if "usuario" in f.lower() and f.endswith(".py"): usr_path = f"pages/{f}"
+
 with col_hist:
     try:
-        st.page_link("pages/historico.py", label="🗄️ Histórico", icon="➡️")
-    except Exception:
-        pass # Previne interrupção se a página estiver carregando
+        st.page_link(hist_path, label="🗄️ Histórico", icon="➡️")
+    except:
+        nome_pagina = hist_path.replace("pages/", "").replace(".py", "")
+        st.markdown(f'<a href="{nome_pagina}" target="_top" style="display: block; text-align: center; background-color: #f0f2f6; border: 1px solid #d0d4dc; color: #31333F !important; padding: 0.5rem; border-radius: 0.5rem; text-decoration: none; font-weight: 500;">➡️ 🗄️ Histórico</a>', unsafe_allow_html=True)
 
 with col_usr:
     try:
-        st.page_link("pages/usuarios.py", label="👥 Usuários", icon="➡️")
-    except Exception:
-        pass
+        st.page_link(usr_path, label="👥 Usuários", icon="➡️")
+    except:
+        nome_pagina = usr_path.replace("pages/", "").replace(".py", "")
+        st.markdown(f'<a href="{nome_pagina}" target="_top" style="display: block; text-align: center; background-color: #f0f2f6; border: 1px solid #d0d4dc; color: #31333F !important; padding: 0.5rem; border-radius: 0.5rem; text-decoration: none; font-weight: 500;">➡️ 👥 Usuários</a>', unsafe_allow_html=True)
 
 with col_logout:
-    if st.button("Sair", type="secondary"):
+    if st.button("Sair", type="secondary", use_container_width=True):
         st.session_state.autenticado = False
         st.rerun()
 
