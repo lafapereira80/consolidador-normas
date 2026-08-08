@@ -90,30 +90,46 @@ def verificar_login(username, password):
 
 if not st.session_state.autenticado:
     # --- TELA DE LOGIN ---
+    # CORREÇÃO DE LAYOUT: antes o card era feito com <div> aberta num st.markdown
+    # e fechada em outro, com o st.form no meio — Streamlit renderiza cada
+    # chamada como um elemento HTML independente (não aninhado), então a <div>
+    # ficava vazia (a "caixa vazia" reportada) e o formulário aparecia solto,
+    # fora do card. Agora o card é um st.container(border=True) de verdade,
+    # com tudo (título, subtítulo e formulário) dentro dele.
     st.markdown("""
     <style>
-        .login-box { max-width: 400px; margin: 5rem auto; padding: 2rem; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); border: 1px solid #e0e0e0; }
-        .login-title { text-align: center; color: #1e3c72; font-weight: 800; font-size: 1.8rem; margin-bottom: 0.5rem; }
+        div[data-testid="stAppViewContainer"] { display: flex; align-items: center; }
+        .st-key-login_card {
+            max-width: 420px;
+            margin: 4rem auto;
+            padding: 1.5rem 2rem;
+            background: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+        }
+        .st-key-login_card [data-testid="stForm"] { border: none; padding: 0; }
+        .login-title { text-align: center; color: #1e3c72; font-weight: 800; font-size: 1.8rem; margin-bottom: 0.3rem; }
+        .login-subtitle { text-align: center; color: #666; margin-bottom: 1.5rem; }
     </style>
     """, unsafe_allow_html=True)
-    
-    st.markdown('<div class="login-box">', unsafe_allow_html=True)
-    st.markdown('<div class="login-title">⚖️ Autopilot Normativo</div>', unsafe_allow_html=True)
-    st.markdown('<p style="text-align:center; color:#666; margin-bottom: 2rem;">Acesso Restrito ao Sistema</p>', unsafe_allow_html=True)
-    
-    with st.form("form_login"):
-        usuario = st.text_input("Usuário", placeholder="Digite seu usuário")
-        senha = st.text_input("Senha", type="password", placeholder="Digite sua senha")
-        btn_login = st.form_submit_button("Entrar no Sistema", use_container_width=True)
-        
-        if btn_login:
-            if verificar_login(usuario, senha):
-                st.session_state.autenticado = True
-                st.rerun()
-            else:
-                st.error("❌ Usuário ou senha incorretos.")
-    
-    st.markdown('</div>', unsafe_allow_html=True)
+
+    _, col_login, _ = st.columns([1, 1.3, 1])
+    with col_login:
+        with st.container(border=True, key="login_card"):
+            st.markdown('<div class="login-title">⚖️ Autopilot Normativo</div>', unsafe_allow_html=True)
+            st.markdown('<div class="login-subtitle">Acesso Restrito ao Sistema</div>', unsafe_allow_html=True)
+
+            with st.form("form_login"):
+                usuario = st.text_input("Usuário", placeholder="Digite seu usuário")
+                senha = st.text_input("Senha", type="password", placeholder="Digite sua senha")
+                btn_login = st.form_submit_button("Entrar no Sistema", use_container_width=True)
+
+                if btn_login:
+                    if verificar_login(usuario, senha):
+                        st.session_state.autenticado = True
+                        st.rerun()
+                    else:
+                        st.error("❌ Usuário ou senha incorretos.")
     st.stop() # Bloqueia a renderização do resto do código se não estiver logado!
 
 # =====================================================================
