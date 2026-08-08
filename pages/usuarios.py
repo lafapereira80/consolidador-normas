@@ -1,8 +1,12 @@
 import streamlit as st
-import hashlib
 import time
+import sys
+import os
 from supabase import create_client, Client
 from typing import Optional
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from auth_utils import gerar_hash_senha
 
 # Esconde a barra lateral desde o carregamento
 st.set_page_config(page_title="Gerenciar Usuários", page_icon="👥", layout="wide", initial_sidebar_state="collapsed")
@@ -40,8 +44,14 @@ with col_home:
     st.page_link("app.py", label="Início (Upload)", icon="⬅️")
 
 with col_hist:
+    hist_path = "pages/1_Historico.py"
+    if os.path.exists("pages"):
+        for f in os.listdir("pages"):
+            if "historico" in f.lower() and f.endswith(".py"):
+                hist_path = f"pages/{f}"
+                break
     try:
-        st.page_link("pages/historico.py", label="Histórico", icon="🗄️")
+        st.page_link(hist_path, label="Histórico", icon="🗄️")
     except:
         st.markdown('<a href="historico" target="_top" style="display: block; text-align: center; background-color: #f0f2f6; border: 1px solid #d0d4dc; color: #31333F !important; padding: 0.5rem; border-radius: 0.5rem; text-decoration: none; font-weight: 500;">🗄️ Histórico</a>', unsafe_allow_html=True)
 
@@ -67,9 +77,6 @@ supabase = init_supabase()
 if not supabase:
     st.error("⚠️ Não foi possível conectar ao Supabase.")
     st.stop()
-
-def gerar_hash(senha):
-    return hashlib.sha256(senha.encode()).hexdigest()
 
 tab_lista, tab_novo = st.tabs(["📋 Lista de Usuários", "➕ Cadastrar Novo Usuário"])
 
@@ -101,7 +108,7 @@ with tab_lista:
                         nova_senha = st.text_input("Nova Senha", type="password", key=f"ns_{user_id}")
                         if st.form_submit_button("Atualizar Senha", type="primary"):
                             if nova_senha.strip():
-                                hash_novo = gerar_hash(nova_senha)
+                                hash_novo = gerar_hash_senha(nova_senha)
                                 try:
                                     supabase.table("usuarios").update({"password_hash": hash_novo}).eq("id", user_id).execute()
                                     st.success(f"Senha de '{username}' atualizada com sucesso!")
@@ -135,7 +142,7 @@ with tab_novo:
             if not novo_login.strip() or not nova_senha_input.strip():
                 st.warning("Preencha todos os campos corretamente.")
             else:
-                hash_criado = gerar_hash(nova_senha_input)
+                hash_criado = gerar_hash_senha(nova_senha_input)
                 try:
                     supabase.table("usuarios").insert({
                         "username": novo_login.strip(),

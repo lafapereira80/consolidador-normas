@@ -25,6 +25,7 @@ from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import fitz  # PyMuPDF
 from streamlit_quill import st_quill
+from auth_utils import gerar_hash_senha, verificar_senha
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 # Adicionado initial_sidebar_state="collapsed" para forçar ocultação do menu lateral
@@ -72,13 +73,17 @@ def verificar_login(username, password):
     if not supabase:
         st.error("⚠️ Erro de conexão com o Banco de Dados.")
         return False
-    # Criptografa a senha digitada para comparar com o Hash do banco
-    senha_hash = hashlib.sha256(password.encode()).hexdigest()
     try:
-        res = supabase.table("usuarios").select("password_hash").eq("username", username).execute()
+        res = supabase.table("usuarios").select("id, password_hash").eq("username", username).execute()
         if res.data and len(res.data) > 0:
-            if res.data[0]['password_hash'] == senha_hash:
-                return True
+            ok, precisa_migrar = verificar_senha(password, res.data[0]['password_hash'])
+            if ok and precisa_migrar:
+                # Login legado validado: regrava com hash salgado (PBKDF2) sem exigir ação do usuário.
+                try:
+                    supabase.table("usuarios").update({"password_hash": gerar_hash_senha(password)}).eq("id", res.data[0]['id']).execute()
+                except Exception:
+                    pass
+            return ok
     except Exception as e:
         st.error(f"Erro ao verificar credenciais: {e}")
     return False
@@ -195,13 +200,49 @@ def editor_para_pdf(texto):
     texto = re.sub(r'^(<br/>)+|(<br/>)+$', '', texto).strip()
     return texto
 
+SYSTEM_INSTRUCTION_LEGISTECNICA = """
+Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasileiro,
+seguindo rigorosamente a Lei Complementar nº 95/1998 e o Manual de Redação da
+Presidência da República para consolidação normativa. Regras obrigatórias:
+
+1. FIDELIDADE ABSOLUTA: nunca resuma, corrija estilo ou "melhore" o texto original.
+   Transcreva com exatidão o conteúdo de cada dispositivo (artigo, parágrafo, inciso,
+   alínea, item), preservando numeração, ordem e formatação (<b>, <i>, quebras <br/>).
+2. ALTERAÇÃO DE DISPOSITIVO: quando uma norma alteradora dá "nova redação" a um
+   dispositivo, na versão ALTERADA mantenha o texto revogado riscado
+   (<font color='red'><strike>texto antigo</strike></font>) seguido do novo texto,
+   e na versão CONSOLIDADA mostre apenas o texto vigente (o novo).
+3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado na versão ALTERADA e
+   é OMITIDO (ou marcado "(Revogado)") na versão CONSOLIDADA — nunca invente texto
+   substituto que não conste da norma alteradora.
+4. INCLUSÃO DE DISPOSITIVO NOVO: inserido na posição indicada pela alteradora,
+   mantendo a numeração de alíneas/incisos existente (não renumere dispositivos
+   não afetados).
+5. NOTA REMISSIVA: toda alteração/revogação recebe nota entre parênteses indicando
+   o ato que a promoveu, ex.: "(Redação dada pela Portaria nº X/Y, de DATA.)" ou
+   "(Revogado pela Portaria nº X/Y, de DATA.)".
+6. NUNCA altere dispositivos não mencionados pela norma alteradora em processamento
+   nesta etapa — preserve-os byte a byte em relação ao estado anterior.
+7. Se um mesmo dispositivo já foi corrigido manualmente pelo usuário no passado
+   (ver regras aprendidas abaixo, se houver), replique o mesmo padrão de correção.
+"""
+
 def executar_com_fallback(client, contents, response_schema):
-    config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=response_schema, temperature=0.0)
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=response_schema,
+        system_instruction=SYSTEM_INSTRUCTION_LEGISTECNICA,
+        thinking_config=types.ThinkingConfig(thinking_level="high"),
+    )
     max_tentativas_36 = 5
+    ultimo_erro = None
     for tentativa in range(1, max_tentativas_36 + 1):
         try:
-            return client.models.generate_content(model='gemini-3.6-flash', contents=contents, config=config)
+            resp = client.models.generate_content(model='gemini-3.6-flash', contents=contents, config=config)
+            _validar_resposta(resp)
+            return resp
         except Exception as e:
+            ultimo_erro = e
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
                 if tentativa < max_tentativas_36:
                     st.toast(f"⚡ Tentativa {tentativa}/{max_tentativas_36} no 3.6 esgotada. Tentando novamente...", icon="⏳")
@@ -209,12 +250,29 @@ def executar_com_fallback(client, contents, response_schema):
                     continue
                 else:
                     st.toast("⚡ 5 tentativas esgotadas no Gemini 3.6. Alternando para o Gemini 3.5 Flash...", icon="🔄")
+                    break
             else:
                 raise e
     try:
-        return client.models.generate_content(model='gemini-3.5-flash', contents=contents, config=config)
+        resp = client.models.generate_content(model='gemini-3.5-flash', contents=contents, config=config)
+        _validar_resposta(resp)
+        return resp
     except Exception as e_secundario:
-        raise Exception(f"Erro crítico: Ambos os modelos esgotaram a cota. Detalhes: {e_secundario}")
+        raise Exception(f"Erro crítico: Ambos os modelos falharam. Último erro 3.6: {ultimo_erro} | Erro 3.5: {e_secundario}")
+
+def _validar_resposta(resp):
+    """Detecta truncamento (MAX_TOKENS) ou bloqueio de segurança antes de tentar
+    fazer json.loads em cima de um texto incompleto/ausente."""
+    candidatos = getattr(resp, "candidates", None) or []
+    if candidatos:
+        finish = getattr(candidatos[0], "finish_reason", None)
+        finish_str = str(finish) if finish else ""
+        if "MAX_TOKENS" in finish_str:
+            raise Exception("A resposta da IA foi cortada por exceder o limite de tokens (documento muito extenso para uma única etapa).")
+        if "SAFETY" in finish_str or "PROHIBITED" in finish_str:
+            raise Exception("A resposta da IA foi bloqueada por política de segurança do modelo.")
+    if not getattr(resp, "text", None):
+        raise Exception("A IA retornou uma resposta vazia.")
 
 def converter_para_iso(data_str):
     if not data_str: return None
@@ -230,11 +288,18 @@ def converter_para_iso(data_str):
     except:
         return None
 
-def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
-    if nome_arquivo.lower().endswith(".docx"): return f"ARQUIVO DOCX: {nome_arquivo}"
+def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
+    """Retorna uma lista de 'parts' para enviar ao Gemini: texto estruturado
+    (com <b>/<i> preservados via camada de texto do PDF) quando disponível,
+    ou as páginas rasterizadas em imagem quando o PDF não tem camada de texto
+    (documento escaneado) — nesse caso o próprio gemini-3.6-flash faz a leitura
+    (OCR) das imagens, o que é mais confiável do que tentar extrair texto vazio."""
+    if nome_arquivo.lower().endswith(".docx"):
+        return [f"ARQUIVO DOCX: {nome_arquivo} (conteúdo binário não pré-processado)"]
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         html_text = f"CONTEÚDO DO ARQUIVO {nome_arquivo}:\n\n"
+        caracteres_uteis = 0
         for page_num, page in enumerate(doc):
             html_text += f"=== PÁGINA {page_num + 1} ===\n"
             blocks = page.get_text("dict", sort=True).get("blocks", [])
@@ -246,6 +311,7 @@ def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
                         for s in l.get("spans", []):
                             texto = s.get("text", "")
                             if not texto: continue
+                            caracteres_uteis += len(texto.strip())
                             flags = s.get("flags", 0)
                             if flags & 2**4: texto = f"<b>{texto}</b>"
                             if flags & 2**1: texto = f"<i>{texto}</i>"
@@ -255,14 +321,27 @@ def extrair_texto_com_formatacao(file_bytes, nome_arquivo):
                     if bloco_linhas.strip():
                         html_text += bloco_linhas.strip() + "<br/>\n"
             html_text += "<br/>\n"
-        return html_text
+
+        # Heurística: menos de ~30 caracteres úteis por página indica PDF
+        # escaneado (sem camada de texto) — extração por dict() falharia.
+        if caracteres_uteis < 30 * max(doc.page_count, 1):
+            partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO (sem texto extraível). "
+                      f"Leia o conteúdo diretamente das {doc.page_count} imagens de página abaixo, "
+                      f"preservando negrito/itálico perceptíveis visualmente e a ordem exata do texto:"]
+            for page in doc:
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                partes.append(types.Part.from_bytes(data=pix.tobytes("png"), mime_type="image/png"))
+            return partes
+
+        return [html_text]
     except Exception as e:
-        return f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"
+        return [f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"]
 
 # ----------------- ESTRUTURAS PYDANTIC -----------------
 class ArquivoClassificado(BaseModel):
     nome_arquivo_upload: str
     tipo: str = Field(description="'Base' ou 'Alteradora'")
+    nome_padronizado_identificado: str = Field(description="Nome padronizado da norma (tipo, número, órgão e data), ex.: 'PORTARIA Nº 158/PGJM, DE 29 DE JULHO DE 2026'. Usado para localizar memória já salva no banco.")
     data_oficial_iso: str = Field(description="Data formatada estritamente em YYYY-MM-DD.")
 
 class TriagemDocumentos(BaseModel):
@@ -282,8 +361,8 @@ class Dispositivo(BaseModel):
     is_tabela: bool
     tabela_alterada: Optional[List[List[str]]] = None
     tabela_consolidada: Optional[List[List[str]]] = None
-    texto_pos_tabela_alterada: Optional[List[List[str]]] = None
-    texto_pos_tabela_consolidada: Optional[List[List[str]]] = None
+    texto_pos_tabela_alterada: Optional[str] = None
+    texto_pos_tabela_consolidada: Optional[str] = None
     nota_remissiva: Optional[str] = Field(default="")
 
 class Consolidacao(BaseModel):
@@ -335,10 +414,11 @@ def analisar_lote_arquivos(arquivos, key):
     memoria_aprendida = resgatar_memoria()
     
     textos_extraidos = {}
-    for arq in arquivos: textos_extraidos[arq.name] = extrair_texto_com_formatacao(arq.getvalue(), arq.name)
+    for arq in arquivos: textos_extraidos[arq.name] = extrair_conteudo_multimodal(arq.getvalue(), arq.name)
 
-    prompt_triagem = f"Analise os textos estruturados abaixo. Identifique a Norma Base e TODAS as portarias alteradoras. TEXTOS: {' | '.join([f'[{k}]' for k in textos_extraidos.keys()])}"
-    resp_triagem = executar_com_fallback(client, [prompt_triagem] + list(textos_extraidos.values()), TriagemDocumentos)
+    contents_triagem = [f"Analise os documentos abaixo. Identifique a Norma Base e TODAS as portarias alteradoras. ARQUIVOS: {', '.join(textos_extraidos.keys())}"]
+    for partes in textos_extraidos.values(): contents_triagem.extend(partes)
+    resp_triagem = executar_com_fallback(client, contents_triagem, TriagemDocumentos)
     triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
     
     arquivo_base = next((a for a in triagem_dados if a['tipo'] == 'Base'), None)
@@ -350,23 +430,28 @@ def analisar_lote_arquivos(arquivos, key):
     estado_json_atual = None
     if arquivo_base and supabase:
         try:
-            nome_hipotetico = arquivo_base.get('nome_arquivo_upload', '')
-            res_bd = supabase.table("portarias_base").select("documento_consolidado_json").ilike("arquivo_original_identificado", f"%{nome_hipotetico}%").execute()
+            nome_padrao = arquivo_base.get('nome_padronizado_identificado', '')
+            res_bd = supabase.table("portarias_base").select("documento_consolidado_json").eq("nome_padronizado", nome_padrao).execute()
             if res_bd.data and res_bd.data[0].get("documento_consolidado_json"):
                 estado_json_atual = json.dumps(res_bd.data[0]['documento_consolidado_json'])
-        except: pass
+                st.toast("🧠 Memória da base recuperada do banco de dados.", icon="✅")
+        except Exception:
+            pass
 
     if not arquivos_alteradores:
-        conteudo_loop = [f"Texto Base:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}"]
+        conteudo_loop = ["Texto Base:"] + textos_extraidos[arquivo_base['nome_arquivo_upload']]
         resp_loop = executar_com_fallback(client, conteudo_loop + ["Gere o JSON consolidado preservando rigidamente o layout, ementa, preâmbulo e tags <b> e <br/>." + memoria_aprendida], AnaliseGlobal)
         return json.loads(resp_loop.text)
     else:
         for i, alt in enumerate(arquivos_alteradores):
             conteudo_loop = []
             if estado_json_atual: conteudo_loop.append(f"ESTADO ATUAL DO DOCUMENTO (JSON):\n{estado_json_atual}")
-            elif arquivo_base and i == 0: conteudo_loop.append(f"DOCUMENTO BASE ORIGINAL:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}")
-            
-            conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({alt['nome_arquivo_upload']}):\n{textos_extraidos[alt['nome_arquivo_upload']]}")
+            elif arquivo_base and i == 0:
+                conteudo_loop.append("DOCUMENTO BASE ORIGINAL:")
+                conteudo_loop.extend(textos_extraidos[arquivo_base['nome_arquivo_upload']])
+
+            conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({alt['nome_arquivo_upload']}):")
+            conteudo_loop.extend(textos_extraidos[alt['nome_arquivo_upload']])
             prompt_loop = f"""
             Execute o passo {i+1} de {len(arquivos_alteradores)} aplicando as modificações desta portaria alteradora sobre o texto atual.
             REGRAS CRÍTICAS DE FORMATAÇÃO (OCR):
