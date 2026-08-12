@@ -78,7 +78,6 @@ def verificar_login(username, password):
         if res.data and len(res.data) > 0:
             ok, precisa_migrar = verificar_senha(password, res.data[0]['password_hash'])
             if ok and precisa_migrar:
-                # Login legado validado: regrava com hash salgado (PBKDF2) sem exigir ação do usuário.
                 try:
                     supabase.table("usuarios").update({"password_hash": gerar_hash_senha(password)}).eq("id", res.data[0]['id']).execute()
                 except Exception:
@@ -143,7 +142,6 @@ col_info, col_hist, col_usr, col_logout = st.columns([3, 1.5, 1.5, 1])
 with col_info:
     st.info("💡 **Sistema Autenticado:** Proteção de dados ativa.")
 
-# Busca dinâmica dos arquivos para garantir que o link funcione
 hist_path = "pages/historico.py"
 usr_path = "pages/usuarios.py"
 
@@ -190,7 +188,6 @@ def ia_para_editor(texto):
     texto = f"<p>{texto}</p>"
     texto = texto.replace("<p></p>", "")
     
-    # Padroniza todas as variações de tags usando Regex para contornar classes HTML e estilos
     texto = re.sub(r'<(strike|del)\b[^>]*>', '<s>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</(strike|del)>', '</s>', texto, flags=re.IGNORECASE)
     
@@ -201,13 +198,11 @@ def ia_para_editor(texto):
     texto = re.sub(r'</b>', '</strong>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'<i\b[^>]*>', '<em>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</i>', '</em>', texto, flags=re.IGNORECASE)
-    
     return texto
 
 def editor_para_pdf(texto):
     if not texto: return ""
     
-    # Conversão blindada via Regex para absorver classes/atributos colocados pelo Quill
     texto = re.sub(r'<strong\b[^>]*>', '<b>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</strong>', '</b>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'<em\b[^>]*>', '<i>', texto, flags=re.IGNORECASE)
@@ -218,7 +213,6 @@ def editor_para_pdf(texto):
     texto = re.sub(r'<del\b[^>]*>', '<strike>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</del>', '</strike>', texto, flags=re.IGNORECASE)
     
-    # Processa os spans dinamicamente identificando se o editor usou CSS pra colorir, taxar, grifar...
     def span_to_font(match):
         style = match.group(1)
         content = match.group(2)
@@ -262,19 +256,17 @@ Presidência da República para consolidação normativa. Regras obrigatórias:
    Transcreva com exatidão o conteúdo de cada dispositivo (artigo, parágrafo, inciso,
    alínea, item), preservando numeração, ordem e formatação (<b>, <i>, quebras <br/>).
 2. ALTERAÇÃO DE DISPOSITIVO: quando uma norma alteradora dá "nova redação" a um
-   dispositivo, na versão ALTERADA mantenha o texto revogado riscado
-   (<font color='red'><strike>texto antigo</strike></font>) seguido do novo texto,
-   e na versão CONSOLIDADA mostre apenas o texto vigente (o novo).
-3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado na versão ALTERADA e
+   dispositivo, na versão ALTERADA mantenha o texto revogado riscado em vermelho
+   (<font color="red"><strike>texto antigo</strike></font>) seguido do novo texto.
+3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado em vermelho na versão ALTERADA e
    é OMITIDO (ou marcado "(Revogado)") na versão CONSOLIDADA — nunca invente texto
    substituto que não conste da norma alteradora.
 4. INCLUSÃO DE DISPOSITIVO NOVO: inserido na posição indicada pela alteradora,
    mantendo a numeração de alíneas/incisos existente (não renumere dispositivos
    não afetados).
 5. NOTA REMISSIVA: toda alteração/revogação recebe nota entre parênteses indicando
-   o ato que a promoveu. ATENÇÃO: O nome do documento alterador na nota remissiva DEVE FICAR EM CAIXA ALTA (maiúsculas).
-   Exemplo Correto: "(Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026.)"
-   Exemplo Proibido: "(Redação dada pela Portaria nº XX, de 10 de maio de 2026.)".
+   o ato que a promoveu, em CAIXA ALTA. Exemplo: "(Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026.)".
+   ATENÇÃO CRÍTICA: Insira a nota remissiva APENAS UMA VEZ por dispositivo. Nunca duplique ou repita a nota remissiva.
 6. NUNCA altere dispositivos não mencionados pela norma alteradora em processamento
    nesta etapa — preserve-os byte a byte em relação ao estado anterior.
 7. Se um mesmo dispositivo já foi corrigido manualmente pelo usuário no passado
@@ -437,12 +429,7 @@ def limpar_texto_ia(texto):
     return re.sub(r' {2,}', ' ', texto).strip()
 
 def injetar_nota_remissiva(texto, nota):
-    if nota and nota.strip():
-        n = f"({nota.strip()})" if not nota.strip().startswith("(") else nota.strip()
-        if texto:
-            texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
-            return f"{texto_limpo} &nbsp;<font color=\"red\">{n}</font>"
-        return f"<font color=\"red\">{n}</font>"
+    # Desativado para evitar duplicação, pois a IA já insere a nota no texto quando necessário
     return texto
 
 # ----------------- RESGATE DE MEMÓRIA (FEEDBACK LOOP) -----------------
@@ -551,9 +538,8 @@ def extrair_paragrafos_seguros(texto_html):
     texto_html = limpar_texto_ia(texto_html)
     texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE)
     tokens = re.split(r'(<[^>]+>)', texto_html)
-    paragrafos, pilha, texto_atual = [], [], ""
+    paragrafos, pilha, texto_atual = [], [], []
     
-    # Gerencia de forma inteligente a abertura/fechamento das tags mantendo validação XML pura para o PDF
     def fechar_todas(p_tags):
         r = ""
         for tag in reversed(p_tags):
@@ -570,9 +556,11 @@ def extrair_paragrafos_seguros(texto_html):
         if not token: continue
         t = token.lower()
         if t in ["<br>", "<br/>", "<br />"]:
-            texto_atual += fechar_todas(pilha)
-            if re.sub(r'<[^>]+>', '', texto_atual).strip(): paragrafos.append(texto_atual.strip())
-            texto_atual = abrir_todas(pilha)
+            texto_atual.append(fechar_todas(pilha))
+            joined = "".join(texto_atual)
+            if re.sub(r'<[^>]+>', '', joined).strip(): 
+                paragrafos.append(joined.strip())
+            texto_atual = [abrir_todas(pilha)]
         elif t.startswith("</"):
             rm = False
             for i in range(len(pilha)-1, -1, -1):
@@ -582,13 +570,16 @@ def extrair_paragrafos_seguros(texto_html):
                    (t == "</b>" and pl.startswith("<b") and not pl.startswith("<br")) or \
                    (t == "</i>" and pl.startswith("<i")):
                     pilha.pop(i); rm = True; break
-            if rm: texto_atual += token
+            if rm: texto_atual.append(token)
         elif t.startswith("<font") or t.startswith("<strike") or (t.startswith("<b") and not t.startswith("<br")) or t.startswith("<i"):
-            pilha.append(token); texto_atual += token
-        else: texto_atual += token
+            pilha.append(token); texto_atual.append(token)
+        else: 
+            texto_atual.append(token)
         
-    texto_atual += fechar_todas(pilha)
-    if re.sub(r'<[^>]+>', '', texto_atual).strip(): paragrafos.append(texto_atual.strip())
+    texto_atual.append(fechar_todas(pilha))
+    joined = "".join(texto_atual)
+    if re.sub(r'<[^>]+>', '', joined).strip(): 
+        paragrafos.append(joined.strip())
     return paragrafos
 
 def renderizar_paragrafos_pdf(story, texto_html, estilo):
@@ -605,7 +596,6 @@ def aplicar_html_no_docx(p, texto_html):
         if not token: continue
         t = token.lower()
         
-        # Reconhecimento blindado: Ignora classes indesejadas e lê apenas a instrução
         if t.startswith('<b') and not t.startswith('<br'): is_bold = True
         elif t == '</b>': is_bold = False
         elif t.startswith('<i'): is_italic = True
@@ -720,9 +710,6 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
 def salvar_no_supabase(cons, cons_original):
     if not supabase: st.error("⚠️ Supabase não configurado."); return False
     try:
-        # FEEDBACK LOOP: compara TUDO que é editável (ementa, alterada, consolidada,
-        # tabelas e texto pós-tabela) e grava cada correção real feita pelo usuário —
-        # antes só a versão Consolidada do texto principal era capturada.
         if cons_original:
             def _registrar(campo, original, editado):
                 if original != editado and (original or editado):
