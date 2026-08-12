@@ -78,6 +78,7 @@ def verificar_login(username, password):
         if res.data and len(res.data) > 0:
             ok, precisa_migrar = verificar_senha(password, res.data[0]['password_hash'])
             if ok and precisa_migrar:
+                # Login legado validado: regrava com hash salgado (PBKDF2) sem exigir ação do usuário.
                 try:
                     supabase.table("usuarios").update({"password_hash": gerar_hash_senha(password)}).eq("id", res.data[0]['id']).execute()
                 except Exception:
@@ -89,6 +90,12 @@ def verificar_login(username, password):
 
 if not st.session_state.autenticado:
     # --- TELA DE LOGIN ---
+    # CORREÇÃO DE LAYOUT: antes o card era feito com <div> aberta num st.markdown
+    # e fechada em outro, com o st.form no meio — Streamlit renderiza cada
+    # chamada como um elemento HTML independente (não aninhado), então a <div>
+    # ficava vazia (a "caixa vazia" reportada) e o formulário aparecia solto,
+    # fora do card. Agora o card é um st.container(border=True) de verdade,
+    # com tudo (título, subtítulo e formulário) dentro dele.
     st.markdown("""
     <style>
         div[data-testid="stAppViewContainer"] { display: flex; align-items: center; }
@@ -123,7 +130,7 @@ if not st.session_state.autenticado:
                         st.rerun()
                     else:
                         st.error("❌ Usuário ou senha incorretos.")
-    st.stop()
+    st.stop() # Bloqueia a renderização do resto do código se não estiver logado!
 
 # =====================================================================
 # A PARTIR DAQUI, O CÓDIGO SÓ RODA SE O USUÁRIO ESTIVER AUTENTICADO
@@ -142,6 +149,7 @@ col_info, col_hist, col_usr, col_logout = st.columns([3, 1.5, 1.5, 1])
 with col_info:
     st.info("💡 **Sistema Autenticado:** Proteção de dados ativa.")
 
+# Busca dinâmica dos arquivos para garantir que o link funcione
 hist_path = "pages/historico.py"
 usr_path = "pages/usuarios.py"
 
@@ -187,63 +195,24 @@ def ia_para_editor(texto):
     texto = texto.replace("<br/>", "</p><p>").replace("<br>", "</p><p>")
     texto = f"<p>{texto}</p>"
     texto = texto.replace("<p></p>", "")
-    
-    texto = re.sub(r'<(strike|del)\b[^>]*>', '<s>', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'</(strike|del)>', '</s>', texto, flags=re.IGNORECASE)
-    
-    texto = re.sub(r'<font[^>]*color=[\'"]?(red|#f00|#ff0000|rgb\([^)]+\))[\'"]?[^>]*>', '<span style="color: rgb(230, 0, 0);">', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'</font>', '</span>', texto, flags=re.IGNORECASE)
-    
-    texto = re.sub(r'<b\b[^>]*>', '<strong>', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'</b>', '</strong>', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'<i\b[^>]*>', '<em>', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'</i>', '</em>', texto, flags=re.IGNORECASE)
+    texto = texto.replace("<font color='red'><strike>", '<span style="color: rgb(230, 0, 0);"><s>')
+    texto = texto.replace("</strike></font>", "</s></span>")
+    texto = texto.replace("<font color='red'>", '<span style="color: rgb(230, 0, 0);">')
+    texto = texto.replace("</font>", "</span>")
+    texto = texto.replace("<strike>", "<s>").replace("</strike>", "</s>")
+    texto = texto.replace("<b>", "<strong>").replace("</b>", "</strong>")
+    texto = texto.replace("<i>", "<em>").replace("</i>", "</em>")
     return texto
 
 def editor_para_pdf(texto):
     if not texto: return ""
-    
-    texto = re.sub(r'<strong\b[^>]*>', '<b>', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'</strong>', '</b>', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'<em\b[^>]*>', '<i>', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'</em>', '</i>', texto, flags=re.IGNORECASE)
-    
-    texto = re.sub(r'<s\b[^>]*>', '<strike>', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'</s>', '</strike>', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'<del\b[^>]*>', '<strike>', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'</del>', '</strike>', texto, flags=re.IGNORECASE)
-    
-    def span_to_font(match):
-        style = match.group(1)
-        content = match.group(2)
-        
-        has_color = re.search(r'color:\s*(rgb\([^)]+\)|red|#[0-9a-fA-F]+)', style, re.IGNORECASE)
-        has_strike = re.search(r'text-decoration:\s*line-through', style, re.IGNORECASE)
-        has_bold = re.search(r'font-weight:\s*(bold|700|800|900)', style, re.IGNORECASE)
-        has_italic = re.search(r'font-style:\s*italic', style, re.IGNORECASE)
-        
-        result = content
-        if has_bold: result = f"<b>{result}</b>"
-        if has_italic: result = f"<i>{result}</i>"
-        if has_strike: result = f"<strike>{result}</strike>"
-        if has_color: result = f'<font color="red">{result}</font>'
-        
-        return result
-
-    while True:
-        novo_texto = re.sub(
-            r'<span[^>]*style=[\'"]([^\'"]+)[\'"][^>]*>((?:(?!<span).)*?)</span>', 
-            span_to_font, 
-            texto, 
-            flags=re.IGNORECASE | re.DOTALL
-        )
-        if novo_texto == texto:
-            break
-        texto = novo_texto
-
+    texto = texto.replace("<strong>", "<b>").replace("</strong>", "</b>")
+    texto = texto.replace("<em>", "<i>").replace("</em>", "</i>")
+    texto = texto.replace("<s>", "<strike>").replace("</s>", "</strike>")
+    texto = re.sub(r'<span[^>]*color:[^>]*>(.*?)</span>', r"<font color='red'>\1</font>", texto, flags=re.IGNORECASE)
     texto = texto.replace("<p><br></p>", "<br/>")
     texto = texto.replace("</p>", "<br/>").replace("<p>", "")
-    texto = re.sub(r'</?span[^>]*>', '', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</?span[^>]*>', '', texto)
     texto = re.sub(r'^(<br/>)+|(<br/>)+$', '', texto).strip()
     return texto
 
@@ -256,17 +225,18 @@ Presidência da República para consolidação normativa. Regras obrigatórias:
    Transcreva com exatidão o conteúdo de cada dispositivo (artigo, parágrafo, inciso,
    alínea, item), preservando numeração, ordem e formatação (<b>, <i>, quebras <br/>).
 2. ALTERAÇÃO DE DISPOSITIVO: quando uma norma alteradora dá "nova redação" a um
-   dispositivo, na versão ALTERADA mantenha o texto revogado riscado em vermelho
-   (<font color="red"><strike>texto antigo</strike></font>) seguido do novo texto.
-3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado em vermelho na versão ALTERADA e
+   dispositivo, na versão ALTERADA mantenha o texto revogado riscado
+   (<font color='red'><strike>texto antigo</strike></font>) seguido do novo texto,
+   e na versão CONSOLIDADA mostre apenas o texto vigente (o novo).
+3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado na versão ALTERADA e
    é OMITIDO (ou marcado "(Revogado)") na versão CONSOLIDADA — nunca invente texto
    substituto que não conste da norma alteradora.
 4. INCLUSÃO DE DISPOSITIVO NOVO: inserido na posição indicada pela alteradora,
    mantendo a numeração de alíneas/incisos existente (não renumere dispositivos
    não afetados).
 5. NOTA REMISSIVA: toda alteração/revogação recebe nota entre parênteses indicando
-   o ato que a promoveu, em CAIXA ALTA. Exemplo: "(Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026.)".
-   ATENÇÃO CRÍTICA: Insira a nota remissiva APENAS UMA VEZ por dispositivo. Nunca duplique ou repita a nota remissiva.
+   o ato que a promoveu, ex.: "(Redação dada pela Portaria nº X/Y, de DATA.)" ou
+   "(Revogado pela Portaria nº X/Y, de DATA.)".
 6. NUNCA altere dispositivos não mencionados pela norma alteradora em processamento
    nesta etapa — preserve-os byte a byte em relação ao estado anterior.
 7. Se um mesmo dispositivo já foi corrigido manualmente pelo usuário no passado
@@ -312,6 +282,8 @@ def executar_com_fallback(client, contents, response_schema):
         raise Exception(f"Erro crítico: Ambos os modelos falharam. Último erro 3.6: {ultimo_erro} | Erro 3.5: {e_secundario}")
 
 def _validar_resposta(resp):
+    """Detecta truncamento (MAX_TOKENS) ou bloqueio de segurança antes de tentar
+    fazer json.loads em cima de um texto incompleto/ausente."""
     candidatos = getattr(resp, "candidates", None) or []
     if candidatos:
         finish = getattr(candidatos[0], "finish_reason", None)
@@ -338,6 +310,11 @@ def converter_para_iso(data_str):
         return None
 
 def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
+    """Retorna uma lista de 'parts' para enviar ao Gemini: texto estruturado
+    (com <b>/<i> preservados via camada de texto do PDF) quando disponível,
+    ou as páginas rasterizadas em imagem quando o PDF não tem camada de texto
+    (documento escaneado) — nesse caso o próprio gemini-3.6-flash faz a leitura
+    (OCR) das imagens, o que é mais confiável do que tentar extrair texto vazio."""
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         html_text = f"CONTEÚDO DO ARQUIVO {nome_arquivo}:\n\n"
@@ -364,6 +341,8 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
                         html_text += bloco_linhas.strip() + "<br/>\n"
             html_text += "<br/>\n"
 
+        # Heurística: menos de ~30 caracteres úteis por página indica PDF
+        # escaneado (sem camada de texto) — extração por dict() falharia.
         if caracteres_uteis < 30 * max(doc.page_count, 1):
             partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO (sem texto extraível). "
                       f"Leia o conteúdo diretamente das {doc.page_count} imagens de página abaixo, "
@@ -429,7 +408,12 @@ def limpar_texto_ia(texto):
     return re.sub(r' {2,}', ' ', texto).strip()
 
 def injetar_nota_remissiva(texto, nota):
-    # Desativado para evitar duplicação, pois a IA já insere a nota no texto quando necessário
+    if nota and nota.strip():
+        n = f"({nota.strip()})" if not nota.strip().startswith("(") else nota.strip()
+        if texto:
+            texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
+            return f"{texto_limpo} &nbsp;<font color='red'>{n}</font>"
+        return f"<font color='red'>{n}</font>"
     return texto
 
 # ----------------- RESGATE DE MEMÓRIA (FEEDBACK LOOP) -----------------
@@ -470,6 +454,8 @@ def analisar_lote_arquivos(arquivos, key):
         if not arquivo_base and not arquivos_alteradores:
             continue
         if not arquivo_base:
+            # Alteradoras sem ato original identificado no lote: não há como aplicar
+            # a alteração com segurança. Reportado ao usuário, não processado.
             arquivos_nao_alterados.extend([a['nome_arquivo_upload'] for a in arquivos_alteradores])
             continue
 
@@ -486,6 +472,9 @@ def analisar_lote_arquivos(arquivos, key):
     return {"consolidacoes_geradas": consolidacoes_geradas, "arquivos_nao_alterados": arquivos_nao_alterados}
 
 def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida):
+    """Roda a cascata cronológica (do ato mais antigo para o mais novo) para UMA
+    única família normativa (um ato original + seus derivativos), recuperando
+    memória prévia do Supabase quando existir. Retorna um dict compatível com Consolidacao."""
     estado_json_atual = None
     if supabase:
         try:
@@ -524,7 +513,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         1. PREÂMBULO E EMENTA: mantenha exatamente o fluxo original, com <br/> preservando a estrutura de parágrafos.
         2. Preserve negrito <b>, itálico <i>, tabelas e a estrutura de anexos IDÊNTICOS ao ato original, exceto
            nos trechos efetivamente alterados/revogados por esta portaria.
-        3. Use <font color="red"><strike>texto revogado</strike></font> para trechos revogados/substituídos.
+        3. Use <font color='red'><strike>texto revogado</strike></font> para trechos revogados/substituídos.
         4. NUNCA modifique dispositivos, tabelas ou anexos que esta portaria alteradora não menciona.
         {memoria_aprendida}
         """
@@ -536,50 +525,38 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
 # --- FUNÇÕES DE RENDERIZAÇÃO PDF E DOCX ---
 def extrair_paragrafos_seguros(texto_html):
     texto_html = limpar_texto_ia(texto_html)
-    texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE)
+    texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE).replace("</font></strike>", "</strike></font>").replace("</b></i>", "</i></b>")
     tokens = re.split(r'(<[^>]+>)', texto_html)
-    paragrafos, pilha, texto_atual = [], [], []
-    
+    paragrafos, pilha, texto_atual = [], [], ""
     def fechar_todas(p_tags):
         r = ""
         for tag in reversed(p_tags):
             t = tag.lower()
             if t.startswith("<font"): r += "</font>"
             elif t.startswith("<strike"): r += "</strike>"
-            elif t.startswith("<b") and not t.startswith("<br"): r += "</b>"
-            elif t.startswith("<i"): r += "</i>"
+            elif t == "<b>": r += "</b>"
+            elif t == "<i>": r += "</i>"
         return r
-        
     def abrir_todas(p_tags): return "".join(p_tags)
-    
     for token in tokens:
         if not token: continue
         t = token.lower()
         if t in ["<br>", "<br/>", "<br />"]:
-            texto_atual.append(fechar_todas(pilha))
-            joined = "".join(texto_atual)
-            if re.sub(r'<[^>]+>', '', joined).strip(): 
-                paragrafos.append(joined.strip())
-            texto_atual = [abrir_todas(pilha)]
+            texto_atual += fechar_todas(pilha)
+            if re.sub(r'<[^>]+>', '', texto_atual).strip(): paragrafos.append(texto_atual.strip())
+            texto_atual = abrir_todas(pilha)
         elif t.startswith("</"):
             rm = False
             for i in range(len(pilha)-1, -1, -1):
                 pl = pilha[i].lower()
-                if (t == "</font>" and pl.startswith("<font")) or \
-                   (t == "</strike>" and pl.startswith("<strike")) or \
-                   (t == "</b>" and pl.startswith("<b") and not pl.startswith("<br")) or \
-                   (t == "</i>" and pl.startswith("<i")):
+                if (t == "</font>" and pl.startswith("<font")) or (t == "</strike>" and pl.startswith("<strike")) or (t == "</b>" and pl == "<b>") or (t == "</i>" and pl == "<i>"):
                     pilha.pop(i); rm = True; break
-            if rm: texto_atual.append(token)
-        elif t.startswith("<font") or t.startswith("<strike") or (t.startswith("<b") and not t.startswith("<br")) or t.startswith("<i"):
-            pilha.append(token); texto_atual.append(token)
-        else: 
-            texto_atual.append(token)
-        
-    texto_atual.append(fechar_todas(pilha))
-    joined = "".join(texto_atual)
-    if re.sub(r'<[^>]+>', '', joined).strip(): 
-        paragrafos.append(joined.strip())
+            if rm: texto_atual += token
+        elif t.startswith("<font") or t.startswith("<strike") or t in ["<b>", "<i>"]:
+            pilha.append(token); texto_atual += token
+        else: texto_atual += token
+    texto_atual += fechar_todas(pilha)
+    if re.sub(r'<[^>]+>', '', texto_atual).strip(): paragrafos.append(texto_atual.strip())
     return paragrafos
 
 def renderizar_paragrafos_pdf(story, texto_html, estilo):
@@ -589,20 +566,17 @@ def aplicar_html_no_docx(p, texto_html):
     texto_html = limpar_texto_ia(texto_html).replace("&nbsp;", "\xa0")
     texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE)
     tokens = re.split(r'(<[^>]+>)', texto_html)
-    
     is_bold = is_strike = is_red = is_italic = False
-    
     for token in tokens:
         if not token: continue
         t = token.lower()
-        
-        if t.startswith('<b') and not t.startswith('<br'): is_bold = True
+        if t == '<b>': is_bold = True
         elif t == '</b>': is_bold = False
-        elif t.startswith('<i'): is_italic = True
+        elif t == '<i>': is_italic = True
         elif t == '</i>': is_italic = False
-        elif t.startswith('<strike'): is_strike = True 
+        elif t == '<strike>': is_strike = True
         elif t == '</strike>': is_strike = False
-        elif t.startswith('<font') and ('red' in t or '#f00' in t): is_red = True
+        elif "font color" in t and ("red" in t or "'red'" in t or '"red"' in t): is_red = True
         elif t == '</font>': is_red = False
         elif token.startswith('<'): pass
         else:
@@ -707,9 +681,13 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     buffer = io.BytesIO(); doc.save(buffer); buffer.seek(0)
     return buffer.getvalue()
 
+# ----------------- REGISTRO DE MEMÓRIA E SALVAMENTO -----------------
 def salvar_no_supabase(cons, cons_original):
     if not supabase: st.error("⚠️ Supabase não configurado."); return False
     try:
+        # FEEDBACK LOOP: compara TUDO que é editável (ementa, alterada, consolidada,
+        # tabelas e texto pós-tabela) e grava cada correção real feita pelo usuário —
+        # antes só a versão Consolidada do texto principal era capturada.
         if cons_original:
             def _registrar(campo, original, editado):
                 if original != editado and (original or editado):
