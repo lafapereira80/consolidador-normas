@@ -124,7 +124,7 @@ if not st.session_state.autenticado:
                         st.rerun()
                     else:
                         st.error("❌ Usuário ou senha incorretos.")
-    st.stop() # Bloqueia a renderização do resto do código se não estiver logado!
+    st.stop()
 
 # =====================================================================
 # A PARTIR DAQUI, O CÓDIGO SÓ RODA SE O USUÁRIO ESTIVER AUTENTICADO
@@ -190,44 +190,52 @@ def ia_para_editor(texto):
     texto = f"<p>{texto}</p>"
     texto = texto.replace("<p></p>", "")
     
-    # Padroniza todas as tags de taxado para o formato que o Quill aceita
-    texto = re.sub(r'<(strike|del)[^>]*>', '<s>', texto, flags=re.IGNORECASE)
+    # Padroniza todas as variações de tags usando Regex para contornar classes HTML e estilos
+    texto = re.sub(r'<(strike|del)\b[^>]*>', '<s>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</(strike|del)>', '</s>', texto, flags=re.IGNORECASE)
     
-    # Padroniza fonte vermelha para Span reconhecido pelo Quill
     texto = re.sub(r'<font[^>]*color=[\'"]?(red|#f00|#ff0000|rgb\([^)]+\))[\'"]?[^>]*>', '<span style="color: rgb(230, 0, 0);">', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</font>', '</span>', texto, flags=re.IGNORECASE)
     
-    texto = texto.replace("<b>", "<strong>").replace("</b>", "</strong>")
-    texto = texto.replace("<i>", "<em>").replace("</i>", "</em>")
+    texto = re.sub(r'<b\b[^>]*>', '<strong>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</b>', '</strong>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'<i\b[^>]*>', '<em>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</i>', '</em>', texto, flags=re.IGNORECASE)
+    
     return texto
 
 def editor_para_pdf(texto):
     if not texto: return ""
-    texto = texto.replace("<strong>", "<b>").replace("</strong>", "</b>")
-    texto = texto.replace("<em>", "<i>").replace("</em>", "</i>")
     
-    # Garante que as formatações nativas de taxado do Quill virem <strike>
-    texto = texto.replace("<s>", "<strike>").replace("</s>", "</strike>")
-    texto = texto.replace("<del>", "<strike>").replace("</del>", "</strike>")
+    # Conversão blindada via Regex para absorver classes/atributos colocados pelo Quill
+    texto = re.sub(r'<strong\b[^>]*>', '<b>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</strong>', '</b>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'<em\b[^>]*>', '<i>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</em>', '</i>', texto, flags=re.IGNORECASE)
     
-    # Processa os spans dinamicamente do mais interno para o mais externo para garantir PDF seguro
+    texto = re.sub(r'<s\b[^>]*>', '<strike>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</s>', '</strike>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'<del\b[^>]*>', '<strike>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</del>', '</strike>', texto, flags=re.IGNORECASE)
+    
+    # Processa os spans dinamicamente identificando se o editor usou CSS pra colorir, taxar, grifar...
     def span_to_font(match):
         style = match.group(1)
         content = match.group(2)
         
         has_color = re.search(r'color:\s*(rgb\([^)]+\)|red|#[0-9a-fA-F]+)', style, re.IGNORECASE)
         has_strike = re.search(r'text-decoration:\s*line-through', style, re.IGNORECASE)
+        has_bold = re.search(r'font-weight:\s*(bold|700|800|900)', style, re.IGNORECASE)
+        has_italic = re.search(r'font-style:\s*italic', style, re.IGNORECASE)
         
         result = content
-        if has_strike:
-            result = f"<strike>{result}</strike>"
-        if has_color:
-            result = f'<font color="red">{result}</font>'
+        if has_bold: result = f"<b>{result}</b>"
+        if has_italic: result = f"<i>{result}</i>"
+        if has_strike: result = f"<strike>{result}</strike>"
+        if has_color: result = f'<font color="red">{result}</font>'
         
         return result
 
-    # Loop para tratar spans mistos (CSS color + line-through na mesma div) de forma indestrutível
     while True:
         novo_texto = re.sub(
             r'<span[^>]*style=[\'"]([^\'"]+)[\'"][^>]*>((?:(?!<span).)*?)</span>', 
@@ -312,8 +320,6 @@ def executar_com_fallback(client, contents, response_schema):
         raise Exception(f"Erro crítico: Ambos os modelos falharam. Último erro 3.6: {ultimo_erro} | Erro 3.5: {e_secundario}")
 
 def _validar_resposta(resp):
-    """Detecta truncamento (MAX_TOKENS) ou bloqueio de segurança antes de tentar
-    fazer json.loads em cima de um texto incompleto/ausente."""
     candidatos = getattr(resp, "candidates", None) or []
     if candidatos:
         finish = getattr(candidatos[0], "finish_reason", None)
@@ -340,11 +346,6 @@ def converter_para_iso(data_str):
         return None
 
 def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
-    """Retorna uma lista de 'parts' para enviar ao Gemini: texto estruturado
-    (com <b>/<i> preservados via camada de texto do PDF) quando disponível,
-    ou as páginas rasterizadas em imagem quando o PDF não tem camada de texto
-    (documento escaneado) — nesse caso o próprio gemini-3.6-flash faz a leitura
-    (OCR) das imagens, o que é mais confiável do que tentar extrair texto vazio."""
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         html_text = f"CONTEÚDO DO ARQUIVO {nome_arquivo}:\n\n"
@@ -371,8 +372,6 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
                         html_text += bloco_linhas.strip() + "<br/>\n"
             html_text += "<br/>\n"
 
-        # Heurística: menos de ~30 caracteres úteis por página indica PDF
-        # escaneado (sem camada de texto) — extração por dict() falharia.
         if caracteres_uteis < 30 * max(doc.page_count, 1):
             partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO (sem texto extraível). "
                       f"Leia o conteúdo diretamente das {doc.page_count} imagens de página abaixo, "
@@ -442,7 +441,6 @@ def injetar_nota_remissiva(texto, nota):
         n = f"({nota.strip()})" if not nota.strip().startswith("(") else nota.strip()
         if texto:
             texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
-            # Substituído aspas simples por duplas na tag font para conformidade estrita no ReportLab
             return f"{texto_limpo} &nbsp;<font color=\"red\">{n}</font>"
         return f"<font color=\"red\">{n}</font>"
     return texto
@@ -485,8 +483,6 @@ def analisar_lote_arquivos(arquivos, key):
         if not arquivo_base and not arquivos_alteradores:
             continue
         if not arquivo_base:
-            # Alteradoras sem ato original identificado no lote: não há como aplicar
-            # a alteração com segurança. Reportado ao usuário, não processado.
             arquivos_nao_alterados.extend([a['nome_arquivo_upload'] for a in arquivos_alteradores])
             continue
 
@@ -503,9 +499,6 @@ def analisar_lote_arquivos(arquivos, key):
     return {"consolidacoes_geradas": consolidacoes_geradas, "arquivos_nao_alterados": arquivos_nao_alterados}
 
 def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida):
-    """Roda a cascata cronológica (do ato mais antigo para o mais novo) para UMA
-    única família normativa (um ato original + seus derivativos), recuperando
-    memória prévia do Supabase quando existir. Retorna um dict compatível com Consolidacao."""
     estado_json_atual = None
     if supabase:
         try:
@@ -560,15 +553,15 @@ def extrair_paragrafos_seguros(texto_html):
     tokens = re.split(r'(<[^>]+>)', texto_html)
     paragrafos, pilha, texto_atual = [], [], ""
     
-    # Gerencia de forma inteligente a abertura/fechamento das tags mantendo validação XML pura
+    # Gerencia de forma inteligente a abertura/fechamento das tags mantendo validação XML pura para o PDF
     def fechar_todas(p_tags):
         r = ""
         for tag in reversed(p_tags):
             t = tag.lower()
             if t.startswith("<font"): r += "</font>"
             elif t.startswith("<strike"): r += "</strike>"
-            elif t == "<b>": r += "</b>"
-            elif t == "<i>": r += "</i>"
+            elif t.startswith("<b") and not t.startswith("<br"): r += "</b>"
+            elif t.startswith("<i"): r += "</i>"
         return r
         
     def abrir_todas(p_tags): return "".join(p_tags)
@@ -584,10 +577,13 @@ def extrair_paragrafos_seguros(texto_html):
             rm = False
             for i in range(len(pilha)-1, -1, -1):
                 pl = pilha[i].lower()
-                if (t == "</font>" and pl.startswith("<font")) or (t == "</strike>" and pl.startswith("<strike")) or (t == "</b>" and pl == "<b>") or (t == "</i>" and pl == "<i>"):
+                if (t == "</font>" and pl.startswith("<font")) or \
+                   (t == "</strike>" and pl.startswith("<strike")) or \
+                   (t == "</b>" and pl.startswith("<b") and not pl.startswith("<br")) or \
+                   (t == "</i>" and pl.startswith("<i")):
                     pilha.pop(i); rm = True; break
             if rm: texto_atual += token
-        elif t.startswith("<font") or t.startswith("<strike") or t in ["<b>", "<i>"]:
+        elif t.startswith("<font") or t.startswith("<strike") or (t.startswith("<b") and not t.startswith("<br")) or t.startswith("<i"):
             pilha.append(token); texto_atual += token
         else: texto_atual += token
         
@@ -602,17 +598,21 @@ def aplicar_html_no_docx(p, texto_html):
     texto_html = limpar_texto_ia(texto_html).replace("&nbsp;", "\xa0")
     texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE)
     tokens = re.split(r'(<[^>]+>)', texto_html)
+    
     is_bold = is_strike = is_red = is_italic = False
+    
     for token in tokens:
         if not token: continue
         t = token.lower()
-        if t == '<b>': is_bold = True
+        
+        # Reconhecimento blindado: Ignora classes indesejadas e lê apenas a instrução
+        if t.startswith('<b') and not t.startswith('<br'): is_bold = True
         elif t == '</b>': is_bold = False
-        elif t == '<i>': is_italic = True
+        elif t.startswith('<i'): is_italic = True
         elif t == '</i>': is_italic = False
-        elif t.startswith('<strike'): is_strike = True # CORREÇÃO: Utiliza startswith para capturar as tags de strike com eventuais atributos
+        elif t.startswith('<strike'): is_strike = True 
         elif t == '</strike>': is_strike = False
-        elif "font color" in t and ("red" in t or "'red'" in t or '"red"' in t): is_red = True
+        elif t.startswith('<font') and ('red' in t or '#f00' in t): is_red = True
         elif t == '</font>': is_red = False
         elif token.startswith('<'): pass
         else:
@@ -695,7 +695,7 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     renderizar_paragrafos_docx(doc, (consolidacao_dict.get("ementa_preambulo") or "").replace('\n', '<br/>'), WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
 
     for item in consolidacao_dict.get("dispositivos", []):
-        t = (item.get("tipo") or "").lower() # FIX: Declaração da variável 't' corrigida
+        t = (item.get("tipo") or "").lower()
         t_prin = injetar_nota_remissiva((item.get(f"texto_principal_{tipo_versao}") or "").replace('\n', '<br/>'), item.get("nota_remissiva") if not item.get("is_tabela") else "")
         if "capitulo" in t: renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.CENTER, Inches(0), Pt(10), bold_all=True); continue
         if "anexo" in t: doc.add_page_break(); renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.CENTER, Inches(0), Pt(14), bold_all=True); continue
