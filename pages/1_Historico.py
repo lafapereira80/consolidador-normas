@@ -134,3 +134,32 @@ else:
                                 st.error(f"Erro ao apagar relacionamento: {e}")
             else:
                 st.info("Nenhuma portaria alteradora vinculada a esta norma base.")
+
+st.markdown("---")
+st.markdown("### 🧠 Aprendizado da IA (correções registradas)")
+st.caption("Toda vez que você edita e salva um documento, a diferença entre o que a IA gerou e o que você corrigiu é guardada aqui e usada como referência nas próximas consolidações.")
+try:
+    res_mem = supabase.table("memoria_de_correcoes").select("*").order("id", desc=True).limit(30).execute()
+    memorias = res_mem.data if res_mem.data else []
+    if not memorias:
+        st.info("Nenhuma correção registrada ainda.")
+    else:
+        st.caption(f"Exibindo as {len(memorias)} correções mais recentes.")
+        for m in memorias:
+            with st.expander(f"Correção de {m.get('data_registro', 'N/A')}"):
+                cA, cB = st.columns(2)
+                with cA:
+                    st.markdown("**❌ Texto gerado pela IA**")
+                    st.code(m.get('texto_ia') or "", language=None)
+                with cB:
+                    st.markdown("**✅ Correção do usuário**")
+                    st.code(m.get('texto_corrigido') or "", language=None)
+                if st.button("🗑️ Remover este aprendizado", key=f"del_mem_{m['id']}"):
+                    try:
+                        supabase.table("memoria_de_correcoes").delete().eq("id", m['id']).execute()
+                        st.success("Removido.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao remover: {e}")
+except Exception as e:
+    st.warning(f"Não foi possível carregar o histórico de aprendizado: {e}")
