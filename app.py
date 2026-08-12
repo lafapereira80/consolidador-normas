@@ -10,6 +10,7 @@ import os
 import re
 import time
 import copy
+import hashlib
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -23,9 +24,6 @@ from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import fitz
 from streamlit_quill import st_quill
-
-# Validação de Autenticação Modularizada
-from auth_utils import verificar_login
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide", initial_sidebar_state="collapsed")
@@ -63,9 +61,34 @@ def init_supabase() -> Optional[Client]:
 
 supabase = init_supabase()
 
-# ----------------- SISTEMA DE AUTENTICAÇÃO -----------------
+# ----------------- SISTEMA DE AUTENTICAÇÃO INTEGRADO -----------------
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
+
+def verificar_login(username, password):
+    user_limpo = username.strip().lower()
+    pass_limpo = password.strip()
+    
+    if not supabase:
+        st.error("⚠️ Erro de conexão com o Banco de Dados. Verifique o st.secrets.")
+        return False
+        
+    senha_hash = hashlib.sha256(pass_limpo.encode()).hexdigest()
+    
+    try:
+        res = supabase.table("usuarios").select("password_hash").eq("username", user_limpo).execute()
+        if res.data is None or len(res.data) == 0:
+            st.error(f"❌ O usuário '{user_limpo}' não foi encontrado no banco.")
+            return False
+            
+        if res.data[0]['password_hash'] == senha_hash: 
+            return True
+        else:
+            st.error("❌ A senha digitada está incorreta.")
+            return False
+    except Exception as e:
+        st.error(f"⚠️ Erro de comunicação com o banco: {e}")
+        return False
 
 if not st.session_state.autenticado:
     st.markdown("""
@@ -88,11 +111,9 @@ if not st.session_state.autenticado:
             btn_login = st.form_submit_button("Entrar no Sistema", use_container_width=True)
             
             if btn_login:
-                if verificar_login(supabase, usuario, senha):
+                if verificar_login(usuario, senha):
                     st.session_state.autenticado = True
                     st.rerun()
-                else:
-                    st.error("❌ Usuário ou senha incorretos.")
     st.stop()
 
 # =====================================================================
