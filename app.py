@@ -10,7 +10,6 @@ import os
 import re
 import time
 import copy
-import hashlib
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -24,6 +23,10 @@ from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import fitz
 from streamlit_quill import st_quill
+
+# IMPORTAÇÃO DO SEU SISTEMA DE SEGURANÇA AVANÇADO (Salted Hash)
+# Certifique-se de que auth_utils.py está na mesma pasta que app.py no servidor
+from auth_utils import verificar_login
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide", initial_sidebar_state="collapsed")
@@ -61,42 +64,9 @@ def init_supabase() -> Optional[Client]:
 
 supabase = init_supabase()
 
-# ----------------- SISTEMA DE AUTENTICAÇÃO INTEGRADO E BLINDADO -----------------
+# ----------------- SISTEMA DE AUTENTICAÇÃO (MÓDULO EXTERNO) -----------------
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
-
-def verificar_login(username, password):
-    user_limpo = username.strip().lower()
-    pass_limpo = password.strip()
-    
-    if not supabase:
-        st.error("⚠️ Erro de conexão com o Banco de Dados. Verifique o st.secrets.")
-        return False
-        
-    # Gera o hash garantindo o formato UTF-8 (sempre retorna minúsculo)
-    senha_hash = hashlib.sha256(pass_limpo.encode('utf-8')).hexdigest()
-    
-    try:
-        res = supabase.table("usuarios").select("password_hash").eq("username", user_limpo).execute()
-        
-        if res.data is None or len(res.data) == 0:
-            st.error(f"❌ O usuário '{user_limpo}' não foi encontrado no banco.")
-            return False
-            
-        # Pega o hash do banco, remove qualquer espaço invisível e força minúsculo
-        hash_banco = str(res.data[0]['password_hash']).strip().lower()
-            
-        if hash_banco == senha_hash: 
-            return True
-        else:
-            st.error("❌ A senha digitada está incorreta.")
-            # Se a senha estiver errada, exibe a depuração exata:
-            st.warning(f"🔎 DEBUG: \nHash digitado: {senha_hash} \nHash do banco: {hash_banco}")
-            return False
-            
-    except Exception as e:
-        st.error(f"⚠️ Erro de comunicação com o banco: {e}")
-        return False
 
 if not st.session_state.autenticado:
     st.markdown("""
@@ -119,9 +89,12 @@ if not st.session_state.autenticado:
             btn_login = st.form_submit_button("Entrar no Sistema", use_container_width=True)
             
             if btn_login:
+                # Utiliza a função importada do seu arquivo auth_utils.py para lidar com o Salted Hash
                 if verificar_login(usuario, senha):
                     st.session_state.autenticado = True
                     st.rerun()
+                else:
+                    st.error("❌ Usuário ou senha incorretos.")
     st.stop()
 
 # =====================================================================
