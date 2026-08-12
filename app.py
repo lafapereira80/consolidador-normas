@@ -89,6 +89,7 @@ def verificar_login(username, password):
     return False
 
 if not st.session_state.autenticado:
+    # --- TELA DE LOGIN ---
     st.markdown("""
     <style>
         div[data-testid="stAppViewContainer"] { display: flex; align-items: center; }
@@ -123,7 +124,7 @@ if not st.session_state.autenticado:
                         st.rerun()
                     else:
                         st.error("❌ Usuário ou senha incorretos.")
-    st.stop()
+    st.stop() # Bloqueia a renderização do resto do código se não estiver logado!
 
 # =====================================================================
 # A PARTIR DAQUI, O CÓDIGO SÓ RODA SE O USUÁRIO ESTIVER AUTENTICADO
@@ -206,17 +207,41 @@ def editor_para_pdf(texto):
     texto = texto.replace("<strong>", "<b>").replace("</strong>", "</b>")
     texto = texto.replace("<em>", "<i>").replace("</em>", "</i>")
     
-    # Garante que as formatações de taxado do Quill virem <strike>
+    # Garante que as formatações nativas de taxado do Quill virem <strike>
     texto = texto.replace("<s>", "<strike>").replace("</s>", "</strike>")
     texto = texto.replace("<del>", "<strike>").replace("</del>", "</strike>")
-    texto = re.sub(r'<span[^>]*text-decoration:\s*line-through[^>]*>(.*?)</span>', r"<strike>\1</strike>", texto, flags=re.IGNORECASE | re.DOTALL)
     
-    # Converte os spans vermelhos de volta para font color red
-    texto = re.sub(r'<span[^>]*color:\s*(?:rgb\([^)]+\)|red|#[0-9a-fA-F]+)[^>]*>(.*?)</span>', r"<font color='red'>\1</font>", texto, flags=re.IGNORECASE | re.DOTALL)
-    
+    # Processa os spans dinamicamente do mais interno para o mais externo para garantir PDF seguro
+    def span_to_font(match):
+        style = match.group(1)
+        content = match.group(2)
+        
+        has_color = re.search(r'color:\s*(rgb\([^)]+\)|red|#[0-9a-fA-F]+)', style, re.IGNORECASE)
+        has_strike = re.search(r'text-decoration:\s*line-through', style, re.IGNORECASE)
+        
+        result = content
+        if has_strike:
+            result = f"<strike>{result}</strike>"
+        if has_color:
+            result = f'<font color="red">{result}</font>'
+        
+        return result
+
+    # Loop para tratar spans mistos (CSS color + line-through na mesma div) de forma indestrutível
+    while True:
+        novo_texto = re.sub(
+            r'<span[^>]*style=[\'"]([^\'"]+)[\'"][^>]*>((?:(?!<span).)*?)</span>', 
+            span_to_font, 
+            texto, 
+            flags=re.IGNORECASE | re.DOTALL
+        )
+        if novo_texto == texto:
+            break
+        texto = novo_texto
+
     texto = texto.replace("<p><br></p>", "<br/>")
     texto = texto.replace("</p>", "<br/>").replace("<p>", "")
-    texto = re.sub(r'</?span[^>]*>', '', texto)
+    texto = re.sub(r'</?span[^>]*>', '', texto, flags=re.IGNORECASE)
     texto = re.sub(r'^(<br/>)+|(<br/>)+$', '', texto).strip()
     return texto
 
@@ -239,8 +264,9 @@ Presidência da República para consolidação normativa. Regras obrigatórias:
    mantendo a numeração de alíneas/incisos existente (não renumere dispositivos
    não afetados).
 5. NOTA REMISSIVA: toda alteração/revogação recebe nota entre parênteses indicando
-   o ato que a promoveu, ex.: "(Redação dada pela Portaria nº X/Y, de DATA.)" ou
-   "(Revogado pela Portaria nº X/Y, de DATA.)".
+   o ato que a promoveu. ATENÇÃO: NUNCA use caixa alta (maiúsculas) para o nome ou data do
+   documento alterador na nota remissiva. Exemplo Correto: "(Redação dada pela Portaria nº X/Y, de 10 de maio de 2026.)" 
+   Exemplo Proibido: "(Redação dada pela PORTARIA Nº X/Y, DE 10 DE MAIO DE 2026.)".
 6. NUNCA altere dispositivos não mencionados pela norma alteradora em processamento
    nesta etapa — preserve-os byte a byte em relação ao estado anterior.
 7. Se um mesmo dispositivo já foi corrigido manualmente pelo usuário no passado
@@ -416,8 +442,9 @@ def injetar_nota_remissiva(texto, nota):
         n = f"({nota.strip()})" if not nota.strip().startswith("(") else nota.strip()
         if texto:
             texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
-            return f"{texto_limpo} &nbsp;<font color='red'>{n}</font>"
-        return f"<font color='red'>{n}</font>"
+            # Substituído aspas simples por duplas na tag font para conformidade estrita no ReportLab
+            return f"{texto_limpo} &nbsp;<font color=\"red\">{n}</font>"
+        return f"<font color=\"red\">{n}</font>"
     return texto
 
 # ----------------- RESGATE DE MEMÓRIA (FEEDBACK LOOP) -----------------
@@ -517,7 +544,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         1. PREÂMBULO E EMENTA: mantenha exatamente o fluxo original, com <br/> preservando a estrutura de parágrafos.
         2. Preserve negrito <b>, itálico <i>, tabelas e a estrutura de anexos IDÊNTICOS ao ato original, exceto
            nos trechos efetivamente alterados/revogados por esta portaria.
-        3. Use <font color='red'><strike>texto revogado</strike></font> para trechos revogados/substituídos.
+        3. Use <font color="red"><strike>texto revogado</strike></font> para trechos revogados/substituídos.
         4. NUNCA modifique dispositivos, tabelas ou anexos que esta portaria alteradora não menciona.
         {memoria_aprendida}
         """
@@ -529,9 +556,11 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
 # --- FUNÇÕES DE RENDERIZAÇÃO PDF E DOCX ---
 def extrair_paragrafos_seguros(texto_html):
     texto_html = limpar_texto_ia(texto_html)
-    texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE).replace("</font></strike>", "</strike></font>").replace("</b></i>", "</i></b>")
+    texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE)
     tokens = re.split(r'(<[^>]+>)', texto_html)
     paragrafos, pilha, texto_atual = [], [], ""
+    
+    # Gerencia de forma inteligente a abertura/fechamento das tags mantendo validação XML pura
     def fechar_todas(p_tags):
         r = ""
         for tag in reversed(p_tags):
@@ -541,7 +570,9 @@ def extrair_paragrafos_seguros(texto_html):
             elif t == "<b>": r += "</b>"
             elif t == "<i>": r += "</i>"
         return r
+        
     def abrir_todas(p_tags): return "".join(p_tags)
+    
     for token in tokens:
         if not token: continue
         t = token.lower()
@@ -559,6 +590,7 @@ def extrair_paragrafos_seguros(texto_html):
         elif t.startswith("<font") or t.startswith("<strike") or t in ["<b>", "<i>"]:
             pilha.append(token); texto_atual += token
         else: texto_atual += token
+        
     texto_atual += fechar_todas(pilha)
     if re.sub(r'<[^>]+>', '', texto_atual).strip(): paragrafos.append(texto_atual.strip())
     return paragrafos
@@ -663,9 +695,8 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     renderizar_paragrafos_docx(doc, (consolidacao_dict.get("ementa_preambulo") or "").replace('\n', '<br/>'), WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
 
     for item in consolidacao_dict.get("dispositivos", []):
-        t = (item.get("tipo") or "").lower()
         t_prin = injetar_nota_remissiva((item.get(f"texto_principal_{tipo_versao}") or "").replace('\n', '<br/>'), item.get("nota_remissiva") if not item.get("is_tabela") else "")
-        if "capitulo" in t: renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.CENTER, Inches(0), Pt(10), bold_all=True); continue
+        if "capitulo" in (item.get("tipo") or "").lower(): renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.CENTER, Inches(0), Pt(10), bold_all=True); continue
         if "anexo" in t: doc.add_page_break(); renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.CENTER, Inches(0), Pt(14), bold_all=True); continue
         if t_prin: renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
         
