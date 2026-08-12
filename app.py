@@ -61,7 +61,7 @@ def init_supabase() -> Optional[Client]:
 
 supabase = init_supabase()
 
-# ----------------- SISTEMA DE AUTENTICAÇÃO INTEGRADO -----------------
+# ----------------- SISTEMA DE AUTENTICAÇÃO INTEGRADO E BLINDADO -----------------
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 
@@ -73,19 +73,27 @@ def verificar_login(username, password):
         st.error("⚠️ Erro de conexão com o Banco de Dados. Verifique o st.secrets.")
         return False
         
-    senha_hash = hashlib.sha256(pass_limpo.encode()).hexdigest()
+    # Gera o hash garantindo o formato UTF-8 (sempre retorna minúsculo)
+    senha_hash = hashlib.sha256(pass_limpo.encode('utf-8')).hexdigest()
     
     try:
         res = supabase.table("usuarios").select("password_hash").eq("username", user_limpo).execute()
+        
         if res.data is None or len(res.data) == 0:
             st.error(f"❌ O usuário '{user_limpo}' não foi encontrado no banco.")
             return False
             
-        if res.data[0]['password_hash'] == senha_hash: 
+        # Pega o hash do banco, remove qualquer espaço invisível e força minúsculo
+        hash_banco = str(res.data[0]['password_hash']).strip().lower()
+            
+        if hash_banco == senha_hash: 
             return True
         else:
             st.error("❌ A senha digitada está incorreta.")
+            # Se a senha estiver errada, exibe a depuração exata:
+            st.warning(f"🔎 DEBUG: \nHash digitado: {senha_hash} \nHash do banco: {hash_banco}")
             return False
+            
     except Exception as e:
         st.error(f"⚠️ Erro de comunicação com o banco: {e}")
         return False
