@@ -67,29 +67,39 @@ def init_supabase() -> Optional[Client]:
 
 supabase = init_supabase()
 
-# ----------------- SISTEMA DE AUTENTICAÇÃO (LOGIN 100% BANCO DE DADOS) -----------------
+# ----------------- SISTEMA DE AUTENTICAÇÃO (LOGIN BLINDADO) -----------------
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 
 def verificar_login(username, password):
-    user_limpo = username.strip()
+    # Força tudo para minúsculo para evitar erro de digitação (Ex: Admin vs admin)
+    user_limpo = username.strip().lower()
     pass_limpo = password.strip()
-        
+    
     if not supabase:
-        st.error("⚠️ Erro de conexão com o Banco de Dados.")
+        st.error("⚠️ Erro de conexão com o Banco de Dados. Verifique o st.secrets.")
         return False
         
-    # Consulta a senha criptografada diretamente no banco de dados
     senha_hash = hashlib.sha256(pass_limpo.encode()).hexdigest()
+    
     try:
+        # Busca exata no banco
         res = supabase.table("usuarios").select("password_hash").eq("username", user_limpo).execute()
-        if res.data and len(res.data) > 0:
-            if res.data[0]['password_hash'] == senha_hash: 
-                return True
-    except Exception as e:
-        st.error(f"Erro ao verificar credenciais: {e}")
         
-    return False
+        # Mensagens de depuração exatas para sabermos o que está falhando
+        if res.data is None or len(res.data) == 0:
+            st.error(f"❌ O usuário '{user_limpo}' não foi encontrado no banco de dados.")
+            return False
+            
+        if res.data[0]['password_hash'] == senha_hash: 
+            return True
+        else:
+            st.error("❌ A senha digitada está incorreta.")
+            return False
+            
+    except Exception as e:
+        st.error(f"⚠️ Erro de comunicação com o banco: {e}")
+        return False
 
 if not st.session_state.autenticado:
     st.markdown("""
@@ -112,16 +122,14 @@ if not st.session_state.autenticado:
         st.markdown('<div class="login-title">⚖️ Autopilot</div>', unsafe_allow_html=True)
         st.markdown('<div class="login-subtitle">Acesso Restrito ao Sistema Normativo</div>', unsafe_allow_html=True)
         
-        usuario = st.text_input("Usuário", placeholder="Digite seu usuário")
-        senha = st.text_input("Senha", type="password", placeholder="Digite sua senha")
+        usuario = st.text_input("Usuário", placeholder="Ex: admin")
+        senha = st.text_input("Senha", type="password", placeholder="Sua senha secreta")
         btn_login = st.form_submit_button("Entrar no Sistema", use_container_width=True)
         
         if btn_login:
             if verificar_login(usuario, senha):
                 st.session_state.autenticado = True
                 st.rerun()
-            else:
-                st.error("❌ Usuário ou senha incorretos.")
                 
     st.stop() # Bloqueia a renderização do resto do código se não estiver logado
 
