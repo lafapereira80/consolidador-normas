@@ -1,122 +1,112 @@
 import streamlit as st
-import json
 from supabase import create_client, Client
 from typing import Optional
 
-# ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
-st.set_page_config(page_title="Histórico de Normas", page_icon="🗄️", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Gestão de Histórico Supabase", layout="wide")
 
-# ----------------- PROTEÇÃO DE ACESSO -----------------
-if "autenticado" not in st.session_state or not st.session_state.autenticado:
-    st.warning("⚠️ Acesso negado. Por favor, faça o login na página inicial.")
-    st.stop()
-
-# ----------------- CSS GLOBAL (UX/UI PREMIUM) -----------------
 st.markdown("""
-<style>
-    [data-testid="stSidebar"] { display: none !important; }
-    [data-testid="collapsedControl"] { display: none !important; }
-    .block-container { padding-top: 2rem; max-width: 1400px; }
-    .main-header {
-        background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
-        padding: 2.5rem 2rem;
-        border-radius: 12px;
-        color: white;
-        text-align: center;
-        box-shadow: 0 10px 20px rgba(0,0,0,0.1);
-        margin-bottom: 2rem;
-    }
-    .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.5rem; margin-bottom: 0; letter-spacing: -0.5px; }
-</style>
+    <style>
+        [data-testid="stSidebar"] { display: none; }
+        .block-container { padding-top: 2rem; }
+    </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header"><h1>🗄️ Histórico de Banco de Dados</h1></div>', unsafe_allow_html=True)
-
-# --- MENU DE NAVEGAÇÃO SUPERIOR ALINHADO ---
-nav_container = st.container()
-with nav_container:
-    col_home, col_usr, col_logout, _ = st.columns([1.5, 1.5, 1, 4])
-    with col_home:
-        st.page_link("app.py", label="⬅️ Voltar ao Início", use_container_width=True)
-    with col_usr:
-        try:
-            st.page_link("pages/usuarios.py", label="👥 Painel de Usuários", use_container_width=True)
-        except:
-            st.button("👥 Painel de Usuários", disabled=True, use_container_width=True)
-    with col_logout:
-        if st.button("Sair", key="btn_sair_hist", type="primary", use_container_width=True):
-            st.session_state.autenticado = False
-            st.rerun()
-
-st.markdown("---")
-
-# ----------------- CONEXÃO SUPABASE -----------------
 @st.cache_resource
 def init_supabase() -> Optional[Client]:
     try:
-        url = st.secrets["supabase"]["url"]
-        key = st.secrets["supabase"]["key"]
-        return create_client(url, key)
-    except Exception:
-        return None
+        return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
+    except: return None
 
 supabase = init_supabase()
-if not supabase:
-    st.error("⚠️ Falha na conexão com o Supabase.")
-    st.stop()
 
-# --- BARRA DE BUSCA ---
-col_busca, _ = st.columns([2, 1])
-with col_busca:
-    termo_busca = st.text_input("🔍 Buscar norma (nome, número ou órgão)...", placeholder="Digite para filtrar...")
+col_titulo, col_voltar = st.columns([4, 1])
+with col_titulo:
+    st.header("🗄️ Gestão Inteligente do Histórico Normativo")
+with col_voltar:
+    st.write("") 
+    try: st.page_link("app.py", label="⬅️ Voltar ao Autopilot", use_container_width=True)
+    except: st.markdown('<a href="/" target="_self" style="display: block; text-align: center; background-color: #2a5298; color: white !important; padding: 0.6rem 1rem; border-radius: 0.5rem; text-decoration: none; font-weight: bold;">⬅️ Voltar</a>', unsafe_allow_html=True)
 
 st.markdown("---")
 
-res_base = supabase.table("portarias_base").select("*").order("data_assinatura", desc=True).execute()
-portarias_base = res_base.data if res_base.data else []
-
-if termo_busca:
-    t = termo_busca.lower()
-    portarias_base = [
-        p for p in portarias_base 
-        if t in str(p.get('nome_padronizado', '')).lower() 
-        or t in str(p.get('numero_documento', '')).lower()
-        or t in str(p.get('orgao_emissor', '')).lower()
-    ]
-
-if not portarias_base:
-    st.info("Nenhuma norma encontrada.")
+if not supabase:
+    st.error("⚠️ Conexão com o Supabase indisponível.")
 else:
-    st.caption(f"**{len(portarias_base)}** norma(s) listada(s).")
-    for pb in portarias_base:
-        base_id = pb['id']
-        nome_padrao = pb.get('nome_padronizado', f"Norma ID {base_id}")
-        
-        with st.expander(f"📁 {nome_padrao} | Data: {pb.get('data_assinatura', 'N/A')}"):
-            c1, c2 = st.columns([4, 1])
-            with c1:
-                st.markdown(f"**Documento:** {pb.get('tipo_documento', '')} {pb.get('numero_documento', '')}<br>**Órgão:** {pb.get('orgao_emissor', '')}", unsafe_allow_html=True)
-            with c2:
-                if st.button("🗑️ Apagar Cascata", key=f"del_base_{base_id}", type="primary", use_container_width=True):
-                    try:
-                        supabase.table("portarias_alteradoras").delete().eq("portaria_base_id", base_id).execute()
-                        supabase.table("portarias_base").delete().eq("id", base_id).execute()
-                        st.success("Excluído com sucesso!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro: {e}")
+    # ----------------- ÁREA DE FILTROS -----------------
+    st.subheader("🔍 Filtros de Busca Avançada")
+    with st.container(border=True):
+        c1, c2, c3 = st.columns([1, 1, 2])
+        f_tipo = c1.selectbox("Tipo de Documento", ["Todos", "Portaria", "Lei", "Decreto", "Outro"])
+        f_orgao = c2.text_input("Órgão Emissor (Ex: PGJM)")
+        f_texto = c3.text_input("Busca livre (Nome padronizado ou Ementa)")
 
-            res_alt = supabase.table("portarias_alteradoras").select("*").eq("portaria_base_id", base_id).order("data_assinatura", desc=True).execute()
-            if res_alt.data:
-                st.markdown("#### 🔗 Portarias Alteradoras (Cascata)")
-                for pa in res_alt.data:
-                    ca1, ca2 = st.columns([4, 1])
-                    with ca1: st.write(f"- {pa.get('nome_padronizado', '')} ({pa.get('data_assinatura', 'N/A')})")
-                    with ca2:
-                        if st.button("❌ Desvincular", key=f"del_alt_{pa['id']}", use_container_width=True):
-                            try:
-                                supabase.table("portarias_alteradoras").delete().eq("id", pa['id']).execute()
-                                st.rerun()
-                            except Exception as e: st.error(f"Erro: {e}")
-            else:
-                st.info("Nenhuma alteradora vinculada.")
+    if st.button("🔄 Buscar Dados", type="primary"):
+        st.rerun()
+
+    st.markdown("---")
+
+    try:
+        # Busca Completa no Banco
+        query = supabase.table("portarias_base").select("*, portarias_alteradoras(*)").order("data_assinatura", desc=True)
+        response = query.execute()
+        bases = response.data
+        
+        # Filtragem Inteligente via Python (Memória)
+        resultados_filtrados = []
+        for p in bases:
+            t = p.get('tipo_documento', '') or ''
+            o = p.get('orgao_emissor', '') or ''
+            n = p.get('nome_padronizado', '') or ''
+            e = p.get('titulo_original', '') or ''
+            
+            if f_tipo != "Todos" and f_tipo.lower() not in t.lower(): continue
+            if f_orgao and f_orgao.lower() not in o.lower(): continue
+            if f_texto and (f_texto.lower() not in n.lower() and f_texto.lower() not in e.lower()): continue
+            
+            resultados_filtrados.append(p)
+
+        if not resultados_filtrados:
+            st.info("📭 Nenhum documento encontrado com os filtros aplicados.")
+        else:
+            st.success(f"Encontrado(s) {len(resultados_filtrados)} documento(s).")
+            for portaria in resultados_filtrados:
+                p_id = portaria['id']
+                p_nome = portaria['nome_padronizado']
+                p_data = portaria.get('data_assinatura', 'Sem Data')
+                alteradoras = portaria.get('portarias_alteradoras', [])
+                
+                with st.expander(f"📌 {p_nome} — {len(alteradoras)} alteração(ões)"):
+                    st.write(f"**Data de Assinatura:** {p_data}")
+                    st.write(f"**Órgãos Emissores:** {portaria.get('orgaos_emissores', 'Não informado')}")
+                    
+                    st.markdown("---")
+                    st.markdown("#### 🛠️ Gerenciar Registro Base")
+                    
+                    with st.form(key=f"form_edit_{p_id}"):
+                        novo_nome = st.text_input("Nome Padronizado", value=p_nome)
+                        col_ed1, col_ed2 = st.columns(2)
+                        novo_tipo = col_ed1.text_input("Tipo", value=portaria.get('tipo_documento', ''))
+                        novo_orgao = col_ed2.text_input("Órgão", value=portaria.get('orgao_emissor', ''))
+                        
+                        if st.form_submit_button("✏️ Salvar Alterações"):
+                            supabase.table("portarias_base").update({
+                                "nome_padronizado": novo_nome,
+                                "tipo_documento": novo_tipo,
+                                "orgao_emissor": novo_orgao
+                            }).eq("id", p_id).execute()
+                            st.success("✅ Atualizado!")
+                            st.rerun()
+
+                    if st.button(f"🗑️ Apagar Documento Base", key=f"del_{p_id}"):
+                        supabase.table("portarias_base").delete().eq("id", p_id).execute()
+                        st.success("🗑️ Apagado com sucesso!")
+                        st.rerun()
+
+                    st.markdown("#### 📜 Portarias Alteradoras Vinculadas:")
+                    if not alteradoras: st.write("Nenhuma alteração registrada.")
+                    else:
+                        for alt in alteradoras:
+                            st.markdown(f"- **{alt['nome_padronizado']}** (Data: {alt.get('data_assinatura','N/D')})")
+                            
+    except Exception as e:
+        st.error(f"Erro ao carregar dados: {e}")

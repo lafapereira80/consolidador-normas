@@ -6,4 +6,3 @@ pydantic
 requests 
 python-docx
 supabase
-streamlit-quill
