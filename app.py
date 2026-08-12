@@ -264,9 +264,9 @@ Presidência da República para consolidação normativa. Regras obrigatórias:
    mantendo a numeração de alíneas/incisos existente (não renumere dispositivos
    não afetados).
 5. NOTA REMISSIVA: toda alteração/revogação recebe nota entre parênteses indicando
-   o ato que a promoveu. ATENÇÃO: NUNCA use caixa alta (maiúsculas) para o nome da norma alteradora na nota remissiva. O padrão correto é usar iniciais maiúsculas.
-   Exemplo Correto: "(Redação dada pela Portaria nº XX, de 10 DE MAIO DE 2026.)"
-   Exemplo Proibido: "(Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026.)".
+   o ato que a promoveu. ATENÇÃO: O nome do documento alterador na nota remissiva DEVE FICAR EM CAIXA ALTA (maiúsculas).
+   Exemplo Correto: "(Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026.)"
+   Exemplo Proibido: "(Redação dada pela Portaria nº XX, de 10 de maio de 2026.)".
 6. NUNCA altere dispositivos não mencionados pela norma alteradora em processamento
    nesta etapa — preserve-os byte a byte em relação ao estado anterior.
 7. Se um mesmo dispositivo já foi corrigido manualmente pelo usuário no passado
