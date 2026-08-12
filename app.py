@@ -60,6 +60,9 @@ st.markdown("""
     }
     .login-title { text-align: center; color: #1e293b; font-weight: 800; font-size: 1.6rem; margin-bottom: 0.2rem; }
     .login-subtitle { text-align:center; color:#64748b; margin-bottom: 2rem; font-size: 0.95rem; }
+    
+    /* Ajuste para as caixas informativas não quebrarem o layout */
+    .stAlert { border-radius: 8px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -75,21 +78,27 @@ def init_supabase() -> Optional[Client]:
 
 supabase = init_supabase()
 
-# ----------------- SISTEMA DE AUTENTICAÇÃO (LOGIN) -----------------
+# ----------------- SISTEMA DE AUTENTICAÇÃO (LOGIN 100% BANCO DE DADOS) -----------------
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 
 def verificar_login(username, password):
+    user_limpo = username.strip()
+    pass_limpo = password.strip()
+    
     if not supabase:
         st.error("⚠️ Erro de conexão com o Banco de Dados.")
         return False
-    senha_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+    senha_hash = hashlib.sha256(pass_limpo.encode()).hexdigest()
     try:
-        res = supabase.table("usuarios").select("password_hash").eq("username", username).execute()
+        res = supabase.table("usuarios").select("password_hash").eq("username", user_limpo).execute()
         if res.data and len(res.data) > 0:
-            if res.data[0]['password_hash'] == senha_hash: return True
+            if res.data[0]['password_hash'] == senha_hash: 
+                return True
     except Exception as e:
         st.error(f"Erro ao verificar credenciais: {e}")
+        
     return False
 
 if not st.session_state.autenticado:
@@ -132,7 +141,6 @@ with nav_container:
     with col_info:
         st.success("🔒 **Sessão Segura:** Você está conectado ao sistema.")
     
-    # Busca dinâmica para navegação robusta
     hist_path, usr_path = "pages/1_Historico.py", "pages/usuarios.py"
     if os.path.exists("pages"):
         for f in os.listdir("pages"):
@@ -168,7 +176,7 @@ arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF ou DOCX)"
 
 # ----------------- TRADUTORES PARA O EDITOR VISUAL -----------------
 def ia_para_editor(texto):
-    if not texto: return ""
+    if not texto or not texto.strip(): return "<p><br></p>"
     texto = texto.replace("<br/>", "</p><p>").replace("<br>", "</p><p>")
     texto = f"<p>{texto}</p>"
     texto = texto.replace("<p></p>", "")
@@ -601,27 +609,34 @@ if st.session_state.dados_processados:
                 txt_cons = disp.get('texto_principal_consolidada', '').strip()
                 is_tab = disp.get('is_tabela', False)
                 
-                if txt_alt or txt_cons or is_tab:
-                    st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
-                    c_alt, c_cons = st.columns(2)
-                    
-                    with c_alt:
-                        if txt_alt:
-                            st.caption("Versão Alterada")
-                            val_alt = ia_para_editor(txt_alt)
-                            alt_editada = st_quill(value=val_alt, key=f"q_alt_{i}_{j}")
-                            if alt_editada: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
-                        elif is_tab:
-                            st.info("📊 Contém Tabela (Edição visual desabilitada para tabelas)")
-                            
-                    with c_cons:
-                        if txt_cons:
-                            st.caption("Versão Consolidada")
-                            val_cons = ia_para_editor(txt_cons)
-                            cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
-                            if cons_editada: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
-                        elif is_tab:
-                            st.info("📊 Contém Tabela (Edição visual desabilitada para tabelas)")
+                # Se não houver texto nenhum na linha, pula completamente para não quebrar o visual
+                if not txt_alt and not txt_cons and not is_tab:
+                    continue
+                
+                st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
+                c_alt, c_cons = st.columns(2)
+                
+                with c_alt:
+                    st.caption("Versão Alterada")
+                    if txt_alt:
+                        val_alt = ia_para_editor(txt_alt)
+                        alt_editada = st_quill(value=val_alt, key=f"q_alt_{i}_{j}")
+                        if alt_editada: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
+                    elif is_tab:
+                        st.info("📊 Contém Tabela (Edição visual desabilitada)")
+                    else:
+                        st.info("🚫 Vazio (Sem texto alterado)")
+                        
+                with c_cons:
+                    st.caption("Versão Consolidada")
+                    if txt_cons:
+                        val_cons = ia_para_editor(txt_cons)
+                        cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
+                        if cons_editada: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
+                    elif is_tab:
+                        st.info("📊 Contém Tabela (Edição visual desabilitada)")
+                    else:
+                        st.info("🚫 Vazio (Sem texto consolidado)")
 
             st.markdown("### 📥 Opções de Exportação")
             if st.button(f"💾 Salvar Cascata Inteira no Banco de Dados", key=f"btn_sup_{i}"):
