@@ -10,6 +10,7 @@ import os
 import re
 import time
 import copy
+import hashlib
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -24,9 +25,14 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 import fitz
 from streamlit_quill import st_quill
 
-# IMPORTAÇÃO DO SEU SISTEMA DE SEGURANÇA AVANÇADO (Salted Hash)
-# Certifique-se de que auth_utils.py está na mesma pasta que app.py no servidor
-from auth_utils import verificar_login
+# ----------------- TRATAMENTO DE ERRO DE IMPORTAÇÃO (NUVEM) -----------------
+# Tenta importar o módulo de segurança. Se não encontrar no Streamlit Cloud, cria um aviso amigável.
+try:
+    from auth_utils import verificar_login
+except ImportError:
+    def verificar_login(username, password):
+        st.error("🚨 **ALERTA DE SISTEMA:** O arquivo `auth_utils.py` não foi encontrado no servidor. Por favor, certifique-se de enviar (fazer o push/upload) desse arquivo para o seu repositório no GitHub!")
+        return False
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide", initial_sidebar_state="collapsed")
@@ -64,7 +70,7 @@ def init_supabase() -> Optional[Client]:
 
 supabase = init_supabase()
 
-# ----------------- SISTEMA DE AUTENTICAÇÃO (MÓDULO EXTERNO) -----------------
+# ----------------- SISTEMA DE AUTENTICAÇÃO -----------------
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 
@@ -89,11 +95,11 @@ if not st.session_state.autenticado:
             btn_login = st.form_submit_button("Entrar no Sistema", use_container_width=True)
             
             if btn_login:
-                # Utiliza a função importada do seu arquivo auth_utils.py para lidar com o Salted Hash
+                # Se o auth_utils.py não existir no GitHub, a função vai retornar o aviso amarelo na tela
                 if verificar_login(usuario, senha):
                     st.session_state.autenticado = True
                     st.rerun()
-                else:
+                elif supabase: # Omitir mensagem de incorreto se a falha for de conexão/importação
                     st.error("❌ Usuário ou senha incorretos.")
     st.stop()
 
@@ -150,17 +156,14 @@ arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF ou DOCX)"
 
 # ----------------- TRADUTORES PARA O EDITOR VISUAL (BLINDADOS COM REGEX) -----------------
 def ia_para_editor(texto):
-    """Traduz o HTML da IA para o padrão reconhecido pelo Quill Editor de forma robusta."""
     if not texto or not texto.strip(): return "<p><br></p>"
     texto = texto.replace("<br/>", "</p><p>").replace("<br>", "</p><p>")
     texto = f"<p>{texto}</p>"
     texto = texto.replace("<p></p>", "")
     
-    # Intercepta as variações de tags de taxado (strikethrough)
     texto = re.sub(r'<(strike|del)[^>]*>', '<s>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</(strike|del)>', '</s>', texto, flags=re.IGNORECASE)
     
-    # Intercepta qualquer variação de fonte vermelha gerada pela IA e converte em Span pro Quill
     texto = re.sub(r'<font[^>]*color=[\'"]?(red|#f00|#ff0000|rgb\([^)]+\))[\'"]?[^>]*>', '<span style="color: rgb(230, 0, 0);">', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</font>', '</span>', texto, flags=re.IGNORECASE)
     
@@ -169,16 +172,13 @@ def ia_para_editor(texto):
     return texto
 
 def editor_para_pdf(texto):
-    """Traduz o HTML rico do Quill Editor de volta para o padrão engessado do motor de PDF/DOCX."""
     if not texto: return ""
     texto = texto.replace("<strong>", "<b>").replace("</strong>", "</b>")
     texto = texto.replace("<em>", "<i>").replace("</em>", "</i>")
     
-    # Garante que todo taxado gerado pelo editor (s ou del) vire <strike> padrão
     texto = texto.replace("<s>", "<strike>").replace("</s>", "</strike>")
     texto = texto.replace("<del>", "<strike>").replace("</del>", "</strike>")
     
-    # Busca qualquer span vermelho/RGB criado no Quill e converte de volta para a Tag PDF
     texto = re.sub(
         r'<span[^>]*color:\s*(?:rgb\([^)]+\)|red|#[0-9a-fA-F]+)[^>]*>(.*?)</span>', 
         r"<font color='red'>\1</font>", 
@@ -186,7 +186,6 @@ def editor_para_pdf(texto):
         flags=re.IGNORECASE | re.DOTALL
     )
     
-    # Prevenção: Caso o Quill adicione o taxado via estilo CSS
     texto = re.sub(
         r'<span[^>]*text-decoration:\s*line-through[^>]*>(.*?)</span>', 
         r"<strike>\1</strike>", 
