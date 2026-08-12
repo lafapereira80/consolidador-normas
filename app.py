@@ -67,22 +67,19 @@ def init_supabase() -> Optional[Client]:
 
 supabase = init_supabase()
 
-# ----------------- SISTEMA DE AUTENTICAÇÃO (LOGIN) -----------------
+# ----------------- SISTEMA DE AUTENTICAÇÃO (LOGIN 100% BANCO DE DADOS) -----------------
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 
 def verificar_login(username, password):
     user_limpo = username.strip()
     pass_limpo = password.strip()
-    
-    # Fallback de Segurança: Garante acesso caso o banco bloqueie
-    if user_limpo == "admin" and pass_limpo == "admin123":
-        return True
         
     if not supabase:
         st.error("⚠️ Erro de conexão com o Banco de Dados.")
         return False
         
+    # Consulta a senha criptografada diretamente no banco de dados
     senha_hash = hashlib.sha256(pass_limpo.encode()).hexdigest()
     try:
         res = supabase.table("usuarios").select("password_hash").eq("username", user_limpo).execute()
@@ -95,7 +92,6 @@ def verificar_login(username, password):
     return False
 
 if not st.session_state.autenticado:
-    # Injeta CSS específico apenas para formatar o formulário de login como um "Card"
     st.markdown("""
     <style>
         [data-testid="stForm"] {
@@ -615,7 +611,6 @@ if st.session_state.dados_processados:
                 txt_cons = disp.get('texto_principal_consolidada', '').strip()
                 is_tab = disp.get('is_tabela', False)
                 
-                # Se não houver texto nenhum na linha, pula completamente para não quebrar o visual
                 if not txt_alt and not txt_cons and not is_tab:
                     continue
                 
