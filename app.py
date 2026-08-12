@@ -264,9 +264,9 @@ Presidência da República para consolidação normativa. Regras obrigatórias:
    mantendo a numeração de alíneas/incisos existente (não renumere dispositivos
    não afetados).
 5. NOTA REMISSIVA: toda alteração/revogação recebe nota entre parênteses indicando
-   o ato que a promoveu. ATENÇÃO: NUNCA use caixa alta (maiúsculas) para o nome ou data do
-   documento alterador na nota remissiva. Exemplo Correto: "(Redação dada pela Portaria nº X/Y, de 10 de maio de 2026.)" 
-   Exemplo Proibido: "(Redação dada pela PORTARIA Nº X/Y, DE 10 DE MAIO DE 2026.)".
+   o ato que a promoveu. ATENÇÃO: NUNCA use caixa alta (maiúsculas) para o nome da norma alteradora na nota remissiva. O padrão correto é usar iniciais maiúsculas.
+   Exemplo Correto: "(Redação dada pela Portaria nº XX, de 10 DE MAIO DE 2026.)"
+   Exemplo Proibido: "(Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026.)".
 6. NUNCA altere dispositivos não mencionados pela norma alteradora em processamento
    nesta etapa — preserve-os byte a byte em relação ao estado anterior.
 7. Se um mesmo dispositivo já foi corrigido manualmente pelo usuário no passado
@@ -695,8 +695,9 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     renderizar_paragrafos_docx(doc, (consolidacao_dict.get("ementa_preambulo") or "").replace('\n', '<br/>'), WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
 
     for item in consolidacao_dict.get("dispositivos", []):
+        t = (item.get("tipo") or "").lower() # FIX: Declaração da variável 't' corrigida
         t_prin = injetar_nota_remissiva((item.get(f"texto_principal_{tipo_versao}") or "").replace('\n', '<br/>'), item.get("nota_remissiva") if not item.get("is_tabela") else "")
-        if "capitulo" in (item.get("tipo") or "").lower(): renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.CENTER, Inches(0), Pt(10), bold_all=True); continue
+        if "capitulo" in t: renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.CENTER, Inches(0), Pt(10), bold_all=True); continue
         if "anexo" in t: doc.add_page_break(); renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.CENTER, Inches(0), Pt(14), bold_all=True); continue
         if t_prin: renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
         
