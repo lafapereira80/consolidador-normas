@@ -597,18 +597,31 @@ if st.session_state.dados_processados:
             
             st.markdown("#### Dispositivos Normativos")
             for j, disp in enumerate(cons.get("dispositivos", [])):
-                st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
-                c_alt, c_cons = st.columns(2)
-                with c_alt:
-                    st.caption("Versão Alterada")
-                    val_alt = ia_para_editor(disp.get('texto_principal_alterada', ''))
-                    alt_editada = st_quill(value=val_alt, key=f"q_alt_{i}_{j}")
-                    if alt_editada: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
-                with c_cons:
-                    st.caption("Versão Consolidada")
-                    val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
-                    cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
-                    if cons_editada: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
+                txt_alt = disp.get('texto_principal_alterada', '').strip()
+                txt_cons = disp.get('texto_principal_consolidada', '').strip()
+                is_tab = disp.get('is_tabela', False)
+                
+                if txt_alt or txt_cons or is_tab:
+                    st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
+                    c_alt, c_cons = st.columns(2)
+                    
+                    with c_alt:
+                        if txt_alt:
+                            st.caption("Versão Alterada")
+                            val_alt = ia_para_editor(txt_alt)
+                            alt_editada = st_quill(value=val_alt, key=f"q_alt_{i}_{j}")
+                            if alt_editada: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
+                        elif is_tab:
+                            st.info("📊 Contém Tabela (Edição visual desabilitada para tabelas)")
+                            
+                    with c_cons:
+                        if txt_cons:
+                            st.caption("Versão Consolidada")
+                            val_cons = ia_para_editor(txt_cons)
+                            cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
+                            if cons_editada: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
+                        elif is_tab:
+                            st.info("📊 Contém Tabela (Edição visual desabilitada para tabelas)")
 
             st.markdown("### 📥 Opções de Exportação")
             if st.button(f"💾 Salvar Cascata Inteira no Banco de Dados", key=f"btn_sup_{i}"):
