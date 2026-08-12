@@ -25,14 +25,9 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 import fitz
 from streamlit_quill import st_quill
 
-# ----------------- TRATAMENTO DE ERRO DE IMPORTAÇÃO (NUVEM) -----------------
-# Tenta importar o módulo de segurança. Se não encontrar no Streamlit Cloud, cria um aviso amigável.
-try:
-    from auth_utils import verificar_login
-except ImportError:
-    def verificar_login(username, password):
-        st.error("🚨 **ALERTA DE SISTEMA:** O arquivo `auth_utils.py` não foi encontrado no servidor. Por favor, certifique-se de enviar (fazer o push/upload) desse arquivo para o seu repositório no GitHub!")
-        return False
+# ----------------- IMPORTAÇÃO DO MÓDULO DE SEGURANÇA -----------------
+# Importação direta. Se houver erro de dependência dentro do auth_utils, o log mostrará a causa real.
+from auth_utils import verificar_login
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide", initial_sidebar_state="collapsed")
@@ -95,12 +90,20 @@ if not st.session_state.autenticado:
             btn_login = st.form_submit_button("Entrar no Sistema", use_container_width=True)
             
             if btn_login:
-                # Se o auth_utils.py não existir no GitHub, a função vai retornar o aviso amarelo na tela
-                if verificar_login(usuario, senha):
-                    st.session_state.autenticado = True
-                    st.rerun()
-                elif supabase: # Omitir mensagem de incorreto se a falha for de conexão/importação
-                    st.error("❌ Usuário ou senha incorretos.")
+                # Chama a sua função de validação que está no auth_utils.py
+                try:
+                    if verificar_login(usuario, senha):
+                        st.session_state.autenticado = True
+                        st.rerun()
+                    else:
+                        st.error("❌ Usuário ou senha incorretos.")
+                except TypeError:
+                    # Fallback caso a sua função exija que o supabase seja passado como argumento
+                    if verificar_login(supabase, usuario, senha):
+                        st.session_state.autenticado = True
+                        st.rerun()
+                    else:
+                        st.error("❌ Usuário ou senha incorretos.")
     st.stop()
 
 # =====================================================================
