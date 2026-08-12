@@ -89,13 +89,6 @@ def verificar_login(username, password):
     return False
 
 if not st.session_state.autenticado:
-    # --- TELA DE LOGIN ---
-    # CORREÇÃO DE LAYOUT: antes o card era feito com <div> aberta num st.markdown
-    # e fechada em outro, com o st.form no meio — Streamlit renderiza cada
-    # chamada como um elemento HTML independente (não aninhado), então a <div>
-    # ficava vazia (a "caixa vazia" reportada) e o formulário aparecia solto,
-    # fora do card. Agora o card é um st.container(border=True) de verdade,
-    # com tudo (título, subtítulo e formulário) dentro dele.
     st.markdown("""
     <style>
         div[data-testid="stAppViewContainer"] { display: flex; align-items: center; }
@@ -130,7 +123,7 @@ if not st.session_state.autenticado:
                         st.rerun()
                     else:
                         st.error("❌ Usuário ou senha incorretos.")
-    st.stop() # Bloqueia a renderização do resto do código se não estiver logado!
+    st.stop()
 
 # =====================================================================
 # A PARTIR DAQUI, O CÓDIGO SÓ RODA SE O USUÁRIO ESTIVER AUTENTICADO
@@ -195,11 +188,15 @@ def ia_para_editor(texto):
     texto = texto.replace("<br/>", "</p><p>").replace("<br>", "</p><p>")
     texto = f"<p>{texto}</p>"
     texto = texto.replace("<p></p>", "")
-    texto = texto.replace("<font color='red'><strike>", '<span style="color: rgb(230, 0, 0);"><s>')
-    texto = texto.replace("</strike></font>", "</s></span>")
-    texto = texto.replace("<font color='red'>", '<span style="color: rgb(230, 0, 0);">')
-    texto = texto.replace("</font>", "</span>")
-    texto = texto.replace("<strike>", "<s>").replace("</strike>", "</s>")
+    
+    # Padroniza todas as tags de taxado para o formato que o Quill aceita
+    texto = re.sub(r'<(strike|del)[^>]*>', '<s>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</(strike|del)>', '</s>', texto, flags=re.IGNORECASE)
+    
+    # Padroniza fonte vermelha para Span reconhecido pelo Quill
+    texto = re.sub(r'<font[^>]*color=[\'"]?(red|#f00|#ff0000|rgb\([^)]+\))[\'"]?[^>]*>', '<span style="color: rgb(230, 0, 0);">', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</font>', '</span>', texto, flags=re.IGNORECASE)
+    
     texto = texto.replace("<b>", "<strong>").replace("</b>", "</strong>")
     texto = texto.replace("<i>", "<em>").replace("</i>", "</em>")
     return texto
@@ -208,8 +205,15 @@ def editor_para_pdf(texto):
     if not texto: return ""
     texto = texto.replace("<strong>", "<b>").replace("</strong>", "</b>")
     texto = texto.replace("<em>", "<i>").replace("</em>", "</i>")
+    
+    # Garante que as formatações de taxado do Quill virem <strike>
     texto = texto.replace("<s>", "<strike>").replace("</s>", "</strike>")
-    texto = re.sub(r'<span[^>]*color:[^>]*>(.*?)</span>', r"<font color='red'>\1</font>", texto, flags=re.IGNORECASE)
+    texto = texto.replace("<del>", "<strike>").replace("</del>", "</strike>")
+    texto = re.sub(r'<span[^>]*text-decoration:\s*line-through[^>]*>(.*?)</span>', r"<strike>\1</strike>", texto, flags=re.IGNORECASE | re.DOTALL)
+    
+    # Converte os spans vermelhos de volta para font color red
+    texto = re.sub(r'<span[^>]*color:\s*(?:rgb\([^)]+\)|red|#[0-9a-fA-F]+)[^>]*>(.*?)</span>', r"<font color='red'>\1</font>", texto, flags=re.IGNORECASE | re.DOTALL)
+    
     texto = texto.replace("<p><br></p>", "<br/>")
     texto = texto.replace("</p>", "<br/>").replace("<p>", "")
     texto = re.sub(r'</?span[^>]*>', '', texto)
@@ -574,7 +578,7 @@ def aplicar_html_no_docx(p, texto_html):
         elif t == '</b>': is_bold = False
         elif t == '<i>': is_italic = True
         elif t == '</i>': is_italic = False
-        elif t == '<strike>': is_strike = True
+        elif t.startswith('<strike'): is_strike = True # CORREÇÃO: Utiliza startswith para capturar as tags de strike com eventuais atributos
         elif t == '</strike>': is_strike = False
         elif "font color" in t and ("red" in t or "'red'" in t or '"red"' in t): is_red = True
         elif t == '</font>': is_red = False
@@ -681,7 +685,6 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     buffer = io.BytesIO(); doc.save(buffer); buffer.seek(0)
     return buffer.getvalue()
 
-# ----------------- REGISTRO DE MEMÓRIA E SALVAMENTO -----------------
 def salvar_no_supabase(cons, cons_original):
     if not supabase: st.error("⚠️ Supabase não configurado."); return False
     try:
