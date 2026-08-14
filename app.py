@@ -91,12 +91,6 @@ def verificar_login(username, password):
 
 if not st.session_state.autenticado:
     # --- TELA DE LOGIN ---
-    # CORREÇÃO DE LAYOUT: antes o card era feito com <div> aberta num st.markdown
-    # e fechada em outro, com o st.form no meio — Streamlit renderiza cada
-    # chamada como um elemento HTML independente (não aninhado), então a <div>
-    # ficava vazia (a "caixa vazia" reportada) e o formulário aparecia solto,
-    # fora do card. Agora o card é um st.container(border=True) de verdade,
-    # com tudo (título, subtítulo e formulário) dentro dele.
     st.markdown("""
     <style>
         div[data-testid="stAppViewContainer"] { display: flex; align-items: center; }
@@ -206,81 +200,16 @@ def ia_para_editor(texto):
     return texto
 
 def editor_para_pdf(texto):
-    """Converte o HTML devolvido pelo Quill de volta para o markup canônico
-    (<b>, <i>, <strike>, <font color='red'>, <br/>) usado no PDF/DOCX.
-    Usa um parser HTML de verdade (em vez de replace/regex encadeados) porque
-    o Quill pode serializar negrito/itálico/riscado/cor em ordens e formas
-    diferentes (tag dedicada, classe CSS, ou style inline combinado na mesma
-    tag) — um replace literal quebra nesses casos e é a causa da perda de
-    negrito/riscado e de tags malformadas na exportação."""
     if not texto: return ""
-    parser = _QuillParser()
-    try:
-        parser.feed(texto)
-    except Exception:
-        return limpar_texto_ia(texto)
-
-    segs = []
-    for text, b, i, s, r in parser.runs:
-        if text == "\n":
-            segs.append("<br/>")
-            continue
-        if not text: continue
-        seg = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\xa0', '&nbsp;')
-        if b: seg = f"<b>{seg}</b>"
-        if i: seg = f"<i>{seg}</i>"
-        if s: seg = f"<strike>{seg}</strike>"
-        if r: seg = f"<font color='red'>{seg}</font>"
-        segs.append(seg)
-
-    resultado = "".join(segs)
-    resultado = re.sub(r'(<br/>\s*){3,}', '<br/><br/>', resultado)
-    resultado = re.sub(r'^(<br/>)+|(<br/>)+$', '', resultado).strip()
-    return resultado
-
-class _QuillParser(HTMLParser):
-    """Lê o HTML do Quill e produz uma lista plana de (texto, negrito, italico,
-    riscado, vermelho) — independente de como as tags/estilos foram aninhados
-    ou combinados pelo editor."""
-    def __init__(self):
-        super().__init__()
-        self.stack = []
-        self.runs = []
-
-    @staticmethod
-    def _flags(tag, attrs):
-        style = (attrs.get('style') or '').lower().replace(' ', '')
-        cls = (attrs.get('class') or '').lower()
-        cor = (attrs.get('color') or '').lower()
-        bold = tag in ('b', 'strong') or 'font-weight:bold' in style or 'font-weight:700' in style or 'font-weight:600' in style
-        italic = tag in ('i', 'em') or 'font-style:italic' in style
-        strike = tag in ('s', 'strike', 'del') or 'text-decoration:line-through' in style or 'ql-strike' in cls
-        red = ('color:rgb(230' in style or 'color:#e6' in style or 'color:red' in style
-               or (tag == 'font' and 'red' in cor))
-        return {'bold': bold, 'italic': italic, 'strike': strike, 'red': red}
-
-    def handle_starttag(self, tag, attrs):
-        if tag == 'br':
-            self.runs.append(("\n", False, False, False, False)); return
-        self.stack.append((tag, self._flags(tag, dict(attrs))))
-
-    def handle_startendtag(self, tag, attrs):
-        if tag == 'br':
-            self.runs.append(("\n", False, False, False, False))
-
-    def handle_endtag(self, tag):
-        for idx in range(len(self.stack) - 1, -1, -1):
-            if self.stack[idx][0] == tag:
-                del self.stack[idx]; break
-        if tag == 'p':
-            self.runs.append(("\n", False, False, False, False))
-
-    def handle_data(self, data):
-        if not data: return
-        b = i = s = r = False
-        for _, f in self.stack:
-            b |= f['bold']; i |= f['italic']; s |= f['strike']; r |= f['red']
-        self.runs.append((data, b, i, s, r))
+    texto = texto.replace("<strong>", "<b>").replace("</strong>", "</b>")
+    texto = texto.replace("<em>", "<i>").replace("</em>", "</i>")
+    texto = texto.replace("<s>", "<strike>").replace("</s>", "</strike>")
+    texto = re.sub(r'<span[^>]*color:[^>]*>(.*?)</span>', r"<font color='red'>\1</font>", texto, flags=re.IGNORECASE)
+    texto = texto.replace("<p><br></p>", "<br/>")
+    texto = texto.replace("</p>", "<br/>").replace("<p>", "")
+    texto = re.sub(r'</?span[^>]*>', '', texto)
+    texto = re.sub(r'^(<br/>)+|(<br/>)+$', '', texto).strip()
+    return texto
 
 SYSTEM_INSTRUCTION_LEGISTECNICA = """
 Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasileiro,
@@ -300,25 +229,14 @@ Presidência da República para consolidação normativa. Regras obrigatórias:
 4. INCLUSÃO DE DISPOSITIVO NOVO: inserido na posição indicada pela alteradora,
    mantendo a numeração de alíneas/incisos existente (não renumere dispositivos
    não afetados).
-5. NOTA REMISSIVA: toda alteração/revogação recebe nota indicando o ato que a
-   promoveu (ex.: "Redação dada pela Portaria nº X/Y, de DATA." ou "Revogado
-   pela Portaria nº X/Y, de DATA."). Essa nota vai EXCLUSIVAMENTE no campo
-   'nota_remissiva' do dispositivo, SEM parênteses. NUNCA escreva essa mesma
-   nota também dentro de texto_principal_alterada/texto_principal_consolidada
-   — o aplicativo insere a nota automaticamente a partir do campo dedicado, e
-   repeti-la no texto principal causa duplicação visível no documento final.
+5. NOTA REMISSIVA: toda alteração/revogação recebe nota entre parênteses indicando
+   o ato que a promoveu, ex.: "(Redação dada pela Portaria nº X/Y, de DATA.)" ou
+   "(Revogado pela Portaria nº X/Y, de DATA.)".
 6. NUNCA altere dispositivos não mencionados pela norma alteradora em processamento
    nesta etapa — preserve-os byte a byte em relação ao estado anterior.
 7. Se um mesmo dispositivo já foi corrigido manualmente pelo usuário no passado
    (ver regras aprendidas abaixo, se houver), replique o mesmo padrão de correção.
-8. ANEXOS E TABELAS: classifique cabeçalhos de anexo com tipo="anexo" (ex.: "ANEXO I").
-   Reproduza tabelas linha a linha em 'tabela_alterada'/'tabela_consolidada' e qualquer
-   texto que venha depois da tabela em 'texto_pos_tabela_alterada'/'_consolidada' — nunca
-   misture o texto pós-tabela dentro das células. Preserve a ordem e o número exato de
-   colunas/linhas do documento original.
 """
-
-MODELOS_FALLBACK = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash']
 
 def executar_com_fallback(client, contents, response_schema):
     config = types.GenerateContentConfig(
@@ -327,33 +245,32 @@ def executar_com_fallback(client, contents, response_schema):
         system_instruction=SYSTEM_INSTRUCTION_LEGISTECNICA,
         thinking_config=types.ThinkingConfig(thinking_level="high"),
     )
-    max_tentativas_por_modelo = 5
-    erros = {}
-    for idx, modelo in enumerate(MODELOS_FALLBACK):
-        for tentativa in range(1, max_tentativas_por_modelo + 1):
-            try:
-                resp = client.models.generate_content(model=modelo, contents=contents, config=config)
-                _validar_resposta(resp)
-                return resp
-            except Exception as e:
-                erros[modelo] = e
-                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    if tentativa < max_tentativas_por_modelo:
-                        st.toast(f"⚡ Tentativa {tentativa}/{max_tentativas_por_modelo} no {modelo} esgotada. Tentando novamente...", icon="⏳")
-                        time.sleep(3)
-                        continue
-                    elif idx < len(MODELOS_FALLBACK) - 1:
-                        st.toast(f"⚡ Cota esgotada no {modelo}. Alternando para {MODELOS_FALLBACK[idx + 1]}...", icon="🔄")
-                        break
-                    else:
-                        raise Exception(f"Erro crítico: todos os modelos falharam. Detalhes: {erros}")
-                elif "404" in str(e) or "NOT_FOUND" in str(e):
-                    # Modelo indisponível/descontinuado: pula direto para o próximo, sem gastar as 5 tentativas.
-                    st.toast(f"⚠️ {modelo} indisponível. Alternando para o próximo da cadeia...", icon="🔄")
-                    break
+    max_tentativas_36 = 5
+    ultimo_erro = None
+    for tentativa in range(1, max_tentativas_36 + 1):
+        try:
+            resp = client.models.generate_content(model='gemini-3.6-flash', contents=contents, config=config)
+            _validar_resposta(resp)
+            return resp
+        except Exception as e:
+            ultimo_erro = e
+            erro_str = str(e).upper()
+            if "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str or "503" in erro_str or "UNAVAILABLE" in erro_str:
+                if tentativa < max_tentativas_36:
+                    st.toast(f"⚡ Servidor sobrecarregado (Tentativa {tentativa}/{max_tentativas_36}). Tentando novamente em instantes...", icon="⏳")
+                    time.sleep(4)
+                    continue
                 else:
-                    raise e
-    raise Exception(f"Erro crítico: todos os modelos da cadeia de fallback falharam. Detalhes: {erros}")
+                    st.toast("⚡ 5 tentativas esgotadas no Gemini 3.6. Alternando para o Gemini 3.5 Flash...", icon="🔄")
+                    break
+            else:
+                raise e
+    try:
+        resp = client.models.generate_content(model='gemini-3.5-flash', contents=contents, config=config)
+        _validar_resposta(resp)
+        return resp
+    except Exception as e_secundario:
+        raise Exception(f"Erro crítico: Ambos os modelos falharam devido a instabilidade. Tente novamente em alguns minutos. Último erro 3.6: {ultimo_erro} | Erro 3.5: {e_secundario}")
 
 def _validar_resposta(resp):
     """Detecta truncamento (MAX_TOKENS) ou bloqueio de segurança antes de tentar
@@ -457,7 +374,7 @@ class Dispositivo(BaseModel):
     tabela_consolidada: Optional[List[List[str]]] = None
     texto_pos_tabela_alterada: Optional[str] = None
     texto_pos_tabela_consolidada: Optional[str] = None
-    nota_remissiva: Optional[str] = Field(default="", description="APENAS o texto da nota, SEM parênteses, ex.: 'Redação dada pela Portaria nº X/Y, de DATA.' NUNCA repita/inclua essa nota dentro de texto_principal_alterada ou texto_principal_consolidada — o aplicativo insere a nota automaticamente a partir deste campo.")
+    nota_remissiva: Optional[str] = Field(default="")
 
 class Consolidacao(BaseModel):
     arquivos_originais_identificados: List[str]
@@ -483,17 +400,11 @@ def limpar_texto_ia(texto):
 
 def injetar_nota_remissiva(texto, nota):
     if nota and nota.strip():
-        n = nota.strip()
-        n_sem_parenteses = n.strip("()").strip()
-        n_fmt = f"({n_sem_parenteses})"
-        # Proteção contra duplicação: se a IA (ou uma edição manual) já deixou
-        # essa mesma nota escrita dentro do texto principal, não injeta de novo.
-        if texto and n_sem_parenteses and n_sem_parenteses.lower() in re.sub(r'<[^>]+>', '', texto).lower():
-            return texto
+        n = f"({nota.strip()})" if not nota.strip().startswith("(") else nota.strip()
         if texto:
             texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
-            return f"{texto_limpo} &nbsp;<font color='red'>{n_fmt}</font>"
-        return f"<font color='red'>{n_fmt}</font>"
+            return f"{texto_limpo} &nbsp;<font color='red'>{n}</font>"
+        return f"<font color='red'>{n}</font>"
     return texto
 
 # ----------------- RESGATE DE MEMÓRIA (FEEDBACK LOOP) -----------------
@@ -761,7 +672,6 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     buffer = io.BytesIO(); doc.save(buffer); buffer.seek(0)
     return buffer.getvalue()
 
-# ----------------- REGISTRO DE MEMÓRIA E SALVAMENTO -----------------
 def salvar_no_supabase(cons, cons_original):
     if not supabase: st.error("⚠️ Supabase não configurado."); return False
     try:
