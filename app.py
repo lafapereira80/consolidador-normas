@@ -179,97 +179,73 @@ except:
 st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF) — um ato original e todos os seus derivativos, ou vários grupos normativos de uma vez", type=["pdf"], accept_multiple_files=True, key="uploader_lote")
 
-# ----------------- TRADUTORES PARA O EDITOR VISUAL (PARSER) -----------------
+# ----------------- TRADUTORES PARA O EDITOR VISUAL -----------------
 def ia_para_editor(texto):
     if not texto: return ""
     texto = texto.replace("<br/>", "</p><p>").replace("<br>", "</p><p>")
     texto = f"<p>{texto}</p>"
     texto = texto.replace("<p></p>", "")
     
-    # Prepara tags IA para o Quill
     texto = re.sub(r'<(strike|del)\b[^>]*>', '<s>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</(strike|del)>', '</s>', texto, flags=re.IGNORECASE)
+    
     texto = re.sub(r'<font[^>]*color=[\'"]?(red|#f00|#ff0000|rgb\([^)]+\))[\'"]?[^>]*>', '<span style="color: rgb(230, 0, 0);">', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</font>', '</span>', texto, flags=re.IGNORECASE)
+    
     texto = re.sub(r'<b\b[^>]*>', '<strong>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</b>', '</strong>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'<i\b[^>]*>', '<em>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</i>', '</em>', texto, flags=re.IGNORECASE)
-    
     return texto
 
-class _QuillParser(HTMLParser):
-    """Analisador seguro para ignorar a sujeira do Quill e extrair apenas negrito, italico, risco e cor."""
-    def __init__(self):
-        super().__init__()
-        self.stack = []
-        self.runs = []
-
-    @staticmethod
-    def _flags(tag, attrs):
-        style = (attrs.get('style') or '').lower().replace(' ', '')
-        cls = (attrs.get('class') or '').lower()
-        cor = (attrs.get('color') or '').lower()
-        
-        bold = tag in ('b', 'strong') or 'font-weight:bold' in style or 'font-weight:700' in style
-        italic = tag in ('i', 'em') or 'font-style:italic' in style
-        strike = tag in ('s', 'strike', 'del') or 'text-decoration:line-through' in style or 'ql-strike' in cls
-        red = ('color:rgb(230' in style or 'color:#e6' in style or 'color:red' in style or 'color:#ff0000' in style or 'color:#f00' in style
-               or (tag == 'font' and ('red' in cor or '#ff' in cor)))
-        
-        return {'bold': bold, 'italic': italic, 'strike': strike, 'red': red}
-
-    def handle_starttag(self, tag, attrs):
-        if tag == 'br':
-            self.runs.append(("\n", False, False, False, False))
-            return
-        self.stack.append((tag, self._flags(tag, dict(attrs))))
-
-    def handle_startendtag(self, tag, attrs):
-        if tag == 'br':
-            self.runs.append(("\n", False, False, False, False))
-
-    def handle_endtag(self, tag):
-        for idx in range(len(self.stack) - 1, -1, -1):
-            if self.stack[idx][0] == tag:
-                del self.stack[idx]
-                break
-        if tag == 'p':
-            self.runs.append(("\n", False, False, False, False))
-
-    def handle_data(self, data):
-        if not data: return
-        b = i = s = r = False
-        for _, f in self.stack:
-            b |= f['bold']; i |= f['italic']; s |= f['strike']; r |= f['red']
-        self.runs.append((data, b, i, s, r))
-
 def editor_para_pdf(texto):
-    """Gera um HTML canônico (ReportLab/DOCX) purificado direto das propriedades reais de fonte."""
     if not texto: return ""
-    parser = _QuillParser()
-    try:
-        parser.feed(texto)
-    except Exception:
-        return limpar_texto_ia(texto)
+    
+    texto = re.sub(r'<strong\b[^>]*>', '<b>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</strong>', '</b>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'<em\b[^>]*>', '<i>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</em>', '</i>', texto, flags=re.IGNORECASE)
+    
+    texto = re.sub(r'<s\b[^>]*>', '<strike>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</s>', '</strike>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'<del\b[^>]*>', '<strike>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</del>', '</strike>', texto, flags=re.IGNORECASE)
+    
+    # Processa os spans dinamicamente garantindo que o strike fique FORA da tag font para o PDF ler
+    def span_to_font(match):
+        style = match.group(1)
+        content = match.group(2)
+        
+        has_color = re.search(r'color:\s*(rgb\([^)]+\)|red|#[0-9a-fA-F]+)', style, re.IGNORECASE)
+        has_strike = re.search(r'text-decoration:\s*line-through', style, re.IGNORECASE)
+        has_bold = re.search(r'font-weight:\s*(bold|700|800|900)', style, re.IGNORECASE)
+        has_italic = re.search(r'font-style:\s*italic', style, re.IGNORECASE)
+        
+        result = content
+        if has_bold: result = f"<b>{result}</b>"
+        if has_italic: result = f"<i>{result}</i>"
+        if has_color: result = f"<font color='red'>{result}</font>"
+        # O Strike abraça todas as outras formatações (crucial para o ReportLab não ignorar)
+        if has_strike: result = f"<strike>{result}</strike>"
+        
+        return result
 
-    segs = []
-    for text, b, i, s, r in parser.runs:
-        if text == "\n":
-            segs.append("<br/>")
-            continue
-        if not text: continue
-        seg = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\xa0', '&nbsp;')
-        if b: seg = f"<b>{seg}</b>"
-        if i: seg = f"<i>{seg}</i>"
-        if s: seg = f"<strike>{seg}</strike>"
-        if r: seg = f"<font color='red'>{seg}</font>"
-        segs.append(seg)
+    while True:
+        novo_texto = re.sub(
+            r'<span[^>]*style=[\'"]([^\'"]+)[\'"][^>]*>((?:(?!<span).)*?)</span>', 
+            span_to_font, 
+            texto, 
+            flags=re.IGNORECASE | re.DOTALL
+        )
+        if novo_texto == texto:
+            break
+        texto = novo_texto
 
-    resultado = "".join(segs)
-    resultado = re.sub(r'(<br/>\s*){3,}', '<br/><br/>', resultado)
-    resultado = re.sub(r'^(<br/>)+|(<br/>)+$', '', resultado).strip()
-    return resultado
+    texto = texto.replace("<p><br></p>", "<br/>")
+    texto = texto.replace("</p>", "<br/>").replace("<p>", "")
+    texto = re.sub(r'</?span[^>]*>', '', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'^(<br/>)+|(<br/>)+$', '', texto).strip()
+    return texto
 
 SYSTEM_INSTRUCTION_LEGISTECNICA = """
 Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasileiro,
@@ -277,29 +253,22 @@ seguindo rigorosamente a Lei Complementar nº 95/1998 e o Manual de Redação da
 Presidência da República para consolidação normativa. Regras obrigatórias:
 
 1. FIDELIDADE ABSOLUTA: nunca resuma, corrija estilo ou "melhore" o texto original.
-   Transcreva com exatidão o conteúdo de cada dispositivo (artigo, parágrafo, inciso,
-   alínea, item), preservando numeração, ordem e formatação (<b>, <i>, quebras <br/>).
+   Transcreva com exatidão o conteúdo de cada dispositivo (artigo, parágrafo, inciso, alínea).
 2. ALTERAÇÃO DE DISPOSITIVO: quando uma norma alteradora dá "nova redação" a um
-   dispositivo, na versão ALTERADA mantenha o texto revogado riscado
-   (<font color='red'><strike>texto antigo</strike></font>) seguido do novo texto,
-   e na versão CONSOLIDADA mostre apenas o texto vigente (o novo).
-3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado na versão ALTERADA e
-   é OMITIDO (ou marcado "(Revogado)") na versão CONSOLIDADA — nunca invente texto
-   substituto que não conste da norma alteradora.
-4. INCLUSÃO DE DISPOSITIVO NOVO: inserido na posição indicada pela alteradora,
-   mantendo a numeração de alíneas/incisos existente (não renumere dispositivos
-   não afetados).
+   dispositivo, na versão ALTERADA você DEVE OBRIGATORIAMENTE manter o texto anterior revogado riscado em vermelho
+   (<strike><font color='red'>texto antigo</font></strike>) seguido imediatamente do novo texto normal. 
+   Omitir o texto antigo riscado na versão alterada é um erro grave de consolidação.
+   Na versão CONSOLIDADA, mostre apenas o texto vigente (o novo).
+3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece com seu texto original riscado em vermelho na versão ALTERADA 
+   (<strike><font color='red'>texto revogado</font></strike>) e é omitido na versão CONSOLIDADA.
+4. INCLUSÃO DE DISPOSITIVO NOVO: inserido na posição indicada pela alteradora.
 5. NOTA REMISSIVA: toda alteração/revogação recebe nota indicando o ato que a promoveu. 
-   ATENÇÃO CRÍTICA 1: O nome do documento alterador na nota remissiva DEVE FICAR EM CAIXA ALTA (ex.: PORTARIA Nº XX, DE DATA).
+   ATENÇÃO CRÍTICA 1: OBRIGATORIAMENTE inicie a nota com o termo "Redação dada pela" ou "Revogado pela", seguido do nome do documento alterador em CAIXA ALTA.
+   Exemplo Correto: "Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026."
    ATENÇÃO CRÍTICA 2: A nota remissiva vai EXCLUSIVAMENTE no campo json 'nota_remissiva', SEM parênteses. 
-   NUNCA escreva a nota remissiva dentro do texto do dispositivo ('texto_principal_alterada' ou 'texto_principal_consolidada'). O sistema insere a nota automaticamente e repeti-la causa duplicação no PDF.
-6. NUNCA altere dispositivos não mencionados pela norma alteradora em processamento
-   nesta etapa — preserve-os byte a byte em relação ao estado anterior.
-7. Se um mesmo dispositivo já foi corrigido manualmente pelo usuário no passado
-   (ver regras aprendidas abaixo, se houver), replique o mesmo padrão de correção.
-8. ANEXOS E TABELAS: classifique cabeçalhos de anexo com tipo="anexo" (ex.: "ANEXO I").
-   Reproduza tabelas linha a linha em 'tabela_alterada'/'tabela_consolidada' e qualquer
-   texto que venha depois da tabela em 'texto_pos_tabela_alterada'/'_consolidada'.
+   NUNCA escreva a nota remissiva dentro do texto do dispositivo ('texto_principal_alterada' ou 'texto_principal_consolidada'). O sistema já insere a nota automaticamente, e escrevê-la no texto causará duplicação no PDF gerado.
+6. NUNCA altere dispositivos não mencionados pela norma alteradora em processamento.
+7. ANEXOS E TABELAS: classifique cabeçalhos de anexo com tipo="anexo" (ex.: "ANEXO I").
 """
 
 def executar_com_fallback(client, contents, response_schema):
@@ -319,7 +288,6 @@ def executar_com_fallback(client, contents, response_schema):
         except Exception as e:
             ultimo_erro = e
             erro_str = str(e).upper()
-            # Tratamento integrado de API congestionada (429 e 503)
             if "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str or "503" in erro_str or "UNAVAILABLE" in erro_str:
                 if tentativa < max_tentativas:
                     st.toast(f"⚡ Servidor sobrecarregado (Tentativa {tentativa}/{max_tentativas}). Tentando novamente em instantes...", icon="⏳")
@@ -343,9 +311,9 @@ def _validar_resposta(resp):
         finish = getattr(candidatos[0], "finish_reason", None)
         finish_str = str(finish) if finish else ""
         if "MAX_TOKENS" in finish_str:
-            raise Exception("A resposta da IA foi cortada por exceder o limite de tokens (documento muito extenso para uma única etapa).")
+            raise Exception("A resposta da IA foi cortada por exceder o limite de tokens (documento muito extenso).")
         if "SAFETY" in finish_str or "PROHIBITED" in finish_str:
-            raise Exception("A resposta da IA foi bloqueada por política de segurança do modelo.")
+            raise Exception("A resposta da IA foi bloqueada por política de segurança.")
     if not getattr(resp, "text", None):
         raise Exception("A IA retornou uma resposta vazia.")
 
@@ -393,9 +361,7 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
             html_text += "<br/>\n"
 
         if caracteres_uteis < 30 * max(doc.page_count, 1):
-            partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO (sem texto extraível). "
-                      f"Leia o conteúdo diretamente das {doc.page_count} imagens de página abaixo, "
-                      f"preservando negrito/itálico perceptíveis visualmente e a ordem exata do texto:"]
+            partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO. Leia o conteúdo visualmente:"]
             for page in doc:
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                 partes.append(types.Part.from_bytes(data=pix.tobytes("png"), mime_type="image/png"))
@@ -409,8 +375,8 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
 class ArquivoClassificado(BaseModel):
     nome_arquivo_upload: str
     tipo: str = Field(description="'Base' ou 'Alteradora'")
-    grupo_id: int = Field(description="Identificador da família normativa (comece em 1). Um ATO ORIGINAL e TODOS os seus atos derivativos devem compartilhar o MESMO grupo_id.")
-    nome_padronizado_identificado: str = Field(description="Nome padronizado da norma, ex.: 'PORTARIA Nº 158/PGJM, DE 29 DE JULHO DE 2026'.")
+    grupo_id: int = Field(description="Identificador da família normativa (comece em 1).")
+    nome_padronizado_identificado: str = Field(description="Nome padronizado da norma (tipo, número, órgão e data)")
     data_oficial_iso: str = Field(description="Data formatada estritamente em YYYY-MM-DD.")
 
 class TriagemDocumentos(BaseModel):
@@ -432,7 +398,7 @@ class Dispositivo(BaseModel):
     tabela_consolidada: Optional[List[List[str]]] = None
     texto_pos_tabela_alterada: Optional[str] = None
     texto_pos_tabela_consolidada: Optional[str] = None
-    nota_remissiva: Optional[str] = Field(default="")
+    nota_remissiva: Optional[str] = Field(default="", description="A nota indicando a alteração. DEVE OBRIGATORIAMENTE conter o termo 'Redação dada pela' ou 'Revogado pela', seguido do ato em CAIXA ALTA. Ex: 'Redação dada pela PORTARIA Nº 108/PGJM, DE 28 DE MAIO DE 2026.'")
 
 class Consolidacao(BaseModel):
     arquivos_originais_identificados: List[str]
@@ -461,7 +427,7 @@ def injetar_nota_remissiva(texto, nota):
         n_sem_parenteses = nota.strip("()").strip()
         n_fmt = f"({n_sem_parenteses})"
         
-        # Bloqueio anti-duplicação de nota remissiva
+        # Bloqueio anti-duplicação de nota remissiva (evita que a nota apareça duas vezes seguidas)
         texto_puro = re.sub(r'<[^>]+>', '', texto if texto else '')
         if n_sem_parenteses.lower() in texto_puro.lower():
             return texto
@@ -479,7 +445,7 @@ def resgatar_memoria():
         try:
             res = supabase.table("memoria_de_correcoes").select("*").order("id", desc=True).limit(5).execute()
             if res.data:
-                memoria = "\n\n⚠️ REGRAS APRENDIDAS (HISTÓRICO DE CORREÇÕES DO USUÁRIO):\nPreste muita atenção aos erros passados. Replique a correção:\n"
+                memoria = "\n\n⚠️ REGRAS APRENDIDAS (HISTÓRICO DE CORREÇÕES DO USUÁRIO):\n"
                 for m in res.data:
                     memoria += f"- Erro da IA: {m['texto_ia']}\n- Correção do Usuário: {m['texto_corrigido']}\n\n"
         except: pass
@@ -540,7 +506,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
     if not arquivos_alteradores:
         conteudo_loop = ["Texto Base:"] + textos_extraidos[arquivo_base['nome_arquivo_upload']]
         resp_loop = executar_com_fallback(client, conteudo_loop + [
-            "Estruture este documento preservando RIGOROSAMENTE a estrutura original: parágrafos, negrito <b>, itálico <i> e tabelas." + memoria_aprendida
+            "Estruture este documento preservando RIGOROSAMENTE a estrutura original." + memoria_aprendida
         ], Consolidacao)
         return json.loads(resp_loop.text)
 
@@ -560,7 +526,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         REGRAS CRÍTICAS DE FORMATAÇÃO E FIDELIDADE:
         1. Mantenha o fluxo original com <br/>.
         2. Preserve negrito <b>, itálico <i>.
-        3. Use <font color='red'><strike>texto revogado</strike></font> para trechos revogados/substituídos.
+        3. Use OBRIGATORIAMENTE <strike><font color='red'>texto revogado</font></strike> para trechos revogados/substituídos.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
@@ -581,8 +547,8 @@ def extrair_paragrafos_seguros(texto_html):
             t = tag.lower()
             if t.startswith("<font"): r += "</font>"
             elif t.startswith("<strike"): r += "</strike>"
-            elif t == "<b>": r += "</b>"
-            elif t == "<i>": r += "</i>"
+            elif t.startswith("<b") and not t.startswith("<br"): r += "</b>"
+            elif t.startswith("<i"): r += "</i>"
         return r
         
     def abrir_todas(p_tags): return "".join(p_tags)
@@ -601,11 +567,11 @@ def extrair_paragrafos_seguros(texto_html):
                 pl = pilha[i].lower()
                 if (t == "</font>" and pl.startswith("<font")) or \
                    (t == "</strike>" and pl.startswith("<strike")) or \
-                   (t == "</b>" and pl == "<b>") or \
-                   (t == "</i>" and pl == "<i>"):
+                   (t == "</b>" and pl.startswith("<b") and not pl.startswith("<br")) or \
+                   (t == "</i>" and pl.startswith("<i")):
                     pilha.pop(i); rm = True; break
             if rm: texto_atual += token
-        elif t.startswith("<font") or t.startswith("<strike") or t in ["<b>", "<i>"]:
+        elif t.startswith("<font") or t.startswith("<strike") or (t.startswith("<b") and not t.startswith("<br")) or t.startswith("<i"):
             pilha.append(token); texto_atual += token
         else: 
             texto_atual += token
@@ -627,9 +593,9 @@ def aplicar_html_no_docx(p, texto_html):
     for token in tokens:
         if not token: continue
         t = token.lower()
-        if t == '<b>': is_bold = True
+        if t.startswith('<b') and not t.startswith('<br'): is_bold = True
         elif t == '</b>': is_bold = False
-        elif t == '<i>': is_italic = True
+        elif t.startswith('<i'): is_italic = True
         elif t == '</i>': is_italic = False
         elif t.startswith('<strike'): is_strike = True
         elif t == '</strike>': is_strike = False
@@ -816,7 +782,10 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
                     st.warning("⚠️ Estes arquivos NÃO foram consolidados (nenhum ato original correspondente foi identificado no lote): " + ", ".join(nao_alterados))
             except Exception as e:
                 mensagem_erro = str(e)
-                st.error(f"❌ Ocorreu um erro: {mensagem_erro}")
+                if "429" in mensagem_erro or "RESOURCE_EXHAUSTED" in mensagem_erro:
+                    st.error("❌ Limite de cota esgotado em ambos os modelos (Gemini 3.6 e Gemini 3.5).")
+                else:
+                    st.error(f"❌ Ocorreu um erro: {mensagem_erro}")
 
 if st.session_state.dados_processados:
     st.markdown("---")
