@@ -28,13 +28,11 @@ from streamlit_quill import st_quill
 from auth_utils import gerar_hash_senha, verificar_senha
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
-# Adicionado initial_sidebar_state="collapsed" para forçar ocultação do menu lateral
 st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide", initial_sidebar_state="collapsed")
 
 # ----------------- BLOQUEIO TOTAL DO MENU LATERAL E CSS GLOBAL -----------------
 st.markdown("""
 <style>
-    /* Oculta completamente a Sidebar padrão do Streamlit (Menu Lateral) e o botão de expandir */
     [data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
     
@@ -78,7 +76,6 @@ def verificar_login(username, password):
         if res.data and len(res.data) > 0:
             ok, precisa_migrar = verificar_senha(password, res.data[0]['password_hash'])
             if ok and precisa_migrar:
-                # Login legado validado: regrava com hash salgado (PBKDF2) sem exigir ação do usuário.
                 try:
                     supabase.table("usuarios").update({"password_hash": gerar_hash_senha(password)}).eq("id", res.data[0]['id']).execute()
                 except Exception:
@@ -89,13 +86,6 @@ def verificar_login(username, password):
     return False
 
 if not st.session_state.autenticado:
-    # --- TELA DE LOGIN ---
-    # CORREÇÃO DE LAYOUT: antes o card era feito com <div> aberta num st.markdown
-    # e fechada em outro, com o st.form no meio — Streamlit renderiza cada
-    # chamada como um elemento HTML independente (não aninhado), então a <div>
-    # ficava vazia (a "caixa vazia" reportada) e o formulário aparecia solto,
-    # fora do card. Agora o card é um st.container(border=True) de verdade,
-    # com tudo (título, subtítulo e formulário) dentro dele.
     st.markdown("""
     <style>
         div[data-testid="stAppViewContainer"] { display: flex; align-items: center; }
@@ -130,10 +120,10 @@ if not st.session_state.autenticado:
                         st.rerun()
                     else:
                         st.error("❌ Usuário ou senha incorretos.")
-    st.stop() # Bloqueia a renderização do resto do código se não estiver logado!
+    st.stop()
 
 # =====================================================================
-# A PARTIR DAQUI, O CÓDIGO SÓ RODA SE O USUÁRIO ESTIVER AUTENTICADO
+# ÁREA AUTENTICADA
 # =====================================================================
 
 st.markdown("""
@@ -143,13 +133,11 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# --- MENU DE NAVEGAÇÃO SUPERIOR FIXO ---
 col_info, col_hist, col_usr, col_logout = st.columns([3, 1.5, 1.5, 1])
 
 with col_info:
     st.info("💡 **Sistema Autenticado:** Proteção de dados ativa.")
 
-# Busca dinâmica dos arquivos para garantir que o link funcione
 hist_path = "pages/historico.py"
 usr_path = "pages/usuarios.py"
 
@@ -189,15 +177,17 @@ except:
 st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF ou DOCX)", type=["pdf", "docx"], accept_multiple_files=True, key="uploader_lote")
 
-# ----------------- TRADUTORES PARA O EDITOR VISUAL -----------------
+# ----------------- TRADUTORES PARA O EDITOR VISUAL E PDF -----------------
 def ia_para_editor(texto):
     if not texto: return ""
     texto = texto.replace("<br/>", "</p><p>").replace("<br>", "</p><p>")
     texto = f"<p>{texto}</p>"
     texto = texto.replace("<p></p>", "")
     texto = texto.replace("<font color='red'><strike>", '<span style="color: rgb(230, 0, 0);"><s>')
+    texto = texto.replace("<font color=\"red\"><strike>", '<span style="color: rgb(230, 0, 0);"><s>')
     texto = texto.replace("</strike></font>", "</s></span>")
     texto = texto.replace("<font color='red'>", '<span style="color: rgb(230, 0, 0);">')
+    texto = texto.replace("<font color=\"red\">", '<span style="color: rgb(230, 0, 0);">')
     texto = texto.replace("</font>", "</span>")
     texto = texto.replace("<strike>", "<s>").replace("</strike>", "</s>")
     texto = texto.replace("<b>", "<strong>").replace("</b>", "</strong>")
@@ -206,10 +196,14 @@ def ia_para_editor(texto):
 
 def editor_para_pdf(texto):
     if not texto: return ""
+    # Converte tags do Quill para padrão universal aceito pelo ReportLab e docx
     texto = texto.replace("<strong>", "<b>").replace("</strong>", "</b>")
     texto = texto.replace("<em>", "<i>").replace("</em>", "</i>")
     texto = texto.replace("<s>", "<strike>").replace("</s>", "</strike>")
-    texto = re.sub(r'<span[^>]*color:[^>]*>(.*?)</span>', r"<font color='red'>\1</font>", texto, flags=re.IGNORECASE)
+    texto = texto.replace("<del>", "<strike>").replace("</del>", "</strike>")
+    
+    # Converte spans coloridos para tag font
+    texto = re.sub(r'<span[^>]*color:\s*(?:rgb\(230,\s*0,\s*0\)|#e60000|red)[^>]*>(.*?)</span>', r"<font color='red'>\1</font>", texto, flags=re.IGNORECASE)
     texto = texto.replace("<p><br></p>", "<br/>")
     texto = texto.replace("</p>", "<br/>").replace("<p>", "")
     texto = re.sub(r'</?span[^>]*>', '', texto)
@@ -277,14 +271,12 @@ def executar_com_fallback(client, contents, response_schema):
         raise Exception(f"Erro crítico: Ambos os modelos falharam. Último erro 3.6: {ultimo_erro} | Erro 3.5: {e_secundario}")
 
 def _validar_resposta(resp):
-    """Detecta truncamento (MAX_TOKENS) ou bloqueio de segurança antes de tentar
-    fazer json.loads em cima de um texto incompleto/ausente."""
     candidatos = getattr(resp, "candidates", None) or []
     if candidatos:
         finish = getattr(candidatos[0], "finish_reason", None)
         finish_str = str(finish) if finish else ""
         if "MAX_TOKENS" in finish_str:
-            raise Exception("A resposta da IA foi cortada por exceder o limite de tokens (documento muito extenso para uma única etapa).")
+            raise Exception("A resposta da IA foi cortada por exceder o limite de tokens.")
         if "SAFETY" in finish_str or "PROHIBITED" in finish_str:
             raise Exception("A resposta da IA foi bloqueada por política de segurança do modelo.")
     if not getattr(resp, "text", None):
@@ -305,11 +297,6 @@ def converter_para_iso(data_str):
         return None
 
 def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
-    """Retorna uma lista de 'parts' para enviar ao Gemini: texto estruturado
-    (com <b>/<i> preservados via camada de texto do PDF) quando disponível,
-    ou as páginas rasterizadas em imagem quando o PDF não tem camada de texto
-    (documento escaneado) — nesse caso o próprio gemini-3.6-flash faz a leitura
-    (OCR) das imagens, o que é mais confiável do que tentar extrair texto vazio."""
     if nome_arquivo.lower().endswith(".docx"):
         return [f"ARQUIVO DOCX: {nome_arquivo} (conteúdo binário não pré-processado)"]
     try:
@@ -338,12 +325,9 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
                         html_text += bloco_linhas.strip() + "<br/>\n"
             html_text += "<br/>\n"
 
-        # Heurística: menos de ~30 caracteres úteis por página indica PDF
-        # escaneado (sem camada de texto) — extração por dict() falharia.
         if caracteres_uteis < 30 * max(doc.page_count, 1):
-            partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO (sem texto extraível). "
-                      f"Leia o conteúdo diretamente das {doc.page_count} imagens de página abaixo, "
-                      f"preservando negrito/itálico perceptíveis visualmente e a ordem exata do texto:"]
+            partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO. "
+                      f"Leia o conteúdo visualmente preservando negrito/itálico e a ordem exata:"]
             for page in doc:
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                 partes.append(types.Part.from_bytes(data=pix.tobytes("png"), mime_type="image/png"))
@@ -357,7 +341,7 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
 class ArquivoClassificado(BaseModel):
     nome_arquivo_upload: str
     tipo: str = Field(description="'Base' ou 'Alteradora'")
-    nome_padronizado_identificado: str = Field(description="Nome padronizado da norma (tipo, número, órgão e data), ex.: 'PORTARIA Nº 158/PGJM, DE 29 DE JULHO DE 2026'. Usado para localizar memória já salva no banco.")
+    nome_padronizado_identificado: str = Field(description="Nome padronizado da norma (tipo, número, órgão e data)")
     data_oficial_iso: str = Field(description="Data formatada estritamente em YYYY-MM-DD.")
 
 class TriagemDocumentos(BaseModel):
@@ -419,7 +403,7 @@ def resgatar_memoria():
         try:
             res = supabase.table("memoria_de_correcoes").select("*").order("id", desc=True).limit(5).execute()
             if res.data:
-                memoria = "\n\n⚠️ REGRAS APRENDIDAS (HISTÓRICO DE CORREÇÕES DO USUÁRIO):\nPreste muita atenção aos erros que você cometeu no passado e que o usuário corrigiu. Não repita os 'Erros da IA' abaixo, utilize o padrão da 'Correção do Usuário':\n"
+                memoria = "\n\n⚠️ REGRAS APRENDIDAS (HISTÓRICO DE CORREÇÕES DO USUÁRIO):\n"
                 for m in res.data:
                     memoria += f"- Erro da IA: {m['texto_ia']}\n- Correção do Usuário: {m['texto_corrigido']}\n\n"
         except: pass
@@ -456,7 +440,7 @@ def analisar_lote_arquivos(arquivos, key):
 
     if not arquivos_alteradores:
         conteudo_loop = ["Texto Base:"] + textos_extraidos[arquivo_base['nome_arquivo_upload']]
-        resp_loop = executar_com_fallback(client, conteudo_loop + ["Gere o JSON consolidado preservando rigidamente o layout, ementa, preâmbulo e tags <b> e <br/>." + memoria_aprendida], AnaliseGlobal)
+        resp_loop = executar_com_fallback(client, conteudo_loop + ["Gere o JSON consolidado preservando layout, ementa, preâmbulo e tags <b> e <br/>." + memoria_aprendida], AnaliseGlobal)
         return json.loads(resp_loop.text)
     else:
         for i, alt in enumerate(arquivos_alteradores):
@@ -471,8 +455,8 @@ def analisar_lote_arquivos(arquivos, key):
             prompt_loop = f"""
             Execute o passo {i+1} de {len(arquivos_alteradores)} aplicando as modificações desta portaria alteradora sobre o texto atual.
             REGRAS CRÍTICAS DE FORMATAÇÃO (OCR):
-            1. PREÂMBULO E EMENTA: Mantenha exatamente o fluxo original. O título, ementa e preâmbulo devem manter a estrutura com `<br/>`.
-            2. Mantenha os negritos em `<b>` e use `<font color='red'><strike>texto revogado</strike></font>` para revogações.
+            1. PREÂMBULO E EMENTA: Mantenha exatamente o fluxo original com `<br/>`.
+            2. Mantenha os negritos em `<b>`, itálicos em `<i>` e use `<font color='red'><strike>texto revogado</strike></font>` para revogações.
             {memoria_aprendida}
             """
             conteudo_loop.append(prompt_loop)
@@ -480,12 +464,23 @@ def analisar_lote_arquivos(arquivos, key):
             estado_json_atual = resp_loop.text 
         return json.loads(resp_loop.text)
 
-# --- FUNÇÕES DE RENDERIZAÇÃO PDF E DOCX ---
+# --- FUNÇÕES DE RENDERIZAÇÃO PDF E DOCX (CORRIGIDAS) ---
 def extrair_paragrafos_seguros(texto_html):
+    """
+    Higieniza e divide o texto mantendo as tags inline para ReportLab e DOCX.
+    """
+    if not texto_html:
+        return []
     texto_html = limpar_texto_ia(texto_html)
-    texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE).replace("</font></strike>", "</strike></font>").replace("</b></i>", "</i></b>")
+    # Converte possíveis variações para tags padrão
+    texto_html = texto_html.replace("<strong>", "<b>").replace("</strong>", "</b>")
+    texto_html = texto_html.replace("<em>", "<i>").replace("</em>", "</i>")
+    texto_html = texto_html.replace("<s>", "<strike>").replace("</s>", "</strike>")
+    texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE)
+    
     tokens = re.split(r'(<[^>]+>)', texto_html)
     paragrafos, pilha, texto_atual = [], [], ""
+    
     def fechar_todas(p_tags):
         r = ""
         for tag in reversed(p_tags):
@@ -495,35 +490,52 @@ def extrair_paragrafos_seguros(texto_html):
             elif t == "<b>": r += "</b>"
             elif t == "<i>": r += "</i>"
         return r
+        
     def abrir_todas(p_tags): return "".join(p_tags)
+    
     for token in tokens:
         if not token: continue
         t = token.lower()
         if t in ["<br>", "<br/>", "<br />"]:
             texto_atual += fechar_todas(pilha)
-            if re.sub(r'<[^>]+>', '', texto_atual).strip(): paragrafos.append(texto_atual.strip())
+            if re.sub(r'<[^>]+>', '', texto_atual).strip():
+                paragrafos.append(texto_atual.strip())
             texto_atual = abrir_todas(pilha)
         elif t.startswith("</"):
             rm = False
             for i in range(len(pilha)-1, -1, -1):
                 pl = pilha[i].lower()
-                if (t == "</font>" and pl.startswith("<font")) or (t == "</strike>" and pl.startswith("<strike")) or (t == "</b>" and pl == "<b>") or (t == "</i>" and pl == "<i>"):
-                    pilha.pop(i); rm = True; break
+                if (t == "</font>" and pl.startswith("<font")) or \
+                   (t == "</strike>" and pl.startswith("<strike")) or \
+                   (t == "</b>" and pl == "<b>") or \
+                   (t == "</i>" and pl == "<i>"):
+                    pilha.pop(i)
+                    rm = True
+                    break
             if rm: texto_atual += token
         elif t.startswith("<font") or t.startswith("<strike") or t in ["<b>", "<i>"]:
-            pilha.append(token); texto_atual += token
-        else: texto_atual += token
+            pilha.append(token)
+            texto_atual += token
+        else:
+            texto_atual += token
+            
     texto_atual += fechar_todas(pilha)
-    if re.sub(r'<[^>]+>', '', texto_atual).strip(): paragrafos.append(texto_atual.strip())
+    if re.sub(r'<[^>]+>', '', texto_atual).strip():
+        paragrafos.append(texto_atual.strip())
     return paragrafos
 
 def renderizar_paragrafos_pdf(story, texto_html, estilo):
-    for p in extrair_paragrafos_seguros(texto_html): story.append(Paragraph(p, estilo))
+    for p in extrair_paragrafos_seguros(texto_html):
+        story.append(Paragraph(p, estilo))
 
 def aplicar_html_no_docx(p, texto_html):
     texto_html = limpar_texto_ia(texto_html).replace("&nbsp;", "\xa0")
+    texto_html = texto_html.replace("<strong>", "<b>").replace("</strong>", "</b>")
+    texto_html = texto_html.replace("<em>", "<i>").replace("</em>", "</i>")
+    texto_html = texto_html.replace("<s>", "<strike>").replace("</s>", "</strike>")
     texto_html = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto_html, flags=re.IGNORECASE)
     tokens = re.split(r'(<[^>]+>)', texto_html)
+    
     is_bold = is_strike = is_red = is_italic = False
     for token in tokens:
         if not token: continue
@@ -534,7 +546,7 @@ def aplicar_html_no_docx(p, texto_html):
         elif t == '</i>': is_italic = False
         elif t == '<strike>': is_strike = True
         elif t == '</strike>': is_strike = False
-        elif "font color" in t and ("red" in t or "'red'" in t or '"red"' in t): is_red = True
+        elif "font color" in t and ("red" in t or "'red'" in t or '"red"' in t or "#e60000" in t): is_red = True
         elif t == '</font>': is_red = False
         elif token.startswith('<'): pass
         else:
@@ -543,16 +555,20 @@ def aplicar_html_no_docx(p, texto_html):
             if is_bold: run.bold = True
             if is_italic: run.italic = True
             if is_strike: run.font.strike = True
-            if is_red: run.font.color.rgb = RGBColor(255, 0, 0)
+            if is_red: run.font.color.rgb = RGBColor(230, 0, 0)
 
 def renderizar_paragrafos_docx(doc, texto_html, alignment, first_line_indent, space_after=Pt(6), bold_all=False):
     for p_html in extrair_paragrafos_seguros(texto_html):
         p = doc.add_paragraph()
-        p.alignment = alignment; p.paragraph_format.first_line_indent = first_line_indent; p.paragraph_format.space_after = space_after; p.paragraph_format.line_spacing = 1.15
+        p.alignment = alignment
+        p.paragraph_format.first_line_indent = first_line_indent
+        p.paragraph_format.space_after = space_after
+        p.paragraph_format.line_spacing = 1.15
         if bold_all:
             run = p.add_run(re.sub(r'<[^>]+>', '', p_html).replace("&nbsp;", "\xa0"))
             run.font.name, run.font.size, run.bold = 'Times New Roman', Pt(10), True
-        else: aplicar_html_no_docx(p, p_html)
+        else:
+            aplicar_html_no_docx(p, p_html)
 
 def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
     buffer = io.BytesIO()
@@ -570,7 +586,11 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
 
     comp = consolidacao_dict.get("cabecalho_complemento", "")
     story.append(Paragraph(f"VERSÃO {'ALTERADA' if tipo_versao=='alterada' else 'CONSOLIDADA'} - {comp}", estilos['topo']))
-    if os.path.exists("brasao.png"): img = Image("brasao.png", width=60, height=60); img.hAlign = 'CENTER'; story.append(img); story.append(Spacer(1, 10))
+    if os.path.exists("brasao.png"): 
+        img = Image("brasao.png", width=60, height=60)
+        img.hAlign = 'CENTER'
+        story.append(img)
+        story.append(Spacer(1, 10))
 
     story.append(Paragraph(limpar_texto_ia(consolidacao_dict.get("orgaos_emissores") or "").replace('\n', '<br/>'), estilos['orgaos']))
     story.append(Paragraph(limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or "").replace('\n', '<br/>'), estilos['tit']))
@@ -579,36 +599,53 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
     for item in consolidacao_dict.get("dispositivos", []):
         t = (item.get("tipo") or "").lower()
         t_prin = injetar_nota_remissiva((item.get(f"texto_principal_{tipo_versao}") or "").replace('\n', '<br/>'), item.get("nota_remissiva") if not item.get("is_tabela") else "")
-        if "capitulo" in t: story.append(Paragraph(t_prin, estilos['cap'])); continue
-        if t_prin: renderizar_paragrafos_pdf(story, t_prin, estilos['disp'])
+        if "capitulo" in t: 
+            story.append(Paragraph(t_prin, estilos['cap']))
+            continue
+        if t_prin: 
+            renderizar_paragrafos_pdf(story, t_prin, estilos['disp'])
         
         if item.get("is_tabela"):
             linhas = item.get(f"tabela_{tipo_versao}") or []
             if linhas:
                 tabela = [[Paragraph(c.replace('\n', '<br/>'), estilos['cel']) for c in l] for l in linhas]
                 tb = Table(tabela, colWidths='*')
-                tb.setStyle(TableStyle([('TEXTCOLOR',(0,0),(-1,-1),colors.black), ('ALIGN',(0,0),(-1,-1),'LEFT'), ('VALIGN',(0,0),(-1,-1),'MIDDLE'), ('GRID',(0,0),(-1,-1),0.5,colors.black), ('BOTTOMPADDING',(0,0),(-1,-1),6), ('TOPPADDING',(0,0),(-1,-1),6)]))
-                story.append(tb); story.append(Spacer(1, 15))
+                tb.setStyle(TableStyle([
+                    ('TEXTCOLOR',(0,0),(-1,-1),colors.black), 
+                    ('ALIGN',(0,0),(-1,-1),'LEFT'), 
+                    ('VALIGN',(0,0),(-1,-1),'MIDDLE'), 
+                    ('GRID',(0,0),(-1,-1),0.5,colors.black), 
+                    ('BOTTOMPADDING',(0,0),(-1,-1),6), 
+                    ('TOPPADDING',(0,0),(-1,-1),6)
+                ]))
+                story.append(tb)
+                story.append(Spacer(1, 15))
             t_pos = injetar_nota_remissiva((item.get(f"texto_pos_tabela_{tipo_versao}") or "").replace('\n', '<br/>'), item.get("nota_remissiva"))
-            if t_pos: renderizar_paragrafos_pdf(story, t_pos, estilos['disp'])
+            if t_pos: 
+                renderizar_paragrafos_pdf(story, t_pos, estilos['disp'])
 
     story.append(Paragraph(f"{limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')}<br/>{limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')}", estilos['ass']))
-    doc.build(story); buffer.seek(0)
+    doc.build(story)
+    buffer.seek(0)
     return buffer.getvalue()
 
 def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     doc = docx.Document()
-    for section in doc.sections: section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Inches(1)
+    for section in doc.sections: 
+        section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Inches(1)
 
-    ph = doc.add_paragraph(); ph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    ph = doc.add_paragraph()
+    ph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     rh = ph.add_run(f"VERSÃO {'ALTERADA' if tipo_versao=='alterada' else 'CONSOLIDADA'} - {consolidacao_dict.get('cabecalho_complemento', '')}")
     rh.font.name, rh.font.size, rh.bold, rh.font.color.rgb = 'Times New Roman', Pt(10), True, RGBColor(68, 68, 68)
     
-    po = doc.add_paragraph(); po.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    po = doc.add_paragraph()
+    po.alignment = WD_ALIGN_PARAGRAPH.CENTER
     ro = po.add_run(limpar_texto_ia(consolidacao_dict.get("orgaos_emissores") or "").replace("<br/>", "\n"))
     ro.font.name, ro.font.size, ro.bold = 'Times New Roman', Pt(11), True
 
-    ptit = doc.add_paragraph(); ptit.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    ptit = doc.add_paragraph()
+    ptit.alignment = WD_ALIGN_PARAGRAPH.CENTER
     rt = ptit.add_run(limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or ""))
     rt.font.name, rt.font.size, rt.bold = 'Times New Roman', Pt(11), True
 
@@ -617,35 +654,48 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     for item in consolidacao_dict.get("dispositivos", []):
         t = (item.get("tipo") or "").lower()
         t_prin = injetar_nota_remissiva((item.get(f"texto_principal_{tipo_versao}") or "").replace('\n', '<br/>'), item.get("nota_remissiva") if not item.get("is_tabela") else "")
-        if "capitulo" in t: renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.CENTER, Inches(0), Pt(10), bold_all=True); continue
-        if t_prin: renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
+        if "capitulo" in t: 
+            renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.CENTER, Inches(0), Pt(10), bold_all=True)
+            continue
+        if t_prin: 
+            renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
         
         if item.get("is_tabela"):
             linhas = item.get(f"tabela_{tipo_versao}") or []
             if linhas:
-                tb = doc.add_table(rows=len(linhas), cols=len(linhas[0])); tb.style = 'Table Grid'
+                tb = doc.add_table(rows=len(linhas), cols=len(linhas[0]))
+                tb.style = 'Table Grid'
                 for r_idx, linha in enumerate(linhas):
                     for c_idx, celula in enumerate(linha):
                         aplicar_html_no_docx(tb.cell(r_idx, c_idx).paragraphs[0], celula.replace('\n', '<br/>'))
             t_pos = injetar_nota_remissiva((item.get(f"texto_pos_tabela_{tipo_versao}") or "").replace('\n', '<br/>'), item.get("nota_remissiva"))
-            if t_pos: renderizar_paragrafos_docx(doc, t_pos, WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
+            if t_pos: 
+                renderizar_paragrafos_docx(doc, t_pos, WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
 
-    pa = doc.add_paragraph(); pa.alignment = WD_ALIGN_PARAGRAPH.CENTER; pa.paragraph_format.space_before = Pt(36)
+    pa = doc.add_paragraph()
+    pa.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    pa.paragraph_format.space_before = Pt(36)
     ra = pa.add_run(f"{limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')}\n{limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')}")
     ra.font.name, ra.font.size, ra.bold = 'Times New Roman', Pt(11), True
-    buffer = io.BytesIO(); doc.save(buffer); buffer.seek(0)
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
     return buffer.getvalue()
 
 # ----------------- REGISTRO DE MEMÓRIA E SALVAMENTO -----------------
 def salvar_no_supabase(cons, cons_original):
-    if not supabase: st.error("⚠️ Supabase não configurado."); return False
+    if not supabase: 
+        st.error("⚠️ Supabase não configurado.")
+        return False
     try:
-        # FEEDBACK LOOP: Compara o que a IA gerou com o que o usuário alterou
         if cons_original:
             for j, disp_editado in enumerate(cons.get("dispositivos", [])):
                 disp_original = cons_original["dispositivos"][j]
                 if disp_editado.get('texto_principal_consolidada') != disp_original.get('texto_principal_consolidada'):
-                    supabase.table("memoria_de_correcoes").insert({"texto_ia": disp_original.get('texto_principal_consolidada'), "texto_corrigido": disp_editado.get('texto_principal_consolidada')}).execute()
+                    supabase.table("memoria_de_correcoes").insert({
+                        "texto_ia": disp_original.get('texto_principal_consolidada'), 
+                        "texto_corrigido": disp_editado.get('texto_principal_consolidada')
+                    }).execute()
         
         base = cons['norma_base']
         alteradoras = cons.get('normas_alteradoras', [])
@@ -717,11 +767,12 @@ if st.session_state.dados_processados:
             st.markdown("### 📝 Editor Visual de Documento")
             st.info("Formate o texto livremente. Alterações manuais ensinam a IA a não errar novamente na próxima vez que você gerar.")
             
-            cons['titulo_portaria'] = st.text_input("Título da Portaria", cons.get('titulo_portaria', ''))
+            cons['titulo_portaria'] = st.text_input("Título da Portaria", cons.get('titulo_portaria', ''), key=f"inp_tit_{i}")
             st.markdown("**Ementa e Preâmbulo**")
             val_ementa = ia_para_editor(cons.get('ementa_preambulo', ''))
             ementa_editada = st_quill(value=val_ementa, key=f"q_ementa_{i}")
-            if ementa_editada: cons['ementa_preambulo'] = editor_para_pdf(ementa_editada)
+            if ementa_editada is not None:
+                cons['ementa_preambulo'] = editor_para_pdf(ementa_editada)
             
             st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos)")
             for j, disp in enumerate(cons.get("dispositivos", [])):
@@ -732,19 +783,21 @@ if st.session_state.dados_processados:
                     st.markdown("*Versão Alterada*")
                     val_alt = ia_para_editor(disp.get('texto_principal_alterada', ''))
                     alt_editada = st_quill(value=val_alt, key=f"q_alt_{i}_{j}")
-                    if alt_editada: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
+                    if alt_editada is not None:
+                        disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
                     
                 with c_cons:
                     st.markdown("*Versão Consolidada*")
                     val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
                     cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
-                    if cons_editada: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
+                    if cons_editada is not None:
+                        disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
 
             st.markdown("### 📥 Opções de Exportação")
             if st.button(f"💾 Salvar Cascata Inteira no Banco de Dados", key=f"btn_sup_{i}"):
                 cons_original = dados_originais.get("consolidacoes_geradas", [])[i] if dados_originais else None
                 if salvar_no_supabase(cons, cons_original): 
-                    st.success(f"Banco atualizado e Inteligência Artificial re-treinada com seus ajustes!")
+                    st.success("Banco atualizado e Inteligência Artificial re-treinada com seus ajustes!")
             
             c1, c2 = st.columns(2)
             pdf_alt, docx_alt = gerar_pdf_dinamico(cons, "alterada"), gerar_docx_dinamico(cons, "alterada")
@@ -756,4 +809,7 @@ if st.session_state.dados_processados:
             c2.download_button("Baixar PDF (Consolidada)", data=pdf_cons, file_name=f"{nome_arquivo_base}_Cons.pdf", mime="application/pdf", key=f"pc_{i}")
             c2.download_button("Baixar DOCX (Consolidada)", data=docx_cons, file_name=f"{nome_arquivo_base}_Cons.docx", mime="application/vnd.openxmlformats", key=f"dc_{i}")
 
-    if st.button("🔄 Nova Análise", type="secondary"): st.session_state.dados_processados = None; st.session_state.dados_originais_ia = None; st.rerun()
+    if st.button("🔄 Nova Análise", type="secondary"): 
+        st.session_state.dados_processados = None
+        st.session_state.dados_originais_ia = None
+        st.rerun()
