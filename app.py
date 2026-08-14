@@ -13,14 +13,14 @@ import time
 import copy
 import hashlib
 from html.parser import HTMLParser
-from html.entities import name2codepoint
+from html import unescape
 from datetime import datetime
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
-# Importação para Supabase, Word, Leitura de PDF e Editor Web
+# Importação para Supabase, Word, Leitura de PDF Determinística e Editor Web
 from supabase import create_client, Client
 import docx
 from docx.shared import Inches, Pt, RGBColor
@@ -39,10 +39,12 @@ except ImportError:
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide", initial_sidebar_state="collapsed")
 
+# ----------------- BLOQUEIO TOTAL DO MENU LATERAL E CSS GLOBAL -----------------
 st.markdown("""
 <style>
     [data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
+    
     .block-container { padding-top: 2rem; }
     .main-header {
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
@@ -96,7 +98,14 @@ if not st.session_state.autenticado:
     st.markdown("""
     <style>
         div[data-testid="stAppViewContainer"] { display: flex; align-items: center; }
-        .st-key-login_card { max-width: 420px; margin: 4rem auto; padding: 1.5rem 2rem; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
+        .st-key-login_card {
+            max-width: 420px;
+            margin: 4rem auto;
+            padding: 1.5rem 2rem;
+            background: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+        }
         .st-key-login_card [data-testid="stForm"] { border: none; padding: 0; }
         .login-title { text-align: center; color: #1e3c72; font-weight: 800; font-size: 1.8rem; margin-bottom: 0.3rem; }
         .login-subtitle { text-align: center; color: #666; margin-bottom: 1.5rem; }
@@ -123,11 +132,8 @@ if not st.session_state.autenticado:
     st.stop()
 
 # =====================================================================
-# ÁREA AUTENTICADA
+# ÁREA AUTENTICADA DO SISTEMA
 # =====================================================================
-
-if not HAS_WEASYPRINT:
-    st.error("🚨 WeasyPrint não encontrado! O gerador de PDF não funcionará. Certifique-se de adicionar 'weasyprint' ao requirements.txt e as dependências ao packages.txt no Streamlit Cloud.")
 
 st.markdown("""
 <div class="main-header">
@@ -181,67 +187,90 @@ st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF) — um ato original e todos os seus derivativos", type=["pdf"], accept_multiple_files=True, key="uploader_lote")
 
 # =====================================================================
-# PARSER AST PARA EXTRAIR FORMATAÇÃO PARA O DOCX
+# MOTOR DE PARSER HTML/XML (ÁRVORE SINTÁTICA AST)
 # =====================================================================
 
 class QuillParser(HTMLParser):
-    """Analisador Semântico que lê o HTML do Quill e extrai formatações limpas (Negrito, Italico, Taxado, Cor) para o DOCX."""
     def __init__(self):
         super().__init__()
+        self.paragraphs = []
+        self.current_html = []
         self.stack = []
-        self.runs = []
 
-    def _flags(self):
-        b = i = s = r = False
-        for tag, attrs in self.stack:
-            style = attrs.get('style', '').lower().replace(' ', '')
-            cls = attrs.get('class', '').lower()
-            cor = attrs.get('color', '').lower()
-            
-            if tag in ('b', 'strong') or 'font-weight:bold' in style or 'font-weight:700' in style: b = True
-            if tag in ('i', 'em') or 'font-style:italic' in style: i = True
-            if tag in ('s', 'strike', 'del') or 'text-decoration:line-through' in style or 'ql-strike' in cls: s = True
-            if ('color:rgb(230' in style or 'color:red' in style or 'color:#e6' in style or 'color:#f00' in style 
-                or (tag == 'font' and ('red' in cor or '#ff' in cor)) or 'color:#ff0000' in style): r = True
-        return b, i, s, r
+    def _close_all_tags(self):
+        res = ""
+        for tags in reversed(self.stack):
+            for t in reversed(tags):
+                tag_name = t.split()[0]
+                res += f"</{tag_name}>"
+        return res
+
+    def _open_all_tags(self):
+        res = ""
+        for tags in self.stack:
+            for t in tags:
+                res += f"<{t}>"
+        return res
+
+    def _break_paragraph(self):
+        if self.current_html:
+            p_text = "".join(self.current_html) + self._close_all_tags()
+            if re.sub(r'<[^>]+>', '', p_text).strip():
+                self.paragraphs.append(p_text.strip())
+        self.current_html = []
+        if self.stack:
+            self.current_html.append(self._open_all_tags())
 
     def handle_starttag(self, tag, attrs):
-        if tag == 'br':
-            self.runs.append(("\n", False, False, False, False))
+        if tag in ('p', 'br', 'div'):
+            self._break_paragraph()
             return
-        self.stack.append((tag, dict(attrs)))
 
-    def handle_startendtag(self, tag, attrs):
-        if tag == 'br':
-            self.runs.append(("\n", False, False, False, False))
+        attrs_dict = dict(attrs)
+        style = attrs_dict.get('style', '').lower().replace(' ', '')
+        cls = attrs_dict.get('class', '').lower()
+        
+        added_tags = []
+        if tag in ('b', 'strong') or 'font-weight:bold' in style or 'font-weight:700' in style:
+            added_tags.append("b")
+        if tag in ('i', 'em') or 'font-style:italic' in style:
+            added_tags.append("i")
+        if tag in ('s', 'strike', 'del') or 'text-decoration:line-through' in style or 'ql-strike' in cls:
+            added_tags.append("strike")
+        if ('color:rgb(230' in style or 'color:red' in style or 'color:#e6' in style or 'color:#f00' in style or 'color:#ff0000' in style) or (tag == 'font' and attrs_dict.get('color') in ('red', '#f00', '#ff0000')):
+            added_tags.append('font color="red"')
+        
+        if added_tags:
+            for t in added_tags:
+                self.current_html.append(f"<{t}>")
+            self.stack.append(added_tags)
+        else:
+            self.stack.append([])
 
     def handle_endtag(self, tag):
-        for idx in range(len(self.stack) - 1, -1, -1):
-            if self.stack[idx][0] == tag:
-                del self.stack[idx]
-                break
-        if tag in ('p', 'div'):
-            self.runs.append(("\n", False, False, False, False))
+        if tag in ('p', 'br', 'div'):
+            return 
+        
+        if self.stack:
+            tags_to_close = self.stack.pop()
+            for t in reversed(tags_to_close):
+                tag_name = t.split()[0]
+                self.current_html.append(f"</{tag_name}>")
+
+    def handle_startendtag(self, tag, attrs):
+        if tag in ('br',):
+            self._break_paragraph()
 
     def handle_data(self, data):
         if not data: return
-        b, i, s, r = self._flags()
-        self.runs.append((data, b, i, s, r))
+        data = data.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\xa0', '&nbsp;')
+        self.current_html.append(data)
 
-    def handle_entityref(self, name):
-        if name in name2codepoint:
-            self.handle_data(chr(name2codepoint[name]))
-        else:
-            self.handle_data(f"&{name};")
-
-    def handle_charref(self, name):
-        if name.startswith('x'):
-            self.handle_data(chr(int(name[1:], 16)))
-        else:
-            self.handle_data(chr(int(name)))
+    def get_paragraphs(self):
+        self._break_paragraph()
+        return self.paragraphs
 
 def ia_para_editor(texto):
-    """Prepara o texto vindo da IA para as tags que o editor visual Quill entende."""
     if not texto: return ""
     texto = texto.replace("<br/>", "</p><p>").replace("<br>", "</p><p>")
     if not texto.startswith("<p>"): texto = f"<p>{texto}</p>"
@@ -249,26 +278,46 @@ def ia_para_editor(texto):
     texto = re.sub(r'</(strike|del)>', '</s>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'<font[^>]*color=[\'"]?(red|#f00|#ff0000|rgb\([^)]+\))[\'"]?[^>]*>', '<span style="color: rgb(230, 0, 0);">', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</font>', '</span>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'<b\b[^>]*>', '<strong>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</b>', '</strong>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'<i\b[^>]*>', '<em>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</i>', '</em>', texto, flags=re.IGNORECASE)
     return texto.replace("<p></p>", "")
+
+def editor_para_pdf(texto):
+    if not texto: return ""
+    parser = QuillParser()
+    try:
+        parser.feed(texto)
+        return "<br/>".join(parser.get_paragraphs())
+    except Exception:
+        return limpar_texto_ia(texto)
 
 # =====================================================================
 # LÓGICA DE NEGÓCIO E INTELIGÊNCIA ARTIFICIAL
 # =====================================================================
 
 SYSTEM_INSTRUCTION_LEGISTECNICA = """
-Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasileiro. Regras obrigatórias:
+Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasileiro,
+seguindo rigorosamente a Lei Complementar nº 95/1998 e o Manual de Redação. Regras obrigatórias:
 
-1. FIDELIDADE ABSOLUTA: transcreva com exatidão o conteúdo de cada dispositivo, preservando formatação (<b>, <i>, quebras <br/>).
-2. ALTERAÇÃO DE DISPOSITIVO: quando a norma der "nova redação", na versão ALTERADA mantenha o texto revogado riscado e em vermelho 
-   (<span style="color: red;"><s>texto antigo</s></span>) seguido do novo texto normal.
-3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado em vermelho na versão ALTERADA e é OMITIDO na versão CONSOLIDADA.
-4. NOTA REMISSIVA: a nota indicando o ato alterador vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses. 
-   O nome do documento DEVE FICAR EM CAIXA ALTA. Exemplo Correto: "Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026."
-   NUNCA escreva a nota dentro do 'texto_principal_alterada' ou 'texto_principal_consolidada'. O sistema injeta automaticamente.
+1. FIDELIDADE ABSOLUTA: nunca resuma, corrija estilo ou "melhore" o texto original.
+2. ALTERAÇÃO DE DISPOSITIVO: quando uma norma alteradora dá "nova redação" a um dispositivo, 
+   na versão ALTERADA mantenha o texto revogado riscado e em vermelho 
+   (<strike><font color="red">texto antigo</font></strike>) seguido do novo texto normal.
+3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado em vermelho na versão ALTERADA e 
+   é OMITIDO (ou marcado "(Revogado)") na versão CONSOLIDADA.
+4. INCLUSÃO DE DISPOSITIVO NOVO: inserido na posição indicada pela alteradora.
+5. NOTA REMISSIVA: toda alteração/revogação recebe nota indicando o ato que a promoveu. 
+   ATENÇÃO CRÍTICA 1: OBRIGATORIAMENTE inicie a nota com o termo "Redação dada pela" ou "Revogado pela", e o nome do documento alterador DEVE FICAR EM CAIXA ALTA.
+   Exemplo Correto: "Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026."
+   ATENÇÃO CRÍTICA 2: A nota remissiva vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses. 
+   NUNCA escreva a nota remissiva dentro do 'texto_principal_alterada' ou 'texto_principal_consolidada'. O sistema injeta automaticamente para evitar duplicação.
+6. NUNCA altere dispositivos não mencionados pela norma alteradora.
+7. ANEXOS E TABELAS: classifique cabeçalhos de anexo com tipo="anexo" (ex.: "ANEXO I").
 """
 
 def executar_com_fallback(client, contents, response_schema):
-    """Nova função de fallback blindada contra erros 503 com Espera Exponencial"""
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=response_schema,
@@ -276,11 +325,10 @@ def executar_com_fallback(client, contents, response_schema):
         thinking_config=types.ThinkingConfig(thinking_level="high")
     )
     
-    # Cascata estrita de modelos conforme solicitado
     modelos_oficiais = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash']
     max_tentativas = 4
-    
     ultimo_erro = None
+    
     for modelo in modelos_oficiais:
         for tentativa in range(1, max_tentativas + 1):
             try:
@@ -293,20 +341,20 @@ def executar_com_fallback(client, contents, response_schema):
                 
                 if "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str or "503" in erro_str or "UNAVAILABLE" in erro_str:
                     if tentativa < max_tentativas:
-                        tempo_espera = tentativa * 4  # Backoff: 4s, 8s, 12s...
+                        tempo_espera = tentativa * 4
                         st.toast(f"⚡ Fila no Google ({modelo}). Tentativa {tentativa}/{max_tentativas}. Aguardando {tempo_espera}s...", icon="⏳")
                         time.sleep(tempo_espera)
                         continue
                     else:
-                        st.toast(f"⚡ Tempo esgotado no {modelo}. Mudando para o próximo modelo...", icon="🔄")
-                        break # Pula para o próximo modelo no loop 'modelos_oficiais'
+                        st.toast(f"⚡ Tempo esgotado no {modelo}. Mudando para o próximo...", icon="🔄")
+                        break
                 elif "404" in erro_str or "NOT_FOUND" in erro_str or "400" in erro_str:
-                    st.toast(f"⚠️ Modelo {modelo} indisponível ou não suportado. Pulando...", icon="⏭️")
-                    break # Pula para o próximo modelo
+                    st.toast(f"⚠️ Modelo {modelo} indisponível. Pulando...", icon="⏭️")
+                    break 
                 else:
                     raise e
                     
-    raise Exception(f"Erro crítico: Todos os modelos da cascata falharam ({', '.join(modelos_oficiais)}). Último erro: {ultimo_erro}")
+    raise Exception(f"Erro crítico: Todos os modelos falharam ({', '.join(modelos_oficiais)}). Último erro: {ultimo_erro}")
 
 def _validar_resposta(resp):
     candidatos = getattr(resp, "candidates", None) or []
@@ -402,11 +450,10 @@ def injetar_nota_remissiva(texto, nota):
         n_fmt = f"({n_sem_parenteses})"
         
         texto_puro = re.sub(r'<[^>]+>', '', texto if texto else '')
-        if n_sem_parenteses.lower() in texto_puro.lower(): return texto # Anti-duplicação
+        if n_sem_parenteses.lower() in texto_puro.lower(): return texto 
         
         if texto:
             texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
-            # Injeta a nota usando SPAN (Padrão WeasyPrint e Quill)
             return f'{texto_limpo} &nbsp;<span style="color: red;">{n_fmt}</span>'
         return f'<span style="color: red;">{n_fmt}</span>'
     return texto
@@ -484,8 +531,8 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({alt['nome_arquivo_upload']}):")
         conteudo_loop.extend(textos_extraidos[alt['nome_arquivo_upload']])
         prompt_loop = f"""
-        Aplique a portaria alteradora. Mantenha negrito <b>, itálico <i> e use <span style="color: red;"><s>texto revogado</s></span> para revogações.
-        Atenção para não duplicar a nota remissiva.
+        Aplique a portaria alteradora. Mantenha negrito <b>, itálico <i> e use <strike><font color="red">texto revogado</font></strike> para revogações.
+        Atenção para não duplicar a nota remissiva no texto principal.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
@@ -571,6 +618,33 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
     buffer.seek(0)
     return buffer.getvalue()
 
+def aplicar_html_no_docx(p, texto_html):
+    texto_html = texto_html.replace("&nbsp;", "\xa0")
+    tokens = re.split(r'(<[^>]+>)', texto_html)
+    is_bold = is_strike = is_red = is_italic = False
+    
+    for token in tokens:
+        if not token: continue
+        t = token.lower()
+        if t.startswith('<b') and not t.startswith('<br'): is_bold = True
+        elif t == '</b>': is_bold = False
+        elif t.startswith('<i'): is_italic = True
+        elif t == '</i>': is_italic = False
+        elif t.startswith('<strike') or t.startswith('<s') and not t.startswith('<span'): is_strike = True
+        elif t == '</strike>' or t == '</s>': is_strike = False
+        elif t.startswith('<font') and ('red' in t or '#f00' in t or '#e6' in t): is_red = True
+        elif t.startswith('<span') and ('red' in t or '#f00' in t or '#e6' in t): is_red = True
+        elif t == '</font>' or t == '</span>': is_red = False
+        elif token.startswith('<'): pass
+        else:
+            token = unescape(token)
+            run = p.add_run(token)
+            run.font.name, run.font.size = 'Times New Roman', Pt(11)
+            if is_bold: run.bold = True
+            if is_italic: run.italic = True
+            if is_strike: run.font.strike = True
+            if is_red: run.font.color.rgb = RGBColor(230, 0, 0)
+
 def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     doc = docx.Document()
     for section in doc.sections: section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Inches(1)
@@ -588,28 +662,14 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     rt.font.name, rt.font.size, rt.bold = 'Times New Roman', Pt(11), True
 
     def _render_docx_p(p_obj, texto_html, bold_all=False):
-        parser = QuillParser()
-        try: parser.feed(texto_html)
-        except: return
-        
-        linhas = []
-        linha_atual = []
-        for text, b, i, s, r in parser.runs:
-            if text == "\n":
-                if linha_atual: linhas.append(linha_atual)
-                linha_atual = []
-            else:
-                linha_atual.append((text, b, i, s, r))
-        if linha_atual: linhas.append(linha_atual)
-
-        for line in linhas:
-            for text, b, i, s, r in line:
-                run = p_obj.add_run(text.replace('&nbsp;', '\xa0'))
-                run.font.name, run.font.size = 'Times New Roman', Pt(10) if bold_all else Pt(11)
-                if bold_all or b: run.bold = True
-                if i: run.italic = True
-                if s: run.font.strike = True
-                if r: run.font.color.rgb = RGBColor(230, 0, 0)
+        if not texto_html: return
+        for p_html in texto_html.split("<br/>"):
+            if not p_html.strip(): continue
+            if bold_all:
+                run = p_obj.add_run(re.sub(r'<[^>]+>', '', p_html).replace("&nbsp;", "\xa0"))
+                run.font.name, run.font.size, run.bold = 'Times New Roman', Pt(10), True
+            else: 
+                aplicar_html_no_docx(p_obj, p_html)
             p_obj.add_run("\n")
 
     p_ementa = doc.add_paragraph(); p_ementa.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; p_ementa.paragraph_format.left_indent = Inches(3)
@@ -717,7 +777,7 @@ if st.session_state.dados_processados:
             st.markdown("**Ementa e Preâmbulo**")
             val_ementa = ia_para_editor(cons.get('ementa_preambulo', ''))
             ementa_editada = st_quill(value=val_ementa, key=f"q_ementa_{i}")
-            if ementa_editada: cons['ementa_preambulo'] = ementa_editada
+            if ementa_editada is not None: cons['ementa_preambulo'] = editor_para_pdf(ementa_editada)
             
             st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos)")
             for j, disp in enumerate(cons.get("dispositivos", [])):
@@ -728,13 +788,13 @@ if st.session_state.dados_processados:
                     st.markdown("*Versão Alterada*")
                     val_alt = ia_para_editor(disp.get('texto_principal_alterada', ''))
                     alt_editada = st_quill(value=val_alt, key=f"q_alt_{i}_{j}")
-                    if alt_editada: disp['texto_principal_alterada'] = alt_editada
+                    if alt_editada is not None: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
                     
                 with c_cons:
                     st.markdown("*Versão Consolidada*")
                     val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
                     cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
-                    if cons_editada: disp['texto_principal_consolidada'] = cons_editada
+                    if cons_editada is not None: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
 
                 if disp.get('is_tabela'):
                     st.markdown("*Tabela / Anexo — revise linha a linha*")
