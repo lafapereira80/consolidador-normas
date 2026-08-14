@@ -1,5 +1,10 @@
 import streamlit as st
 import tempfile
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.graphics.shapes import Drawing, Line
 import io
 import json
 import os
@@ -263,29 +268,54 @@ Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasi
 """
 
 def executar_com_fallback(client, contents, response_schema):
+    """Nova função de fallback blindada contra erros 503 com Espera Exponencial"""
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=response_schema,
         system_instruction=SYSTEM_INSTRUCTION_LEGISTECNICA,
-        thinking_config=types.ThinkingConfig(thinking_level="high"),
+        thinking_config=types.ThinkingConfig(thinking_level="high")
     )
-    max_tentativas = 5
-    for tentativa in range(1, max_tentativas + 1):
-        try:
-            resp = client.models.generate_content(model='gemini-3.6-flash', contents=contents, config=config)
-            if not getattr(resp, "text", None): raise Exception("Resposta vazia da IA.")
-            return resp
-        except Exception as e:
-            erro_str = str(e).upper()
-            if "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str or "503" in erro_str or "UNAVAILABLE" in erro_str:
-                if tentativa < max_tentativas:
-                    st.toast(f"⚡ Servidor congestionado (Tentativa {tentativa}/{max_tentativas}). Aguardando 4s...", icon="⏳")
-                    time.sleep(4)
-                    continue
-                else: break
-            else: raise e
-    resp = client.models.generate_content(model='gemini-3.5-flash', contents=contents, config=config)
-    return resp
+    
+    # Cascata estrita de modelos conforme solicitado
+    modelos_oficiais = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash']
+    max_tentativas = 4
+    
+    ultimo_erro = None
+    for modelo in modelos_oficiais:
+        for tentativa in range(1, max_tentativas + 1):
+            try:
+                resp = client.models.generate_content(model=modelo, contents=contents, config=config)
+                _validar_resposta(resp)
+                return resp
+            except Exception as e:
+                ultimo_erro = e
+                erro_str = str(e).upper()
+                
+                if "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str or "503" in erro_str or "UNAVAILABLE" in erro_str:
+                    if tentativa < max_tentativas:
+                        tempo_espera = tentativa * 4  # Backoff: 4s, 8s, 12s...
+                        st.toast(f"⚡ Fila no Google ({modelo}). Tentativa {tentativa}/{max_tentativas}. Aguardando {tempo_espera}s...", icon="⏳")
+                        time.sleep(tempo_espera)
+                        continue
+                    else:
+                        st.toast(f"⚡ Tempo esgotado no {modelo}. Mudando para o próximo modelo...", icon="🔄")
+                        break # Pula para o próximo modelo no loop 'modelos_oficiais'
+                elif "404" in erro_str or "NOT_FOUND" in erro_str or "400" in erro_str:
+                    st.toast(f"⚠️ Modelo {modelo} indisponível ou não suportado. Pulando...", icon="⏭️")
+                    break # Pula para o próximo modelo
+                else:
+                    raise e
+                    
+    raise Exception(f"Erro crítico: Todos os modelos da cascata falharam ({', '.join(modelos_oficiais)}). Último erro: {ultimo_erro}")
+
+def _validar_resposta(resp):
+    candidatos = getattr(resp, "candidates", None) or []
+    if candidatos:
+        finish = getattr(candidatos[0], "finish_reason", None)
+        finish_str = str(finish) if finish else ""
+        if "MAX_TOKENS" in finish_str: raise Exception("A resposta da IA foi cortada por limite de tokens.")
+        if "SAFETY" in finish_str or "PROHIBITED" in finish_str: raise Exception("Bloqueado por política de segurança.")
+    if not getattr(resp, "text", None): raise Exception("Resposta vazia da IA.")
 
 def converter_para_iso(data_str):
     if not data_str: return None
@@ -454,8 +484,8 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({alt['nome_arquivo_upload']}):")
         conteudo_loop.extend(textos_extraidos[alt['nome_arquivo_upload']])
         prompt_loop = f"""
-        Aplique a portaria alteradora. 
-        Mantenha negrito <b>, itálico <i>. Use EXATAMENTE <span style="color: red;"><s>texto revogado</s></span> para trechos revogados.
+        Aplique a portaria alteradora. Mantenha negrito <b>, itálico <i> e use <span style="color: red;"><s>texto revogado</s></span> para revogações.
+        Atenção para não duplicar a nota remissiva.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
@@ -468,7 +498,6 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
 # =====================================================================
 
 def gerar_html_dinamico(consolidacao_dict, tipo_versao):
-    """Gera HTML completo e limpo para o navegador e para o WeasyPrint."""
     comp = consolidacao_dict.get("cabecalho_complemento", "")
     titulo_doc = f"VERSÃO {'ALTERADA' if tipo_versao=='alterada' else 'CONSOLIDADA'} - {comp}"
     
@@ -491,7 +520,7 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
             table {{ width: 100%; border-collapse: collapse; margin-top: 15px; margin-bottom: 15px; }}
             td, th {{ border: 1px solid black; padding: 6px; text-align: left; vertical-align: middle; }}
             
-            /* CSS CRUCIAL PARA PRESERVAR FORMATAÇÃO */
+            /* CSS CRUCIAL PARA PRESERVAR FORMATAÇÃO WEASYPRINT/HTML */
             strike, s, del {{ text-decoration: line-through; }}
             b, strong {{ font-weight: bold; }}
             i, em {{ font-style: italic; }}
@@ -534,7 +563,6 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
     return html
 
 def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
-    """Gera PDF nativo a partir do HTML usando WeasyPrint."""
     html_str = gerar_html_dinamico(consolidacao_dict, tipo_versao)
     if not HAS_WEASYPRINT: return b"Erro: WeasyPrint nao instalado no servidor."
     
@@ -559,7 +587,6 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     rt = ptit.add_run(limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or ""))
     rt.font.name, rt.font.size, rt.bold = 'Times New Roman', Pt(11), True
 
-    # Para o DOCX, usamos a nossa Árvore Lógica (AST) para preencher os parágrafos com exatidão
     def _render_docx_p(p_obj, texto_html, bold_all=False):
         parser = QuillParser()
         try: parser.feed(texto_html)
