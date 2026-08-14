@@ -13,14 +13,14 @@ import time
 import copy
 import hashlib
 from html.parser import HTMLParser
-from html import unescape
+from html.entities import name2codepoint
 from datetime import datetime
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
-# Importação para Supabase, Word, Leitura de PDF Determinística e Editor Web
+# Importação para Supabase, Word, Leitura de PDF e Editor Web
 from supabase import create_client, Client
 import docx
 from docx.shared import Inches, Pt, RGBColor
@@ -39,12 +39,10 @@ except ImportError:
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide", initial_sidebar_state="collapsed")
 
-# ----------------- BLOQUEIO TOTAL DO MENU LATERAL E CSS GLOBAL -----------------
 st.markdown("""
 <style>
     [data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
-    
     .block-container { padding-top: 2rem; }
     .main-header {
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
@@ -98,14 +96,7 @@ if not st.session_state.autenticado:
     st.markdown("""
     <style>
         div[data-testid="stAppViewContainer"] { display: flex; align-items: center; }
-        .st-key-login_card {
-            max-width: 420px;
-            margin: 4rem auto;
-            padding: 1.5rem 2rem;
-            background: #ffffff;
-            border-radius: 12px;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.12);
-        }
+        .st-key-login_card { max-width: 420px; margin: 4rem auto; padding: 1.5rem 2rem; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
         .st-key-login_card [data-testid="stForm"] { border: none; padding: 0; }
         .login-title { text-align: center; color: #1e3c72; font-weight: 800; font-size: 1.8rem; margin-bottom: 0.3rem; }
         .login-subtitle { text-align: center; color: #666; margin-bottom: 1.5rem; }
@@ -229,6 +220,7 @@ class QuillParser(HTMLParser):
         attrs_dict = dict(attrs)
         style = attrs_dict.get('style', '').lower().replace(' ', '')
         cls = attrs_dict.get('class', '').lower()
+        cor = attrs_dict.get('color', '').lower()
         
         added_tags = []
         if tag in ('b', 'strong') or 'font-weight:bold' in style or 'font-weight:700' in style:
@@ -298,26 +290,23 @@ def editor_para_pdf(texto):
 # =====================================================================
 
 SYSTEM_INSTRUCTION_LEGISTECNICA = """
-Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasileiro,
-seguindo rigorosamente a Lei Complementar nº 95/1998 e o Manual de Redação. Regras obrigatórias:
+Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasileiro. Regras obrigatórias:
 
-1. FIDELIDADE ABSOLUTA: nunca resuma, corrija estilo ou "melhore" o texto original.
-2. ALTERAÇÃO DE DISPOSITIVO: quando uma norma alteradora dá "nova redação" a um dispositivo, 
-   na versão ALTERADA mantenha o texto revogado riscado e em vermelho 
+1. FIDELIDADE ABSOLUTA: transcreva com exatidão o conteúdo de cada dispositivo, preservando formatação (<b>, <i>, quebras <br/>).
+2. ALTERAÇÃO DE DISPOSITIVO: quando a norma der "nova redação", na versão ALTERADA mantenha o texto revogado riscado e em vermelho 
    (<strike><font color="red">texto antigo</font></strike>) seguido do novo texto normal.
-3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado em vermelho na versão ALTERADA e 
-   é OMITIDO (ou marcado "(Revogado)") na versão CONSOLIDADA.
+3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado em vermelho na versão ALTERADA 
+   (<strike><font color="red">texto revogado</font></strike>) e é OMITIDO na versão CONSOLIDADA.
 4. INCLUSÃO DE DISPOSITIVO NOVO: inserido na posição indicada pela alteradora.
-5. NOTA REMISSIVA: toda alteração/revogação recebe nota indicando o ato que a promoveu. 
-   ATENÇÃO CRÍTICA 1: OBRIGATORIAMENTE inicie a nota com o termo "Redação dada pela" ou "Revogado pela", e o nome do documento alterador DEVE FICAR EM CAIXA ALTA.
-   Exemplo Correto: "Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026."
-   ATENÇÃO CRÍTICA 2: A nota remissiva vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses. 
-   NUNCA escreva a nota remissiva dentro do 'texto_principal_alterada' ou 'texto_principal_consolidada'. O sistema injeta automaticamente para evitar duplicação.
+5. NOTA REMISSIVA: a nota indicando o ato alterador vai EXCLUSIVAMENTE no campo json 'nota_remissiva', SEM parênteses. 
+   O nome do documento DEVE FICAR EM CAIXA ALTA. Exemplo Correto: "Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026."
+   NUNCA escreva a nota dentro do 'texto_principal_alterada' ou 'texto_principal_consolidada'. O sistema injeta a nota automaticamente.
 6. NUNCA altere dispositivos não mencionados pela norma alteradora.
 7. ANEXOS E TABELAS: classifique cabeçalhos de anexo com tipo="anexo" (ex.: "ANEXO I").
 """
 
 def executar_com_fallback(client, contents, response_schema):
+    """Nova função de fallback blindada contra erros 503 com Espera Exponencial"""
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=response_schema,
@@ -346,15 +335,15 @@ def executar_com_fallback(client, contents, response_schema):
                         time.sleep(tempo_espera)
                         continue
                     else:
-                        st.toast(f"⚡ Tempo esgotado no {modelo}. Mudando para o próximo...", icon="🔄")
-                        break
+                        st.toast(f"⚡ Tempo esgotado no {modelo}. Mudando para o próximo modelo...", icon="🔄")
+                        break 
                 elif "404" in erro_str or "NOT_FOUND" in erro_str or "400" in erro_str:
-                    st.toast(f"⚠️ Modelo {modelo} indisponível. Pulando...", icon="⏭️")
-                    break 
+                    st.toast(f"⚠️ Modelo {modelo} indisponível ou não suportado. Pulando...", icon="⏭️")
+                    break
                 else:
                     raise e
                     
-    raise Exception(f"Erro crítico: Todos os modelos falharam ({', '.join(modelos_oficiais)}). Último erro: {ultimo_erro}")
+    raise Exception(f"Erro crítico: Todos os modelos da cascata falharam ({', '.join(modelos_oficiais)}). Último erro: {ultimo_erro}")
 
 def _validar_resposta(resp):
     candidatos = getattr(resp, "candidates", None) or []
@@ -450,12 +439,12 @@ def injetar_nota_remissiva(texto, nota):
         n_fmt = f"({n_sem_parenteses})"
         
         texto_puro = re.sub(r'<[^>]+>', '', texto if texto else '')
-        if n_sem_parenteses.lower() in texto_puro.lower(): return texto 
+        if n_sem_parenteses.lower() in texto_puro.lower(): return texto # Anti-duplicação
         
         if texto:
             texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
-            return f'{texto_limpo} &nbsp;<span style="color: red;">{n_fmt}</span>'
-        return f'<span style="color: red;">{n_fmt}</span>'
+            return f'{texto_limpo} &nbsp;<font color="red">{n_fmt}</font>'
+        return f'<font color="red">{n_fmt}</font>'
     return texto
 
 def resgatar_memoria():
@@ -531,8 +520,9 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({alt['nome_arquivo_upload']}):")
         conteudo_loop.extend(textos_extraidos[alt['nome_arquivo_upload']])
         prompt_loop = f"""
-        Aplique a portaria alteradora. Mantenha negrito <b>, itálico <i> e use <strike><font color="red">texto revogado</font></strike> para revogações.
-        Atenção para não duplicar a nota remissiva no texto principal.
+        Aplique a portaria alteradora. 
+        Mantenha negrito <b>, itálico <i> e use EXATAMENTE <strike><font color="red">texto revogado</font></strike> para trechos revogados/alterados.
+        Atenção máxima para não duplicar a nota remissiva. Ela vai apenas no campo JSON apropriado.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
@@ -571,6 +561,7 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
             strike, s, del {{ text-decoration: line-through; }}
             b, strong {{ font-weight: bold; }}
             i, em {{ font-style: italic; }}
+            font[color="red"] {{ color: red; }}
         </style>
     </head>
     <body>
@@ -720,7 +711,7 @@ def salvar_no_supabase(cons, cons_original):
             for j, disp_editado in enumerate(cons.get("dispositivos", [])):
                 if j >= len(cons_original.get("dispositivos", [])): break
                 disp_original = cons_original["dispositivos"][j]
-                for campo in ["texto_principal_alterada", "texto_principal_consolidada", "tabela_alterada", "tabela_consolidada", "texto_pos_tabela_alterada", "texto_pos_tabela_consolidada"]:
+                for campo in ["texto_principal_alterada", "texto_principal_consolidada", "tabela_alterada", "tabela_consolidada", "texto_pos_tabela_alterada", "texto_pos_tabela_consolidada", "nota_remissiva"]:
                     _registrar(campo, disp_original.get(campo), disp_editado.get(campo))
         
         base = cons['norma_base']
@@ -795,6 +786,12 @@ if st.session_state.dados_processados:
                     val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
                     cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
                     if cons_editada is not None: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
+                
+                # ADICIONADO: Campo explícito para Nota Remissiva no Editor
+                st.markdown("*Nota Remissiva (Injetada automaticamente no final)*")
+                nota_editada = st.text_input("Nota", value=disp.get('nota_remissiva', ''), key=f"nota_{i}_{j}", label_visibility="collapsed")
+                disp['nota_remissiva'] = nota_editada
+                st.markdown("---")
 
                 if disp.get('is_tabela'):
                     st.markdown("*Tabela / Anexo — revise linha a linha*")
