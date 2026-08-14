@@ -180,12 +180,10 @@ st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF) — um ato original e todos os seus derivativos", type=["pdf"], accept_multiple_files=True, key="uploader_lote")
 
 # =====================================================================
-# NOVO MOTOR DE PARSER HTML/XML (ÁRVORE SINTÁTICA AST)
+# MOTOR DE PARSER HTML/XML (ÁRVORE SINTÁTICA AST)
 # =====================================================================
 
 class QuillToReportLabParser(HTMLParser):
-    """Lê as propriedades CSS sujas do Quill e as reconstrói em XML perfeitamente
-    fechado e aninhado, essencial para que o ReportLab nunca descarte as formatações."""
     def __init__(self):
         super().__init__()
         self.paragraphs = []
@@ -226,16 +224,12 @@ class QuillToReportLabParser(HTMLParser):
         cls = attrs_dict.get('class', '').lower()
         
         added_tags = []
-        # Captura negrito
         if tag in ('b', 'strong') or 'font-weight:bold' in style or 'font-weight:700' in style:
             added_tags.append("b")
-        # Captura itálico
         if tag in ('i', 'em') or 'font-style:italic' in style:
             added_tags.append("i")
-        # Captura taxado/riscado
         if tag in ('s', 'strike', 'del') or 'text-decoration:line-through' in style or 'ql-strike' in cls:
             added_tags.append("strike")
-        # Captura cor vermelha
         if ('color:rgb(230' in style or 'color:red' in style or 'color:#e6' in style or 'color:#f00' in style or 'color:#ff0000' in style) or (tag == 'font' and attrs_dict.get('color') in ('red', '#f00', '#ff0000')):
             added_tags.append('font color="red"')
         
@@ -270,7 +264,6 @@ class QuillToReportLabParser(HTMLParser):
         return self.paragraphs
 
 def ia_para_editor(texto):
-    """Prepara o texto canônico vindo da IA para as tags do editor visual Quill."""
     if not texto: return ""
     texto = texto.replace("<br/>", "</p><p>").replace("<br>", "</p><p>")
     if not texto.startswith("<p>"): texto = f"<p>{texto}</p>"
@@ -286,12 +279,10 @@ def ia_para_editor(texto):
     return texto.replace("<p></p>", "")
 
 def editor_para_pdf(texto):
-    """Pega a sujeira gerada pelo editor Quill e devolve os parágrafos convertidos e purificados pelo Parser."""
     if not texto: return ""
     parser = QuillToReportLabParser()
     try:
         parser.feed(texto)
-        # Reagrupa os parágrafos com <br/> para armazenar no JSON mantendo estrutura
         return "<br/>".join(parser.get_paragraphs())
     except Exception:
         return limpar_texto_ia(texto)
@@ -469,7 +460,6 @@ def injetar_nota_remissiva(texto, nota):
         n_fmt = f"({n_sem_parenteses})"
         
         texto_puro = re.sub(r'<[^>]+>', '', texto if texto else '')
-        # Bloqueio inteligente: se a nota já existe no corpo gerado, ignora a injeção extra.
         if n_sem_parenteses.lower() in texto_puro.lower():
             return texto
         
@@ -556,8 +546,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         conteudo_loop.extend(textos_extraidos[alt['nome_arquivo_upload']])
         prompt_loop = f"""
         Aplique a portaria alteradora. 
-        Mantenha negrito <b>, itálico <i>. Use EXATAMENTE <strike><font color="red">texto revogado</font></strike> para trechos revogados/substituídos.
-        Atenção máxima para não duplicar a nota remissiva.
+        Mantenha negrito <b>, itálico <i>. Use EXATAMENTE <strike><font color="red">texto revogado</font></strike> para trechos revogados.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
@@ -565,10 +554,76 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         estado_json_atual = resp_loop.text
     return json.loads(resp_loop.text)
 
-# --- FUNÇÕES DE EXPORTAÇÃO PARA PDF E DOCX ---
+# --- FUNÇÕES DE EXPORTAÇÃO PARA HTML, PDF E DOCX ---
+
+def gerar_html_dinamico(consolidacao_dict, tipo_versao):
+    """Gera um arquivo HTML completo, que pode ser aberto em qualquer navegador com a formatação perfeita."""
+    comp = consolidacao_dict.get("cabecalho_complemento", "")
+    titulo_doc = f"VERSÃO {'ALTERADA' if tipo_versao=='alterada' else 'CONSOLIDADA'} - {comp}"
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>{titulo_doc}</title>
+        <style>
+            body {{ font-family: 'Times New Roman', Times, serif; font-size: 11pt; line-height: 1.5; margin: 40px auto; max-width: 800px; padding: 0 20px; }}
+            .topo {{ text-align: center; color: #444; font-size: 10pt; font-weight: bold; margin-bottom: 20px; text-transform: uppercase; }}
+            .orgaos {{ text-align: center; font-weight: bold; margin-bottom: 25px; }}
+            .titulo {{ text-align: center; font-weight: bold; margin-bottom: 20px; }}
+            .dispositivo {{ text-align: justify; text-indent: 40px; margin-bottom: 12px; }}
+            .ementa {{ text-align: justify; margin-left: 50%; margin-bottom: 20px; font-style: italic; }}
+            .capitulo {{ text-align: center; font-weight: bold; margin-top: 20px; margin-bottom: 12px; text-transform: uppercase; }}
+            .assinatura {{ text-align: center; font-weight: bold; margin-top: 50px; margin-bottom: 20px; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 15px; margin-bottom: 15px; }}
+            td, th {{ border: 1px solid black; padding: 6px; text-align: left; vertical-align: middle; }}
+            strike, s, del {{ text-decoration: line-through; }}
+        </style>
+    </head>
+    <body>
+        <div class="topo">{titulo_doc}</div>
+        <div class="orgaos">{limpar_texto_ia(consolidacao_dict.get("orgaos_emissores") or "").replace('<br/>', '<br>')}</div>
+        <div class="titulo">{limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or "").replace('<br/>', '<br>')}</div>
+        
+        <div class="dispositivo">{limpar_texto_ia(consolidacao_dict.get("ementa_preambulo") or "").replace('<br/>', '<br>')}</div>
+    """
+    
+    for item in consolidacao_dict.get("dispositivos", []):
+        t = (item.get("tipo") or "").lower()
+        t_prin = injetar_nota_remissiva(item.get(f"texto_principal_{tipo_versao}"), item.get("nota_remissiva") if not item.get("is_tabela") else "")
+        
+        if "capitulo" in t or "anexo" in t:
+            html += f"<div class='capitulo'>{t_prin}</div>"
+            continue
+            
+        if t_prin:
+            html += f"<div class='dispositivo'>{t_prin}</div>"
+            
+        if item.get("is_tabela"):
+            linhas = item.get(f"tabela_{tipo_versao}") or []
+            if linhas:
+                html += "<table>"
+                for linha in linhas:
+                    html += "<tr>"
+                    for celula in linha:
+                        html += f"<td>{editor_para_pdf(celula)}</td>"
+                    html += "</tr>"
+                html += "</table>"
+                
+            t_pos = injetar_nota_remissiva(item.get(f"texto_pos_tabela_{tipo_versao}"), item.get("nota_remissiva"))
+            if t_pos:
+                html += f"<div class='dispositivo'>{t_pos}</div>"
+                
+    nome_ass = limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')
+    cargo_ass = limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')
+    html += f"<div class='assinatura'>{nome_ass}<br>{cargo_ass}</div>"
+    html += "</body></html>"
+    
+    return html.encode('utf-8')
+
 def renderizar_paragrafos_pdf(story, texto_html, estilo):
     if not texto_html: return
-    # O editor_para_pdf já separa os parágrafos por <br/>. Vamos usar isso direto no Paragraph
     for p_html in texto_html.split("<br/>"):
         if not p_html.strip(): continue
         try:
@@ -650,7 +705,6 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
         if item.get("is_tabela"):
             linhas = item.get(f"tabela_{tipo_versao}") or []
             if linhas:
-                # Usa render_pdf nas celulas
                 tabela = [[Paragraph(editor_para_pdf(c), estilos['cel']) for c in l] for l in linhas]
                 tb = Table(tabela, colWidths='*')
                 tb.setStyle(TableStyle([('TEXTCOLOR',(0,0),(-1,-1),colors.black), ('ALIGN',(0,0),(-1,-1),'LEFT'), ('VALIGN',(0,0),(-1,-1),'MIDDLE'), ('GRID',(0,0),(-1,-1),0.5,colors.black), ('BOTTOMPADDING',(0,0),(-1,-1),6), ('TOPPADDING',(0,0),(-1,-1),6)]))
@@ -812,14 +866,23 @@ if st.session_state.dados_processados:
                 cons_original = dados_originais.get("consolidacoes_geradas", [])[i] if dados_originais else None
                 if salvar_no_supabase(cons, cons_original): st.success(f"Banco atualizado!")
             
-            c1, c2 = st.columns(2)
+            c_html, c_pdf, c_docx = st.columns(3)
+            
+            html_alt = gerar_html_dinamico(cons, "alterada")
+            html_cons = gerar_html_dinamico(cons, "consolidada")
+            
             pdf_alt, docx_alt = gerar_pdf_dinamico(cons, "alterada"), gerar_docx_dinamico(cons, "alterada")
             pdf_cons, docx_cons = gerar_pdf_dinamico(cons, "consolidada"), gerar_docx_dinamico(cons, "consolidada")
             
             nome_arquivo_base = nome_exibicao_base.replace(' ', '_').replace('/', '-')
-            c1.download_button("Baixar PDF (Alterada)", data=pdf_alt, file_name=f"{nome_arquivo_base}_Alt.pdf", mime="application/pdf", key=f"pa_{i}")
-            c1.download_button("Baixar DOCX (Alterada)", data=docx_alt, file_name=f"{nome_arquivo_base}_Alt.docx", mime="application/vnd.openxmlformats", key=f"da_{i}")
-            c2.download_button("Baixar PDF (Consolidada)", data=pdf_cons, file_name=f"{nome_arquivo_base}_Cons.pdf", mime="application/pdf", key=f"pc_{i}")
-            c2.download_button("Baixar DOCX (Consolidada)", data=docx_cons, file_name=f"{nome_arquivo_base}_Cons.docx", mime="application/vnd.openxmlformats", key=f"dc_{i}")
+            
+            c_html.download_button("🌐 Baixar HTML (Alterada)", data=html_alt, file_name=f"{nome_arquivo_base}_Alt.html", mime="text/html", key=f"ha_{i}")
+            c_html.download_button("🌐 Baixar HTML (Consolidada)", data=html_cons, file_name=f"{nome_arquivo_base}_Cons.html", mime="text/html", key=f"hc_{i}")
+            
+            c_pdf.download_button("📄 Baixar PDF (Alterada)", data=pdf_alt, file_name=f"{nome_arquivo_base}_Alt.pdf", mime="application/pdf", key=f"pa_{i}")
+            c_pdf.download_button("📄 Baixar PDF (Consolidada)", data=pdf_cons, file_name=f"{nome_arquivo_base}_Cons.pdf", mime="application/pdf", key=f"pc_{i}")
+            
+            c_docx.download_button("📝 Baixar DOCX (Alterada)", data=docx_alt, file_name=f"{nome_arquivo_base}_Alt.docx", mime="application/vnd.openxmlformats", key=f"da_{i}")
+            c_docx.download_button("📝 Baixar DOCX (Consolidada)", data=docx_cons, file_name=f"{nome_arquivo_base}_Cons.docx", mime="application/vnd.openxmlformats", key=f"dc_{i}")
 
     if st.button("🔄 Nova Análise", type="secondary"): st.session_state.dados_processados = None; st.session_state.dados_originais_ia = None; st.rerun()
