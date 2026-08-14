@@ -1,10 +1,5 @@
 import streamlit as st
 import tempfile
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors
-from reportlab.graphics.shapes import Drawing, Line
 import io
 import json
 import os
@@ -43,6 +38,7 @@ st.markdown("""
 <style>
     [data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
+    
     .block-container { padding-top: 2rem; }
     .main-header {
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
@@ -96,7 +92,14 @@ if not st.session_state.autenticado:
     st.markdown("""
     <style>
         div[data-testid="stAppViewContainer"] { display: flex; align-items: center; }
-        .st-key-login_card { max-width: 420px; margin: 4rem auto; padding: 1.5rem 2rem; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
+        .st-key-login_card {
+            max-width: 420px;
+            margin: 4rem auto;
+            padding: 1.5rem 2rem;
+            background: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+        }
         .st-key-login_card [data-testid="stForm"] { border: none; padding: 0; }
         .login-title { text-align: center; color: #1e3c72; font-weight: 800; font-size: 1.8rem; margin-bottom: 0.3rem; }
         .login-subtitle { text-align: center; color: #666; margin-bottom: 1.5rem; }
@@ -306,7 +309,6 @@ Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasi
 """
 
 def executar_com_fallback(client, contents, response_schema):
-    """Nova função de fallback blindada contra erros 503 com Espera Exponencial"""
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=response_schema,
@@ -439,12 +441,12 @@ def injetar_nota_remissiva(texto, nota):
         n_fmt = f"({n_sem_parenteses})"
         
         texto_puro = re.sub(r'<[^>]+>', '', texto if texto else '')
-        if n_sem_parenteses.lower() in texto_puro.lower(): return texto # Anti-duplicação
+        if n_sem_parenteses.lower() in texto_puro.lower(): return texto 
         
         if texto:
             texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
-            return f'{texto_limpo} &nbsp;<font color="red">{n_fmt}</font>'
-        return f'<font color="red">{n_fmt}</font>'
+            return f'{texto_limpo} &nbsp;<span style="color: red;">{n_fmt}</span>'
+        return f'<span style="color: red;">{n_fmt}</span>'
     return texto
 
 def resgatar_memoria():
@@ -520,8 +522,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({alt['nome_arquivo_upload']}):")
         conteudo_loop.extend(textos_extraidos[alt['nome_arquivo_upload']])
         prompt_loop = f"""
-        Aplique a portaria alteradora. 
-        Mantenha negrito <b>, itálico <i> e use EXATAMENTE <strike><font color="red">texto revogado</font></strike> para trechos revogados/alterados.
+        Aplique a portaria alteradora. Mantenha negrito <b>, itálico <i> e use <strike><font color="red">texto revogado</font></strike> para revogações.
         Atenção máxima para não duplicar a nota remissiva. Ela vai apenas no campo JSON apropriado.
         {memoria_aprendida}
         """
@@ -787,7 +788,6 @@ if st.session_state.dados_processados:
                     cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
                     if cons_editada is not None: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
                 
-                # ADICIONADO: Campo explícito para Nota Remissiva no Editor
                 st.markdown("*Nota Remissiva (Injetada automaticamente no final)*")
                 nota_editada = st.text_input("Nota", value=disp.get('nota_remissiva', ''), key=f"nota_{i}_{j}", label_visibility="collapsed")
                 disp['nota_remissiva'] = nota_editada
