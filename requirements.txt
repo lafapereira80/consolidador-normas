@@ -1,8 +1,9 @@
 streamlit
-supabase
-python-docx
+reportlab
 PyMuPDF
-streamlit-quill
 google-genai
 pydantic
-weasyprint
+requests 
+python-docx
+supabase
+streamlit-quill
