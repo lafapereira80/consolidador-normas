@@ -13,7 +13,7 @@ import time
 import copy
 import hashlib
 from html.parser import HTMLParser
-from html.entities import name2codepoint
+from html import unescape
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -179,153 +179,122 @@ except:
 st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF) — um ato original e todos os seus derivativos", type=["pdf"], accept_multiple_files=True, key="uploader_lote")
 
-
 # =====================================================================
-# NOVO MOTOR DE PARSER HTML/XML INTELIGENTE (AST)
+# NOVO MOTOR DE PARSER HTML/XML (ÁRVORE SINTÁTICA AST)
 # =====================================================================
 
-class _QuillParser(HTMLParser):
-    """Analisador Semântico que lê o HTML gerado pela IA ou pelo Quill e converte
-    em blocos lógicos, isolando negrito, itálico, taxado e cor, sem depender de Regex."""
+class QuillToReportLabParser(HTMLParser):
+    """Lê as propriedades CSS sujas do Quill e as reconstrói em XML perfeitamente
+    fechado e aninhado, essencial para que o ReportLab nunca descarte as formatações."""
     def __init__(self):
         super().__init__()
+        self.paragraphs = []
+        self.current_html = []
         self.stack = []
-        self.runs = []
 
-    @staticmethod
-    def _flags(tag, attrs):
-        style = (attrs.get('style') or '').lower().replace(' ', '')
-        cls = (attrs.get('class') or '').lower()
-        cor = (attrs.get('color') or '').lower()
-        
-        bold = tag in ('b', 'strong') or 'font-weight:bold' in style or 'font-weight:700' in style
-        italic = tag in ('i', 'em') or 'font-style:italic' in style
-        strike = tag in ('s', 'strike', 'del') or 'text-decoration:line-through' in style or 'ql-strike' in cls
-        red = ('color:rgb(230' in style or 'color:#e6' in style or 'color:red' in style or 'color:#f00' in style 
-               or (tag == 'font' and ('red' in cor or '#ff' in cor)))
-        
-        return {'bold': bold, 'italic': italic, 'strike': strike, 'red': red}
+    def _close_all_tags(self):
+        res = ""
+        for tags in reversed(self.stack):
+            for t in reversed(tags):
+                tag_name = t.split()[0]
+                res += f"</{tag_name}>"
+        return res
+
+    def _open_all_tags(self):
+        res = ""
+        for tags in self.stack:
+            for t in tags:
+                res += f"<{t}>"
+        return res
+
+    def _break_paragraph(self):
+        if self.current_html:
+            p_text = "".join(self.current_html) + self._close_all_tags()
+            if re.sub(r'<[^>]+>', '', p_text).strip():
+                self.paragraphs.append(p_text.strip())
+        self.current_html = []
+        if self.stack:
+            self.current_html.append(self._open_all_tags())
 
     def handle_starttag(self, tag, attrs):
-        if tag == 'br':
-            self.runs.append(("\n", False, False, False, False))
+        if tag in ('p', 'br', 'div'):
+            self._break_paragraph()
             return
-        self.stack.append((tag, self._flags(tag, dict(attrs))))
 
-    def handle_startendtag(self, tag, attrs):
-        if tag == 'br':
-            self.runs.append(("\n", False, False, False, False))
+        attrs_dict = dict(attrs)
+        style = attrs_dict.get('style', '').lower().replace(' ', '')
+        cls = attrs_dict.get('class', '').lower()
+        
+        added_tags = []
+        # Captura negrito
+        if tag in ('b', 'strong') or 'font-weight:bold' in style or 'font-weight:700' in style:
+            added_tags.append("b")
+        # Captura itálico
+        if tag in ('i', 'em') or 'font-style:italic' in style:
+            added_tags.append("i")
+        # Captura taxado/riscado
+        if tag in ('s', 'strike', 'del') or 'text-decoration:line-through' in style or 'ql-strike' in cls:
+            added_tags.append("strike")
+        # Captura cor vermelha
+        if ('color:rgb(230' in style or 'color:red' in style or 'color:#e6' in style or 'color:#f00' in style or 'color:#ff0000' in style) or (tag == 'font' and attrs_dict.get('color') in ('red', '#f00', '#ff0000')):
+            added_tags.append('font color="red"')
+        
+        if added_tags:
+            for t in added_tags:
+                self.current_html.append(f"<{t}>")
+            self.stack.append(added_tags)
+        else:
+            self.stack.append([])
 
     def handle_endtag(self, tag):
-        for idx in range(len(self.stack) - 1, -1, -1):
-            if self.stack[idx][0] == tag:
-                del self.stack[idx]
-                break
-        if tag == 'p':
-            self.runs.append(("\n", False, False, False, False))
+        if tag in ('p', 'br', 'div'):
+            return 
+        
+        if self.stack:
+            tags_to_close = self.stack.pop()
+            for t in reversed(tags_to_close):
+                tag_name = t.split()[0]
+                self.current_html.append(f"</{tag_name}>")
+
+    def handle_startendtag(self, tag, attrs):
+        if tag in ('br',):
+            self._break_paragraph()
 
     def handle_data(self, data):
         if not data: return
-        b = i = s = r = False
-        for _, f in self.stack:
-            b |= f['bold']; i |= f['italic']; s |= f['strike']; r |= f['red']
-        self.runs.append((data, b, i, s, r))
+        data = data.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\xa0', '&nbsp;')
+        self.current_html.append(data)
 
-    def handle_entityref(self, name):
-        if name in name2codepoint:
-            self.handle_data(chr(name2codepoint[name]))
-        else:
-            self.handle_data(f"&{name};")
-
-    def handle_charref(self, name):
-        if name.startswith('x'):
-            self.handle_data(chr(int(name[1:], 16)))
-        else:
-            self.handle_data(chr(int(name)))
-
-def parse_html_to_runs(html_text):
-    """Converte texto HTML numa lista de parágrafos, onde cada parágrafo é uma lista de pedaços de texto com suas propriedades."""
-    if not html_text: return []
-    parser = _QuillParser()
-    try:
-        parser.feed(html_text)
-    except Exception:
-        pass
-    
-    paragrafos = []
-    p_runs = []
-    for text, b, i, s, r in parser.runs:
-        parts = text.split('\n')
-        for idx, part in enumerate(parts):
-            if part: p_runs.append((part, b, i, s, r))
-            if idx < len(parts) - 1:
-                paragrafos.append(p_runs)
-                p_runs = []
-    if p_runs: paragrafos.append(p_runs)
-    return [p for p in paragrafos if any(run[0].strip() for run in p)]
+    def get_paragraphs(self):
+        self._break_paragraph()
+        return self.paragraphs
 
 def ia_para_editor(texto):
-    """Prepara o texto vindo do banco/IA para o formato nativo do Quill."""
+    """Prepara o texto canônico vindo da IA para as tags do editor visual Quill."""
     if not texto: return ""
-    # Quill lê <s> e rgb(230,0,0) perfeitamente
+    texto = texto.replace("<br/>", "</p><p>").replace("<br>", "</p><p>")
+    if not texto.startswith("<p>"): texto = f"<p>{texto}</p>"
+    
     texto = re.sub(r'<(strike|del)\b[^>]*>', '<s>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</(strike|del)>', '</s>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'<font[^>]*color=[\'"]?(red|#f00|#ff0000|rgb\([^)]+\))[\'"]?[^>]*>', '<span style="color: rgb(230, 0, 0);">', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</font>', '</span>', texto, flags=re.IGNORECASE)
-    return texto.replace('\n', '<br/>')
+    texto = re.sub(r'<b\b[^>]*>', '<strong>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</b>', '</strong>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'<i\b[^>]*>', '<em>', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'</i>', '</em>', texto, flags=re.IGNORECASE)
+    return texto.replace("<p></p>", "")
 
 def editor_para_pdf(texto):
-    """Lê a saída do Quill e converte em HTML Canônico XML-Safe via AST."""
+    """Pega a sujeira gerada pelo editor Quill e devolve os parágrafos convertidos e purificados pelo Parser."""
     if not texto: return ""
-    paragrafos = parse_html_to_runs(texto)
-    linhas = []
-    for p_runs in paragrafos:
-        xml = ""
-        for text, b, i, s, r in p_runs:
-            seg = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            if b: seg = f"<b>{seg}</b>"
-            if i: seg = f"<i>{seg}</i>"
-            if s: seg = f"<strike>{seg}</strike>"
-            if r: seg = f"<font color='red'>{seg}</font>"
-            xml += seg
-        linhas.append(xml)
-    return "<br/>".join(linhas)
-
-def renderizar_paragrafos_pdf(story, texto_html, estilo):
-    """Renderiza PDF lendo diretamente da Árvore Lógica, garantindo que o ReportLab nunca falhe nas tags."""
-    paragrafos = parse_html_to_runs(texto_html)
-    for p_runs in paragrafos:
-        xml = ""
-        for text, b, i, s, r in p_runs:
-            seg = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\xa0', '&nbsp;')
-            if b: seg = f"<b>{seg}</b>"
-            if i: seg = f"<i>{seg}</i>"
-            # O aninhamento correto (font abraçando strike abraçando texto) garante suporte no ReportLab
-            if s: seg = f"<strike>{seg}</strike>"
-            if r: seg = f"<font color='red'>{seg}</font>"
-            xml += seg
-        if xml.strip():
-            story.append(Paragraph(xml, estilo))
-
-def renderizar_paragrafos_docx(doc, texto_html, alignment, first_line_indent, space_after=Pt(6), bold_all=False):
-    """Renderiza DOCX inserindo propriedades direto no objeto Word, ignorando bugs do HTML."""
-    paragrafos = parse_html_to_runs(texto_html)
-    for p_runs in paragrafos:
-        p = doc.add_paragraph()
-        p.alignment = alignment
-        p.paragraph_format.first_line_indent = first_line_indent
-        p.paragraph_format.space_after = space_after
-        p.paragraph_format.line_spacing = 1.15
-        
-        for text, b, i, s, r in p_runs:
-            run = p.add_run(text.replace("&nbsp;", "\xa0"))
-            run.font.name = 'Times New Roman'
-            run.font.size = Pt(10) if bold_all else Pt(11)
-            
-            if bold_all or b: run.bold = True
-            if i: run.italic = True
-            if s: run.font.strike = True
-            if r: run.font.color.rgb = RGBColor(230, 0, 0)
+    parser = QuillToReportLabParser()
+    try:
+        parser.feed(texto)
+        # Reagrupa os parágrafos com <br/> para armazenar no JSON mantendo estrutura
+        return "<br/>".join(parser.get_paragraphs())
+    except Exception:
+        return limpar_texto_ia(texto)
 
 # =====================================================================
 # LÓGICA DE NEGÓCIO E INTELIGÊNCIA ARTIFICIAL
@@ -338,15 +307,15 @@ seguindo rigorosamente a Lei Complementar nº 95/1998 e o Manual de Redação. R
 1. FIDELIDADE ABSOLUTA: nunca resuma, corrija estilo ou "melhore" o texto original.
 2. ALTERAÇÃO DE DISPOSITIVO: quando uma norma alteradora dá "nova redação" a um dispositivo, 
    na versão ALTERADA mantenha o texto revogado riscado e em vermelho 
-   (<font color='red'><strike>texto antigo</strike></font>) seguido do novo texto normal.
+   (<strike><font color="red">texto antigo</font></strike>) seguido do novo texto normal.
 3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado em vermelho na versão ALTERADA e 
    é OMITIDO (ou marcado "(Revogado)") na versão CONSOLIDADA.
 4. INCLUSÃO DE DISPOSITIVO NOVO: inserido na posição indicada pela alteradora.
 5. NOTA REMISSIVA: toda alteração/revogação recebe nota indicando o ato que a promoveu. 
-   ATENÇÃO CRÍTICA 1: Inicie OBRIGATORIAMENTE com "Redação dada pela" ou "Revogado pela", e o nome do documento alterador DEVE FICAR EM CAIXA ALTA.
+   ATENÇÃO CRÍTICA 1: OBRIGATORIAMENTE inicie a nota com o termo "Redação dada pela" ou "Revogado pela", e o nome do documento alterador DEVE FICAR EM CAIXA ALTA.
    Exemplo Correto: "Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026."
    ATENÇÃO CRÍTICA 2: A nota remissiva vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses. 
-   NUNCA escreva a nota remissiva dentro do 'texto_principal_alterada' ou 'texto_principal_consolidada'. O sistema injeta automaticamente.
+   NUNCA escreva a nota remissiva dentro do 'texto_principal_alterada' ou 'texto_principal_consolidada'. O sistema injeta automaticamente para evitar duplicação.
 6. NUNCA altere dispositivos não mencionados pela norma alteradora.
 7. ANEXOS E TABELAS: classifique cabeçalhos de anexo com tipo="anexo" (ex.: "ANEXO I").
 """
@@ -471,7 +440,7 @@ class Dispositivo(BaseModel):
     tabela_consolidada: Optional[List[List[str]]] = None
     texto_pos_tabela_alterada: Optional[str] = None
     texto_pos_tabela_consolidada: Optional[str] = None
-    nota_remissiva: Optional[str] = Field(default="", description="DEVE iniciar com 'Redação dada pela' ou 'Revogado pela'. Nome do ato em CAIXA ALTA.")
+    nota_remissiva: Optional[str] = Field(default="", description="DEVE iniciar com 'Redação dada pela' ou 'Revogado pela'. Nome do ato OBRIGATORIAMENTE em CAIXA ALTA.")
 
 class Consolidacao(BaseModel):
     arquivos_originais_identificados: List[str]
@@ -500,14 +469,14 @@ def injetar_nota_remissiva(texto, nota):
         n_fmt = f"({n_sem_parenteses})"
         
         texto_puro = re.sub(r'<[^>]+>', '', texto if texto else '')
-        # Bloqueio inteligente: se a IA inseriu a nota no texto, não injetamos 2 vezes
+        # Bloqueio inteligente: se a nota já existe no corpo gerado, ignora a injeção extra.
         if n_sem_parenteses.lower() in texto_puro.lower():
             return texto
         
         if texto:
             texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
-            return f"{texto_limpo} &nbsp;<font color='red'>{n_fmt}</font>"
-        return f"<font color='red'>{n_fmt}</font>"
+            return f"{texto_limpo} &nbsp;<font color=\"red\">{n_fmt}</font>"
+        return f"<font color=\"red\">{n_fmt}</font>"
     return texto
 
 def resgatar_memoria():
@@ -529,7 +498,7 @@ def analisar_lote_arquivos(arquivos, key):
     textos_extraidos = {}
     for arq in arquivos: textos_extraidos[arq.name] = extrair_conteudo_multimodal(arq.getvalue(), arq.name)
 
-    contents_triagem = [f"Analise os documentos. Agrupe cada ato original com seus derivativos no mesmo grupo_id. ARQUIVOS: {', '.join(textos_extraidos.keys())}"]
+    contents_triagem = [f"Analise os documentos abaixo. Agrupe cada ato original com seus derivativos no mesmo grupo_id. ARQUIVOS: {', '.join(textos_extraidos.keys())}"]
     for partes in textos_extraidos.values(): contents_triagem.extend(partes)
     resp_triagem = executar_com_fallback(client, contents_triagem, TriagemDocumentos)
     triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
@@ -586,8 +555,9 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({alt['nome_arquivo_upload']}):")
         conteudo_loop.extend(textos_extraidos[alt['nome_arquivo_upload']])
         prompt_loop = f"""
-        Aplique a portaria alteradora. Mantenha negrito <b>, itálico <i> e use <font color='red'><strike>texto revogado</strike></font> para revogações.
-        Atenção para não duplicar a nota remissiva.
+        Aplique a portaria alteradora. 
+        Mantenha negrito <b>, itálico <i>. Use EXATAMENTE <strike><font color="red">texto revogado</font></strike> para trechos revogados/substituídos.
+        Atenção máxima para não duplicar a nota remissiva.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
@@ -595,7 +565,58 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         estado_json_atual = resp_loop.text
     return json.loads(resp_loop.text)
 
-# --- FUNÇÕES DE EXPORTAÇÃO ---
+# --- FUNÇÕES DE EXPORTAÇÃO PARA PDF E DOCX ---
+def renderizar_paragrafos_pdf(story, texto_html, estilo):
+    if not texto_html: return
+    # O editor_para_pdf já separa os parágrafos por <br/>. Vamos usar isso direto no Paragraph
+    for p_html in texto_html.split("<br/>"):
+        if not p_html.strip(): continue
+        try:
+            story.append(Paragraph(p_html.strip(), estilo))
+        except Exception:
+            story.append(Paragraph(re.sub(r'<[^>]+>', '', p_html).strip(), estilo))
+
+def aplicar_html_no_docx(p, texto_html):
+    texto_html = texto_html.replace("&nbsp;", "\xa0")
+    tokens = re.split(r'(<[^>]+>)', texto_html)
+    is_bold = is_strike = is_red = is_italic = False
+    
+    for token in tokens:
+        if not token: continue
+        t = token.lower()
+        if t.startswith('<b') and not t.startswith('<br'): is_bold = True
+        elif t == '</b>': is_bold = False
+        elif t.startswith('<i'): is_italic = True
+        elif t == '</i>': is_italic = False
+        elif t.startswith('<strike'): is_strike = True
+        elif t == '</strike>': is_strike = False
+        elif t.startswith('<font') and ('red' in t or '#f00' in t or '#e6' in t): is_red = True
+        elif t == '</font>': is_red = False
+        elif token.startswith('<'): pass
+        else:
+            token = unescape(token)
+            run = p.add_run(token)
+            run.font.name, run.font.size = 'Times New Roman', Pt(11)
+            if is_bold: run.bold = True
+            if is_italic: run.italic = True
+            if is_strike: run.font.strike = True
+            if is_red: run.font.color.rgb = RGBColor(230, 0, 0)
+
+def renderizar_paragrafos_docx(doc, texto_html, alignment, first_line_indent, space_after=Pt(6), bold_all=False):
+    if not texto_html: return
+    for p_html in texto_html.split("<br/>"):
+        if not p_html.strip(): continue
+        p = doc.add_paragraph()
+        p.alignment = alignment
+        p.paragraph_format.first_line_indent = first_line_indent
+        p.paragraph_format.space_after = space_after
+        p.paragraph_format.line_spacing = 1.15
+        if bold_all:
+            run = p.add_run(re.sub(r'<[^>]+>', '', p_html).replace("&nbsp;", "\xa0"))
+            run.font.name, run.font.size, run.bold = 'Times New Roman', Pt(10), True
+        else: 
+            aplicar_html_no_docx(p, p_html)
+
 def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
