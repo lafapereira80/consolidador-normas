@@ -1,10 +1,5 @@
 import streamlit as st
 import tempfile
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors
-from reportlab.graphics.shapes import Drawing, Line
 import io
 import json
 import os
@@ -13,14 +8,14 @@ import time
 import copy
 import hashlib
 from html.parser import HTMLParser
-from html import unescape
+from html.entities import name2codepoint
 from datetime import datetime
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
-# Importação para Supabase, Word, Leitura de PDF Determinística e Editor Web
+# Importação para Supabase, Word, Leitura de PDF e Editor Web
 from supabase import create_client, Client
 import docx
 from docx.shared import Inches, Pt, RGBColor
@@ -29,15 +24,20 @@ import fitz  # PyMuPDF
 from streamlit_quill import st_quill
 from auth_utils import gerar_hash_senha, verificar_senha
 
+# Tenta carregar o WeasyPrint (Gerador de PDF Avançado)
+try:
+    from weasyprint import HTML as WeasyHTML, CSS as WeasyCSS
+    HAS_WEASYPRINT = True
+except ImportError:
+    HAS_WEASYPRINT = False
+
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide", initial_sidebar_state="collapsed")
 
-# ----------------- BLOQUEIO TOTAL DO MENU LATERAL E CSS GLOBAL -----------------
 st.markdown("""
 <style>
     [data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
-    
     .block-container { padding-top: 2rem; }
     .main-header {
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
@@ -91,14 +91,7 @@ if not st.session_state.autenticado:
     st.markdown("""
     <style>
         div[data-testid="stAppViewContainer"] { display: flex; align-items: center; }
-        .st-key-login_card {
-            max-width: 420px;
-            margin: 4rem auto;
-            padding: 1.5rem 2rem;
-            background: #ffffff;
-            border-radius: 12px;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.12);
-        }
+        .st-key-login_card { max-width: 420px; margin: 4rem auto; padding: 1.5rem 2rem; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
         .st-key-login_card [data-testid="stForm"] { border: none; padding: 0; }
         .login-title { text-align: center; color: #1e3c72; font-weight: 800; font-size: 1.8rem; margin-bottom: 0.3rem; }
         .login-subtitle { text-align: center; color: #666; margin-bottom: 1.5rem; }
@@ -125,8 +118,11 @@ if not st.session_state.autenticado:
     st.stop()
 
 # =====================================================================
-# ÁREA AUTENTICADA DO SISTEMA
+# ÁREA AUTENTICADA
 # =====================================================================
+
+if not HAS_WEASYPRINT:
+    st.error("🚨 WeasyPrint não encontrado! O gerador de PDF não funcionará. Certifique-se de adicionar 'weasyprint' ao requirements.txt e as dependências ao packages.txt no Streamlit Cloud.")
 
 st.markdown("""
 <div class="main-header">
@@ -180,135 +176,90 @@ st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF) — um ato original e todos os seus derivativos", type=["pdf"], accept_multiple_files=True, key="uploader_lote")
 
 # =====================================================================
-# MOTOR DE PARSER HTML/XML (ÁRVORE SINTÁTICA AST)
+# PARSER AST PARA EXTRAIR FORMATAÇÃO PARA O DOCX
 # =====================================================================
 
-class QuillToReportLabParser(HTMLParser):
+class QuillParser(HTMLParser):
+    """Analisador Semântico que lê o HTML do Quill e extrai formatações limpas (Negrito, Italico, Taxado, Cor) para o DOCX."""
     def __init__(self):
         super().__init__()
-        self.paragraphs = []
-        self.current_html = []
         self.stack = []
+        self.runs = []
 
-    def _close_all_tags(self):
-        res = ""
-        for tags in reversed(self.stack):
-            for t in reversed(tags):
-                tag_name = t.split()[0]
-                res += f"</{tag_name}>"
-        return res
-
-    def _open_all_tags(self):
-        res = ""
-        for tags in self.stack:
-            for t in tags:
-                res += f"<{t}>"
-        return res
-
-    def _break_paragraph(self):
-        if self.current_html:
-            p_text = "".join(self.current_html) + self._close_all_tags()
-            if re.sub(r'<[^>]+>', '', p_text).strip():
-                self.paragraphs.append(p_text.strip())
-        self.current_html = []
-        if self.stack:
-            self.current_html.append(self._open_all_tags())
+    def _flags(self):
+        b = i = s = r = False
+        for tag, attrs in self.stack:
+            style = attrs.get('style', '').lower().replace(' ', '')
+            cls = attrs.get('class', '').lower()
+            cor = attrs.get('color', '').lower()
+            
+            if tag in ('b', 'strong') or 'font-weight:bold' in style or 'font-weight:700' in style: b = True
+            if tag in ('i', 'em') or 'font-style:italic' in style: i = True
+            if tag in ('s', 'strike', 'del') or 'text-decoration:line-through' in style or 'ql-strike' in cls: s = True
+            if ('color:rgb(230' in style or 'color:red' in style or 'color:#e6' in style or 'color:#f00' in style 
+                or (tag == 'font' and ('red' in cor or '#ff' in cor)) or 'color:#ff0000' in style): r = True
+        return b, i, s, r
 
     def handle_starttag(self, tag, attrs):
-        if tag in ('p', 'br', 'div'):
-            self._break_paragraph()
+        if tag == 'br':
+            self.runs.append(("\n", False, False, False, False))
             return
-
-        attrs_dict = dict(attrs)
-        style = attrs_dict.get('style', '').lower().replace(' ', '')
-        cls = attrs_dict.get('class', '').lower()
-        
-        added_tags = []
-        if tag in ('b', 'strong') or 'font-weight:bold' in style or 'font-weight:700' in style:
-            added_tags.append("b")
-        if tag in ('i', 'em') or 'font-style:italic' in style:
-            added_tags.append("i")
-        if tag in ('s', 'strike', 'del') or 'text-decoration:line-through' in style or 'ql-strike' in cls:
-            added_tags.append("strike")
-        if ('color:rgb(230' in style or 'color:red' in style or 'color:#e6' in style or 'color:#f00' in style or 'color:#ff0000' in style) or (tag == 'font' and attrs_dict.get('color') in ('red', '#f00', '#ff0000')):
-            added_tags.append('font color="red"')
-        
-        if added_tags:
-            for t in added_tags:
-                self.current_html.append(f"<{t}>")
-            self.stack.append(added_tags)
-        else:
-            self.stack.append([])
-
-    def handle_endtag(self, tag):
-        if tag in ('p', 'br', 'div'):
-            return 
-        
-        if self.stack:
-            tags_to_close = self.stack.pop()
-            for t in reversed(tags_to_close):
-                tag_name = t.split()[0]
-                self.current_html.append(f"</{tag_name}>")
+        self.stack.append((tag, dict(attrs)))
 
     def handle_startendtag(self, tag, attrs):
-        if tag in ('br',):
-            self._break_paragraph()
+        if tag == 'br':
+            self.runs.append(("\n", False, False, False, False))
+
+    def handle_endtag(self, tag):
+        for idx in range(len(self.stack) - 1, -1, -1):
+            if self.stack[idx][0] == tag:
+                del self.stack[idx]
+                break
+        if tag in ('p', 'div'):
+            self.runs.append(("\n", False, False, False, False))
 
     def handle_data(self, data):
         if not data: return
-        data = data.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\xa0', '&nbsp;')
-        self.current_html.append(data)
+        b, i, s, r = self._flags()
+        self.runs.append((data, b, i, s, r))
 
-    def get_paragraphs(self):
-        self._break_paragraph()
-        return self.paragraphs
+    def handle_entityref(self, name):
+        if name in name2codepoint:
+            self.handle_data(chr(name2codepoint[name]))
+        else:
+            self.handle_data(f"&{name};")
+
+    def handle_charref(self, name):
+        if name.startswith('x'):
+            self.handle_data(chr(int(name[1:], 16)))
+        else:
+            self.handle_data(chr(int(name)))
 
 def ia_para_editor(texto):
+    """Prepara o texto vindo da IA para as tags que o editor visual Quill entende."""
     if not texto: return ""
     texto = texto.replace("<br/>", "</p><p>").replace("<br>", "</p><p>")
     if not texto.startswith("<p>"): texto = f"<p>{texto}</p>"
-    
     texto = re.sub(r'<(strike|del)\b[^>]*>', '<s>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</(strike|del)>', '</s>', texto, flags=re.IGNORECASE)
     texto = re.sub(r'<font[^>]*color=[\'"]?(red|#f00|#ff0000|rgb\([^)]+\))[\'"]?[^>]*>', '<span style="color: rgb(230, 0, 0);">', texto, flags=re.IGNORECASE)
     texto = re.sub(r'</font>', '</span>', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'<b\b[^>]*>', '<strong>', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'</b>', '</strong>', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'<i\b[^>]*>', '<em>', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'</i>', '</em>', texto, flags=re.IGNORECASE)
     return texto.replace("<p></p>", "")
-
-def editor_para_pdf(texto):
-    if not texto: return ""
-    parser = QuillToReportLabParser()
-    try:
-        parser.feed(texto)
-        return "<br/>".join(parser.get_paragraphs())
-    except Exception:
-        return limpar_texto_ia(texto)
 
 # =====================================================================
 # LÓGICA DE NEGÓCIO E INTELIGÊNCIA ARTIFICIAL
 # =====================================================================
 
 SYSTEM_INSTRUCTION_LEGISTECNICA = """
-Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasileiro,
-seguindo rigorosamente a Lei Complementar nº 95/1998 e o Manual de Redação. Regras obrigatórias:
+Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasileiro. Regras obrigatórias:
 
-1. FIDELIDADE ABSOLUTA: nunca resuma, corrija estilo ou "melhore" o texto original.
-2. ALTERAÇÃO DE DISPOSITIVO: quando uma norma alteradora dá "nova redação" a um dispositivo, 
-   na versão ALTERADA mantenha o texto revogado riscado e em vermelho 
-   (<strike><font color="red">texto antigo</font></strike>) seguido do novo texto normal.
-3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado em vermelho na versão ALTERADA e 
-   é OMITIDO (ou marcado "(Revogado)") na versão CONSOLIDADA.
-4. INCLUSÃO DE DISPOSITIVO NOVO: inserido na posição indicada pela alteradora.
-5. NOTA REMISSIVA: toda alteração/revogação recebe nota indicando o ato que a promoveu. 
-   ATENÇÃO CRÍTICA 1: OBRIGATORIAMENTE inicie a nota com o termo "Redação dada pela" ou "Revogado pela", e o nome do documento alterador DEVE FICAR EM CAIXA ALTA.
-   Exemplo Correto: "Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026."
-   ATENÇÃO CRÍTICA 2: A nota remissiva vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses. 
-   NUNCA escreva a nota remissiva dentro do 'texto_principal_alterada' ou 'texto_principal_consolidada'. O sistema injeta automaticamente para evitar duplicação.
-6. NUNCA altere dispositivos não mencionados pela norma alteradora.
-7. ANEXOS E TABELAS: classifique cabeçalhos de anexo com tipo="anexo" (ex.: "ANEXO I").
+1. FIDELIDADE ABSOLUTA: transcreva com exatidão o conteúdo de cada dispositivo, preservando formatação (<b>, <i>, quebras <br/>).
+2. ALTERAÇÃO DE DISPOSITIVO: quando a norma der "nova redação", na versão ALTERADA mantenha o texto revogado riscado e em vermelho 
+   (<span style="color: red;"><s>texto antigo</s></span>) seguido do novo texto normal.
+3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado em vermelho na versão ALTERADA e é OMITIDO na versão CONSOLIDADA.
+4. NOTA REMISSIVA: a nota indicando o ato alterador vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses. 
+   O nome do documento DEVE FICAR EM CAIXA ALTA. Exemplo Correto: "Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026."
+   NUNCA escreva a nota dentro do 'texto_principal_alterada' ou 'texto_principal_consolidada'. O sistema injeta automaticamente.
 """
 
 def executar_com_fallback(client, contents, response_schema):
@@ -319,40 +270,22 @@ def executar_com_fallback(client, contents, response_schema):
         thinking_config=types.ThinkingConfig(thinking_level="high"),
     )
     max_tentativas = 5
-    ultimo_erro = None
     for tentativa in range(1, max_tentativas + 1):
         try:
             resp = client.models.generate_content(model='gemini-3.6-flash', contents=contents, config=config)
-            _validar_resposta(resp)
+            if not getattr(resp, "text", None): raise Exception("Resposta vazia da IA.")
             return resp
         except Exception as e:
-            ultimo_erro = e
             erro_str = str(e).upper()
             if "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str or "503" in erro_str or "UNAVAILABLE" in erro_str:
                 if tentativa < max_tentativas:
                     st.toast(f"⚡ Servidor congestionado (Tentativa {tentativa}/{max_tentativas}). Aguardando 4s...", icon="⏳")
                     time.sleep(4)
                     continue
-                else:
-                    st.toast("⚡ Cota esgotada no Gemini 3.6. Alternando para o Gemini 3.5 Flash...", icon="🔄")
-                    break
-            else:
-                raise e
-    try:
-        resp = client.models.generate_content(model='gemini-3.5-flash', contents=contents, config=config)
-        _validar_resposta(resp)
-        return resp
-    except Exception as e_secundario:
-        raise Exception(f"Erro crítico nos servidores da Google. Tente novamente em alguns minutos. Erro: {e_secundario}")
-
-def _validar_resposta(resp):
-    candidatos = getattr(resp, "candidates", None) or []
-    if candidatos:
-        finish = getattr(candidatos[0], "finish_reason", None)
-        finish_str = str(finish) if finish else ""
-        if "MAX_TOKENS" in finish_str: raise Exception("A resposta da IA foi cortada por limite de tokens.")
-        if "SAFETY" in finish_str or "PROHIBITED" in finish_str: raise Exception("Bloqueado por política de segurança.")
-    if not getattr(resp, "text", None): raise Exception("Resposta vazia da IA.")
+                else: break
+            else: raise e
+    resp = client.models.generate_content(model='gemini-3.5-flash', contents=contents, config=config)
+    return resp
 
 def converter_para_iso(data_str):
     if not data_str: return None
@@ -362,11 +295,8 @@ def converter_para_iso(data_str):
     if match_br:
         d, m, a = match_br.groups()
         return f"{a}-{m}-{d}"
-    try:
-        dt = datetime.strptime(data_str, "%d/%m/%Y")
-        return dt.strftime("%Y-%m-%d")
-    except:
-        return None
+    try: return datetime.strptime(data_str, "%d/%m/%Y").strftime("%Y-%m-%d")
+    except: return None
 
 def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
     if nome_arquivo.lower().endswith(".docx"): return [f"ARQUIVO DOCX: {nome_arquivo}"]
@@ -402,8 +332,7 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
             return partes
 
         return [html_text]
-    except Exception as e:
-        return [f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"]
+    except Exception as e: return [f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"]
 
 # ----------------- ESTRUTURAS PYDANTIC -----------------
 class ArquivoClassificado(BaseModel):
@@ -416,39 +345,22 @@ class ArquivoClassificado(BaseModel):
 class TriagemDocumentos(BaseModel): arquivos: List[ArquivoClassificado]
 
 class MetadadosNorma(BaseModel):
-    tipo_documento: str
-    numero_documento: str
-    orgao_emissor: str
-    data_assinatura: str
-    nome_padronizado: str
+    tipo_documento: str; numero_documento: str; orgao_emissor: str; data_assinatura: str; nome_padronizado: str
 
 class Dispositivo(BaseModel):
-    tipo: str
-    texto_principal_alterada: str
-    texto_principal_consolidada: str
-    is_tabela: bool
-    tabela_alterada: Optional[List[List[str]]] = None
-    tabela_consolidada: Optional[List[List[str]]] = None
-    texto_pos_tabela_alterada: Optional[str] = None
-    texto_pos_tabela_consolidada: Optional[str] = None
-    nota_remissiva: Optional[str] = Field(default="", description="DEVE iniciar com 'Redação dada pela' ou 'Revogado pela'. Nome do ato OBRIGATORIAMENTE em CAIXA ALTA.")
+    tipo: str; texto_principal_alterada: str; texto_principal_consolidada: str; is_tabela: bool
+    tabela_alterada: Optional[List[List[str]]] = None; tabela_consolidada: Optional[List[List[str]]] = None
+    texto_pos_tabela_alterada: Optional[str] = None; texto_pos_tabela_consolidada: Optional[str] = None
+    nota_remissiva: Optional[str] = Field(default="")
 
 class Consolidacao(BaseModel):
-    arquivos_originais_identificados: List[str]
-    arquivos_alteradores_identificados: List[str]
-    norma_base: MetadadosNorma
-    normas_alteradoras: List[MetadadosNorma]
-    cabecalho_complemento: str
-    orgaos_emissores: str
-    titulo_portaria: str
-    ementa_preambulo: str
-    assinatura_nome: str
-    assinatura_cargo: str
-    dispositivos: List[Dispositivo]
+    arquivos_originais_identificados: List[str]; arquivos_alteradores_identificados: List[str]
+    norma_base: MetadadosNorma; normas_alteradoras: List[MetadadosNorma]
+    cabecalho_complemento: str; orgaos_emissores: str; titulo_portaria: str; ementa_preambulo: str
+    assinatura_nome: str; assinatura_cargo: str; dispositivos: List[Dispositivo]
 
 class AnaliseGlobal(BaseModel):
-    consolidacoes_geradas: List[Consolidacao]
-    arquivos_nao_alterados: List[str]
+    consolidacoes_geradas: List[Consolidacao]; arquivos_nao_alterados: List[str]
 
 def limpar_texto_ia(texto):
     if not texto: return ""
@@ -460,13 +372,13 @@ def injetar_nota_remissiva(texto, nota):
         n_fmt = f"({n_sem_parenteses})"
         
         texto_puro = re.sub(r'<[^>]+>', '', texto if texto else '')
-        if n_sem_parenteses.lower() in texto_puro.lower():
-            return texto
+        if n_sem_parenteses.lower() in texto_puro.lower(): return texto # Anti-duplicação
         
         if texto:
             texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
-            return f"{texto_limpo} &nbsp;<font color=\"red\">{n_fmt}</font>"
-        return f"<font color=\"red\">{n_fmt}</font>"
+            # Injeta a nota usando SPAN (Padrão WeasyPrint e Quill)
+            return f'{texto_limpo} &nbsp;<span style="color: red;">{n_fmt}</span>'
+        return f'<span style="color: red;">{n_fmt}</span>'
     return texto
 
 def resgatar_memoria():
@@ -476,8 +388,7 @@ def resgatar_memoria():
             res = supabase.table("memoria_de_correcoes").select("*").order("id", desc=True).limit(5).execute()
             if res.data:
                 memoria = "\n\n⚠️ HISTÓRICO DE CORREÇÕES (Não repita os erros da IA):\n"
-                for m in res.data:
-                    memoria += f"- Erro da IA: {m['texto_ia']}\n- Correção do Usuário: {m['texto_corrigido']}\n\n"
+                for m in res.data: memoria += f"- Erro da IA: {m['texto_ia']}\n- Correção do Usuário: {m['texto_corrigido']}\n\n"
         except: pass
     return memoria
 
@@ -488,12 +399,10 @@ def analisar_lote_arquivos(arquivos, key):
     textos_extraidos = {}
     for arq in arquivos: textos_extraidos[arq.name] = extrair_conteudo_multimodal(arq.getvalue(), arq.name)
 
-    contents_triagem = [f"Analise os documentos abaixo. Agrupe cada ato original com seus derivativos no mesmo grupo_id. ARQUIVOS: {', '.join(textos_extraidos.keys())}"]
+    contents_triagem = [f"Analise os documentos. Agrupe cada ato original com seus derivativos no mesmo grupo_id. ARQUIVOS: {', '.join(textos_extraidos.keys())}"]
     for partes in textos_extraidos.values(): contents_triagem.extend(partes)
     resp_triagem = executar_com_fallback(client, contents_triagem, TriagemDocumentos)
     triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
-
-    if not triagem_dados: raise ValueError("Não foi possível identificar a relação normativa.")
 
     grupos = {}
     for a in triagem_dados: grupos.setdefault(a.get('grupo_id', 0), []).append(a)
@@ -546,7 +455,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         conteudo_loop.extend(textos_extraidos[alt['nome_arquivo_upload']])
         prompt_loop = f"""
         Aplique a portaria alteradora. 
-        Mantenha negrito <b>, itálico <i>. Use EXATAMENTE <strike><font color="red">texto revogado</font></strike> para trechos revogados.
+        Mantenha negrito <b>, itálico <i>. Use EXATAMENTE <span style="color: red;"><s>texto revogado</s></span> para trechos revogados.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
@@ -554,10 +463,12 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         estado_json_atual = resp_loop.text
     return json.loads(resp_loop.text)
 
-# --- FUNÇÕES DE EXPORTAÇÃO PARA HTML, PDF E DOCX ---
+# =====================================================================
+# EXPORTAÇÃO (HTML UNIVERSAL -> WEASYPRINT PDF -> DOCX AST)
+# =====================================================================
 
 def gerar_html_dinamico(consolidacao_dict, tipo_versao):
-    """Gera um arquivo HTML completo, que pode ser aberto em qualquer navegador com a formatação perfeita."""
+    """Gera HTML completo e limpo para o navegador e para o WeasyPrint."""
     comp = consolidacao_dict.get("cabecalho_complemento", "")
     titulo_doc = f"VERSÃO {'ALTERADA' if tipo_versao=='alterada' else 'CONSOLIDADA'} - {comp}"
     
@@ -568,17 +479,22 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
         <meta charset="utf-8">
         <title>{titulo_doc}</title>
         <style>
-            body {{ font-family: 'Times New Roman', Times, serif; font-size: 11pt; line-height: 1.5; margin: 40px auto; max-width: 800px; padding: 0 20px; }}
+            @page {{ size: A4; margin: 2.5cm 2cm; }}
+            body {{ font-family: 'Times New Roman', Times, serif; font-size: 11pt; line-height: 1.5; margin: 40px auto; max-width: 800px; padding: 0 20px; text-align: justify; }}
             .topo {{ text-align: center; color: #444; font-size: 10pt; font-weight: bold; margin-bottom: 20px; text-transform: uppercase; }}
             .orgaos {{ text-align: center; font-weight: bold; margin-bottom: 25px; }}
             .titulo {{ text-align: center; font-weight: bold; margin-bottom: 20px; }}
-            .dispositivo {{ text-align: justify; text-indent: 40px; margin-bottom: 12px; }}
-            .ementa {{ text-align: justify; margin-left: 50%; margin-bottom: 20px; font-style: italic; }}
+            .dispositivo {{ text-indent: 40px; margin-bottom: 12px; }}
+            .ementa {{ margin-left: 50%; margin-bottom: 20px; font-style: italic; }}
             .capitulo {{ text-align: center; font-weight: bold; margin-top: 20px; margin-bottom: 12px; text-transform: uppercase; }}
             .assinatura {{ text-align: center; font-weight: bold; margin-top: 50px; margin-bottom: 20px; }}
             table {{ width: 100%; border-collapse: collapse; margin-top: 15px; margin-bottom: 15px; }}
             td, th {{ border: 1px solid black; padding: 6px; text-align: left; vertical-align: middle; }}
+            
+            /* CSS CRUCIAL PARA PRESERVAR FORMATAÇÃO */
             strike, s, del {{ text-decoration: line-through; }}
+            b, strong {{ font-weight: bold; }}
+            i, em {{ font-style: italic; }}
         </style>
     </head>
     <body>
@@ -586,7 +502,7 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
         <div class="orgaos">{limpar_texto_ia(consolidacao_dict.get("orgaos_emissores") or "").replace('<br/>', '<br>')}</div>
         <div class="titulo">{limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or "").replace('<br/>', '<br>')}</div>
         
-        <div class="dispositivo">{limpar_texto_ia(consolidacao_dict.get("ementa_preambulo") or "").replace('<br/>', '<br>')}</div>
+        <div class="ementa">{limpar_texto_ia(consolidacao_dict.get("ementa_preambulo") or "").replace('<br/>', '<br>')}</div>
     """
     
     for item in consolidacao_dict.get("dispositivos", []):
@@ -606,114 +522,25 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
                 html += "<table>"
                 for linha in linhas:
                     html += "<tr>"
-                    for celula in linha:
-                        html += f"<td>{editor_para_pdf(celula)}</td>"
+                    for celula in linha: html += f"<td>{celula}</td>"
                     html += "</tr>"
                 html += "</table>"
                 
             t_pos = injetar_nota_remissiva(item.get(f"texto_pos_tabela_{tipo_versao}"), item.get("nota_remissiva"))
-            if t_pos:
-                html += f"<div class='dispositivo'>{t_pos}</div>"
+            if t_pos: html += f"<div class='dispositivo'>{t_pos}</div>"
                 
-    nome_ass = limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')
-    cargo_ass = limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')
-    html += f"<div class='assinatura'>{nome_ass}<br>{cargo_ass}</div>"
+    html += f"<div class='assinatura'>{limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')}<br>{limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')}</div>"
     html += "</body></html>"
-    
-    return html.encode('utf-8')
-
-def renderizar_paragrafos_pdf(story, texto_html, estilo):
-    if not texto_html: return
-    for p_html in texto_html.split("<br/>"):
-        if not p_html.strip(): continue
-        try:
-            story.append(Paragraph(p_html.strip(), estilo))
-        except Exception:
-            story.append(Paragraph(re.sub(r'<[^>]+>', '', p_html).strip(), estilo))
-
-def aplicar_html_no_docx(p, texto_html):
-    texto_html = texto_html.replace("&nbsp;", "\xa0")
-    tokens = re.split(r'(<[^>]+>)', texto_html)
-    is_bold = is_strike = is_red = is_italic = False
-    
-    for token in tokens:
-        if not token: continue
-        t = token.lower()
-        if t.startswith('<b') and not t.startswith('<br'): is_bold = True
-        elif t == '</b>': is_bold = False
-        elif t.startswith('<i'): is_italic = True
-        elif t == '</i>': is_italic = False
-        elif t.startswith('<strike'): is_strike = True
-        elif t == '</strike>': is_strike = False
-        elif t.startswith('<font') and ('red' in t or '#f00' in t or '#e6' in t): is_red = True
-        elif t == '</font>': is_red = False
-        elif token.startswith('<'): pass
-        else:
-            token = unescape(token)
-            run = p.add_run(token)
-            run.font.name, run.font.size = 'Times New Roman', Pt(11)
-            if is_bold: run.bold = True
-            if is_italic: run.italic = True
-            if is_strike: run.font.strike = True
-            if is_red: run.font.color.rgb = RGBColor(230, 0, 0)
-
-def renderizar_paragrafos_docx(doc, texto_html, alignment, first_line_indent, space_after=Pt(6), bold_all=False):
-    if not texto_html: return
-    for p_html in texto_html.split("<br/>"):
-        if not p_html.strip(): continue
-        p = doc.add_paragraph()
-        p.alignment = alignment
-        p.paragraph_format.first_line_indent = first_line_indent
-        p.paragraph_format.space_after = space_after
-        p.paragraph_format.line_spacing = 1.15
-        if bold_all:
-            run = p.add_run(re.sub(r'<[^>]+>', '', p_html).replace("&nbsp;", "\xa0"))
-            run.font.name, run.font.size, run.bold = 'Times New Roman', Pt(10), True
-        else: 
-            aplicar_html_no_docx(p, p_html)
+    return html
 
 def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
+    """Gera PDF nativo a partir do HTML usando WeasyPrint."""
+    html_str = gerar_html_dinamico(consolidacao_dict, tipo_versao)
+    if not HAS_WEASYPRINT: return b"Erro: WeasyPrint nao instalado no servidor."
+    
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
-    story, styles = [], getSampleStyleSheet()
-    estilos = {
-        'topo': ParagraphStyle('Topo', parent=styles['Normal'], fontName='Times-Bold', fontSize=10, alignment=1, textColor=colors.HexColor('#444444'), spaceAfter=20),
-        'orgaos': ParagraphStyle('Orgaos', parent=styles['Normal'], fontName='Times-Bold', fontSize=11, alignment=1, spaceAfter=25),
-        'tit': ParagraphStyle('Tit', parent=styles['Normal'], fontName='Times-Bold', fontSize=11, alignment=1, spaceAfter=20),
-        'disp': ParagraphStyle('Disp', parent=styles['Normal'], fontName='Times-Roman', fontSize=11, alignment=4, firstLineIndent=30, spaceAfter=12),
-        'cel': ParagraphStyle('Cel', parent=styles['Normal'], fontName='Times-Roman', fontSize=10, alignment=0),
-        'cap': ParagraphStyle('Cap', parent=styles['Normal'], fontName='Times-Bold', fontSize=10, alignment=1, spaceBefore=20, spaceAfter=12, textTransform='uppercase'),
-        'anexo': ParagraphStyle('Anexo', parent=styles['Normal'], fontName='Times-Bold', fontSize=11, alignment=1, spaceBefore=10, spaceAfter=14, textTransform='uppercase'),
-        'ass': ParagraphStyle('Ass', parent=styles['Normal'], fontName='Times-Bold', fontSize=11, alignment=1, spaceBefore=50, spaceAfter=20)
-    }
-
-    comp = consolidacao_dict.get("cabecalho_complemento", "")
-    story.append(Paragraph(f"VERSÃO {'ALTERADA' if tipo_versao=='alterada' else 'CONSOLIDADA'} - {comp}", estilos['topo']))
-    if os.path.exists("brasao.png"): img = Image("brasao.png", width=60, height=60); img.hAlign = 'CENTER'; story.append(img); story.append(Spacer(1, 10))
-
-    story.append(Paragraph(limpar_texto_ia(consolidacao_dict.get("orgaos_emissores") or "").replace('\n', '<br/>'), estilos['orgaos']))
-    story.append(Paragraph(limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or "").replace('\n', '<br/>'), estilos['tit']))
-    renderizar_paragrafos_pdf(story, (consolidacao_dict.get("ementa_preambulo") or "").replace('\n', '<br/>'), estilos['disp'])
-
-    for item in consolidacao_dict.get("dispositivos", []):
-        t = (item.get("tipo") or "").lower()
-        t_prin = injetar_nota_remissiva(item.get(f"texto_principal_{tipo_versao}"), item.get("nota_remissiva") if not item.get("is_tabela") else "")
-        if "capitulo" in t: story.append(Paragraph(t_prin, estilos['cap'])); continue
-        if "anexo" in t: story.append(PageBreak()); story.append(Paragraph(t_prin, estilos['anexo'])); continue
-        if t_prin: renderizar_paragrafos_pdf(story, t_prin, estilos['disp'])
-        
-        if item.get("is_tabela"):
-            linhas = item.get(f"tabela_{tipo_versao}") or []
-            if linhas:
-                tabela = [[Paragraph(editor_para_pdf(c), estilos['cel']) for c in l] for l in linhas]
-                tb = Table(tabela, colWidths='*')
-                tb.setStyle(TableStyle([('TEXTCOLOR',(0,0),(-1,-1),colors.black), ('ALIGN',(0,0),(-1,-1),'LEFT'), ('VALIGN',(0,0),(-1,-1),'MIDDLE'), ('GRID',(0,0),(-1,-1),0.5,colors.black), ('BOTTOMPADDING',(0,0),(-1,-1),6), ('TOPPADDING',(0,0),(-1,-1),6)]))
-                story.append(tb); story.append(Spacer(1, 15))
-            t_pos = injetar_nota_remissiva(item.get(f"texto_pos_tabela_{tipo_versao}"), item.get("nota_remissiva"))
-            if t_pos: renderizar_paragrafos_pdf(story, t_pos, estilos['disp'])
-
-    story.append(Paragraph(f"{limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')}<br/>{limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')}", estilos['ass']))
-    doc.build(story); buffer.seek(0)
+    WeasyHTML(string=html_str).write_pdf(buffer)
+    buffer.seek(0)
     return buffer.getvalue()
 
 def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
@@ -732,14 +559,48 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     rt = ptit.add_run(limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or ""))
     rt.font.name, rt.font.size, rt.bold = 'Times New Roman', Pt(11), True
 
-    renderizar_paragrafos_docx(doc, (consolidacao_dict.get("ementa_preambulo") or "").replace('\n', '<br/>'), WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
+    # Para o DOCX, usamos a nossa Árvore Lógica (AST) para preencher os parágrafos com exatidão
+    def _render_docx_p(p_obj, texto_html, bold_all=False):
+        parser = QuillParser()
+        try: parser.feed(texto_html)
+        except: return
+        
+        linhas = []
+        linha_atual = []
+        for text, b, i, s, r in parser.runs:
+            if text == "\n":
+                if linha_atual: linhas.append(linha_atual)
+                linha_atual = []
+            else:
+                linha_atual.append((text, b, i, s, r))
+        if linha_atual: linhas.append(linha_atual)
+
+        for line in linhas:
+            for text, b, i, s, r in line:
+                run = p_obj.add_run(text.replace('&nbsp;', '\xa0'))
+                run.font.name, run.font.size = 'Times New Roman', Pt(10) if bold_all else Pt(11)
+                if bold_all or b: run.bold = True
+                if i: run.italic = True
+                if s: run.font.strike = True
+                if r: run.font.color.rgb = RGBColor(230, 0, 0)
+            p_obj.add_run("\n")
+
+    p_ementa = doc.add_paragraph(); p_ementa.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; p_ementa.paragraph_format.left_indent = Inches(3)
+    _render_docx_p(p_ementa, consolidacao_dict.get("ementa_preambulo", ""))
 
     for item in consolidacao_dict.get("dispositivos", []):
         t = (item.get("tipo") or "").lower()
         t_prin = injetar_nota_remissiva(item.get(f"texto_principal_{tipo_versao}"), item.get("nota_remissiva") if not item.get("is_tabela") else "")
-        if "capitulo" in t: renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.CENTER, Inches(0), Pt(10), bold_all=True); continue
-        if "anexo" in t: doc.add_page_break(); renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.CENTER, Inches(0), Pt(14), bold_all=True); continue
-        if t_prin: renderizar_paragrafos_docx(doc, t_prin, WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
+        
+        if "capitulo" in t or "anexo" in t: 
+            if "anexo" in t: doc.add_page_break()
+            p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _render_docx_p(p, t_prin, bold_all=True)
+            continue
+            
+        if t_prin:
+            p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; p.paragraph_format.first_line_indent = Inches(0.4)
+            _render_docx_p(p, t_prin)
         
         if item.get("is_tabela"):
             linhas = item.get(f"tabela_{tipo_versao}") or []
@@ -747,9 +608,11 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
                 tb = doc.add_table(rows=len(linhas), cols=len(linhas[0])); tb.style = 'Table Grid'
                 for r_idx, linha in enumerate(linhas):
                     for c_idx, celula in enumerate(linha):
-                        aplicar_html_no_docx(tb.cell(r_idx, c_idx).paragraphs[0], celula.replace('\n', '<br/>'))
+                        _render_docx_p(tb.cell(r_idx, c_idx).paragraphs[0], celula.replace('\n', '<br/>'))
             t_pos = injetar_nota_remissiva(item.get(f"texto_pos_tabela_{tipo_versao}"), item.get("nota_remissiva"))
-            if t_pos: renderizar_paragrafos_docx(doc, t_pos, WD_ALIGN_PARAGRAPH.JUSTIFY, Inches(0.4))
+            if t_pos:
+                p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; p.paragraph_format.first_line_indent = Inches(0.4)
+                _render_docx_p(p, t_pos)
 
     pa = doc.add_paragraph(); pa.alignment = WD_ALIGN_PARAGRAPH.CENTER; pa.paragraph_format.space_before = Pt(36)
     ra = pa.add_run(f"{limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')}\n{limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')}")
@@ -763,8 +626,7 @@ def salvar_no_supabase(cons, cons_original):
         if cons_original:
             def _registrar(campo, original, editado):
                 if original != editado and (original or editado):
-                    try:
-                        supabase.table("memoria_de_correcoes").insert({"texto_ia": json.dumps(original) if not isinstance(original, str) else original, "texto_corrigido": json.dumps(editado) if not isinstance(editado, str) else editado}).execute()
+                    try: supabase.table("memoria_de_correcoes").insert({"texto_ia": json.dumps(original) if not isinstance(original, str) else original, "texto_corrigido": json.dumps(editado) if not isinstance(editado, str) else editado}).execute()
                     except: pass
 
             _registrar("ementa", cons_original.get('ementa_preambulo'), cons.get('ementa_preambulo'))
@@ -828,7 +690,7 @@ if st.session_state.dados_processados:
             st.markdown("**Ementa e Preâmbulo**")
             val_ementa = ia_para_editor(cons.get('ementa_preambulo', ''))
             ementa_editada = st_quill(value=val_ementa, key=f"q_ementa_{i}")
-            if ementa_editada: cons['ementa_preambulo'] = editor_para_pdf(ementa_editada)
+            if ementa_editada: cons['ementa_preambulo'] = ementa_editada
             
             st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos)")
             for j, disp in enumerate(cons.get("dispositivos", [])):
@@ -839,13 +701,13 @@ if st.session_state.dados_processados:
                     st.markdown("*Versão Alterada*")
                     val_alt = ia_para_editor(disp.get('texto_principal_alterada', ''))
                     alt_editada = st_quill(value=val_alt, key=f"q_alt_{i}_{j}")
-                    if alt_editada: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
+                    if alt_editada: disp['texto_principal_alterada'] = alt_editada
                     
                 with c_cons:
                     st.markdown("*Versão Consolidada*")
                     val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
                     cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
-                    if cons_editada: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
+                    if cons_editada: disp['texto_principal_consolidada'] = cons_editada
 
                 if disp.get('is_tabela'):
                     st.markdown("*Tabela / Anexo — revise linha a linha*")
@@ -867,17 +729,15 @@ if st.session_state.dados_processados:
                 if salvar_no_supabase(cons, cons_original): st.success(f"Banco atualizado!")
             
             c_html, c_pdf, c_docx = st.columns(3)
-            
             html_alt = gerar_html_dinamico(cons, "alterada")
             html_cons = gerar_html_dinamico(cons, "consolidada")
-            
             pdf_alt, docx_alt = gerar_pdf_dinamico(cons, "alterada"), gerar_docx_dinamico(cons, "alterada")
             pdf_cons, docx_cons = gerar_pdf_dinamico(cons, "consolidada"), gerar_docx_dinamico(cons, "consolidada")
             
             nome_arquivo_base = nome_exibicao_base.replace(' ', '_').replace('/', '-')
             
-            c_html.download_button("🌐 Baixar HTML (Alterada)", data=html_alt, file_name=f"{nome_arquivo_base}_Alt.html", mime="text/html", key=f"ha_{i}")
-            c_html.download_button("🌐 Baixar HTML (Consolidada)", data=html_cons, file_name=f"{nome_arquivo_base}_Cons.html", mime="text/html", key=f"hc_{i}")
+            c_html.download_button("🌐 Baixar HTML (Alterada)", data=html_alt.encode('utf-8'), file_name=f"{nome_arquivo_base}_Alt.html", mime="text/html", key=f"ha_{i}")
+            c_html.download_button("🌐 Baixar HTML (Consolidada)", data=html_cons.encode('utf-8'), file_name=f"{nome_arquivo_base}_Cons.html", mime="text/html", key=f"hc_{i}")
             
             c_pdf.download_button("📄 Baixar PDF (Alterada)", data=pdf_alt, file_name=f"{nome_arquivo_base}_Alt.pdf", mime="application/pdf", key=f"pa_{i}")
             c_pdf.download_button("📄 Baixar PDF (Consolidada)", data=pdf_cons, file_name=f"{nome_arquivo_base}_Cons.pdf", mime="application/pdf", key=f"pc_{i}")
