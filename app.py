@@ -862,42 +862,42 @@ if st.session_state.dados_processados:
             st.markdown("### 📝 Editor Visual de Documento")
             st.info("Formate o texto livremente. Alterações manuais ensinam a IA a não errar novamente na próxima vez que você gerar.")
             
-            cons['titulo_portaria'] = st.text_input("Título da Portaria", cons.get('titulo_portaria', ''))
+            cons['titulo_portaria'] = st.text_input("Título da Portaria", cons.get('titulo_portaria', ''), key=f"titulo_{i}")
             st.markdown("**Ementa e Preâmbulo**")
             val_ementa = ia_para_editor(cons.get('ementa_preambulo', ''))
-            ementa_editada = st_quill(value=val_ementa, key=f"q_ementa_{i}")
+            ementa_editada = st_quill(value=val_ementa, html=True, key=f"q_ementa_{i}")
             if ementa_editada: cons['ementa_preambulo'] = editor_para_pdf(ementa_editada)
             
             st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos, Anexos)")
             for j, disp in enumerate(cons.get("dispositivos", [])):
-                st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
-                c_alt, c_cons = st.columns(2)
-                
-                with c_alt:
-                    st.markdown("*Versão Alterada*")
-                    val_alt = ia_para_editor(disp.get('texto_principal_alterada', ''))
-                    alt_editada = st_quill(value=val_alt, key=f"q_alt_{i}_{j}")
-                    if alt_editada: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
-                    
-                with c_cons:
-                    st.markdown("*Versão Consolidada*")
-                    val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
-                    cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
-                    if cons_editada: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
+                with st.expander(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}** — clique para revisar/editar", expanded=False):
+                    c_alt, c_cons = st.columns(2)
 
-                if disp.get('is_tabela'):
-                    st.markdown("*Tabela / Anexo — revise linha a linha*")
-                    t_alt, t_cons = st.columns(2)
-                    with t_alt:
-                        tab_alt_edit = st.data_editor(disp.get('tabela_alterada') or [[""]], key=f"tab_alt_{i}_{j}", num_rows="dynamic", use_container_width=True)
-                        disp['tabela_alterada'] = tab_alt_edit if isinstance(tab_alt_edit, list) else disp.get('tabela_alterada')
-                        pos_alt = st.text_area("Texto após a tabela (Alterada)", value=disp.get('texto_pos_tabela_alterada') or "", key=f"pos_alt_{i}_{j}")
-                        disp['texto_pos_tabela_alterada'] = pos_alt
-                    with t_cons:
-                        tab_cons_edit = st.data_editor(disp.get('tabela_consolidada') or [[""]], key=f"tab_cons_{i}_{j}", num_rows="dynamic", use_container_width=True)
-                        disp['tabela_consolidada'] = tab_cons_edit if isinstance(tab_cons_edit, list) else disp.get('tabela_consolidada')
-                        pos_cons = st.text_area("Texto após a tabela (Consolidada)", value=disp.get('texto_pos_tabela_consolidada') or "", key=f"pos_cons_{i}_{j}")
-                        disp['texto_pos_tabela_consolidada'] = pos_cons
+                    with c_alt:
+                        st.markdown("*Versão Alterada*")
+                        val_alt = ia_para_editor(disp.get('texto_principal_alterada', ''))
+                        alt_editada = st_quill(value=val_alt, html=True, key=f"q_alt_{i}_{j}")
+                        if alt_editada: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
+
+                    with c_cons:
+                        st.markdown("*Versão Consolidada*")
+                        val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
+                        cons_editada = st_quill(value=val_cons, html=True, key=f"q_cons_{i}_{j}")
+                        if cons_editada: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
+
+                    if disp.get('is_tabela'):
+                        st.markdown("*Tabela / Anexo — revise linha a linha*")
+                        t_alt, t_cons = st.columns(2)
+                        with t_alt:
+                            tab_alt_edit = st.data_editor(disp.get('tabela_alterada') or [[""]], key=f"tab_alt_{i}_{j}", num_rows="dynamic", use_container_width=True)
+                            disp['tabela_alterada'] = tab_alt_edit if isinstance(tab_alt_edit, list) else disp.get('tabela_alterada')
+                            pos_alt = st.text_area("Texto após a tabela (Alterada)", value=disp.get('texto_pos_tabela_alterada') or "", key=f"pos_alt_{i}_{j}")
+                            disp['texto_pos_tabela_alterada'] = pos_alt
+                        with t_cons:
+                            tab_cons_edit = st.data_editor(disp.get('tabela_consolidada') or [[""]], key=f"tab_cons_{i}_{j}", num_rows="dynamic", use_container_width=True)
+                            disp['tabela_consolidada'] = tab_cons_edit if isinstance(tab_cons_edit, list) else disp.get('tabela_consolidada')
+                            pos_cons = st.text_area("Texto após a tabela (Consolidada)", value=disp.get('texto_pos_tabela_consolidada') or "", key=f"pos_cons_{i}_{j}")
+                            disp['texto_pos_tabela_consolidada'] = pos_cons
 
             st.markdown("### 📥 Opções de Exportação")
             if st.button(f"💾 Salvar Cascata Inteira no Banco de Dados", key=f"btn_sup_{i}"):
