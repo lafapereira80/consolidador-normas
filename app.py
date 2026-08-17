@@ -130,6 +130,9 @@ if not st.session_state.autenticado:
 # ÁREA AUTENTICADA DO SISTEMA
 # =====================================================================
 
+if not HAS_WEASYPRINT:
+    st.error("🚨 WeasyPrint não encontrado! O gerador de PDF não funcionará. Certifique-se de adicionar 'weasyprint' ao requirements.txt e as dependências ao packages.txt no Streamlit Cloud.")
+
 st.markdown("""
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
@@ -298,15 +301,12 @@ SYSTEM_INSTRUCTION_LEGISTECNICA = """
 Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasileiro. Regras obrigatórias:
 
 1. FIDELIDADE ABSOLUTA: transcreva com exatidão o conteúdo de cada dispositivo, preservando formatação (<b>, <i>, quebras <br/>).
-2. SEPARAÇÃO ESTRUTURAL OBRIGATÓRIA:
-   - 'ementa': Resumo descritivo do objeto da norma.
-   - 'preambulo': Autoridade expedidora e os Considerandos.
-3. CRITÉRIO RIGOROSO DE ALTERAÇÃO E REVOGAÇÃO: 
-   - Analise cirurgicamente o texto original do ato base em confronto com a portaria alteradora.
-   - Na versão ALTERADA (`texto_principal_alterada`), todo dispositivo, parágrafo, inciso ou alínea que sofreu alteração de mérito ou revogação expressa DEVE obrigatoriamente aparecer envelopado com a tag exata: `<strike><font color="red">texto antigo alterado ou revogado</font></strike>` seguido imediatamente pelo texto novo vigente (quando houver nova redação). Se o dispositivo foi apenas revogado, ele permanece taxado em vermelho com a tag citada.
-   - NUNCA deixe de taxar o dispositivo correto. Se a portaria alteradora substituiu o § 3º do Art. 1º ou o Art. 2º inteiro, exiba o texto original desses dispositivos específicos estritamente riscados em vermelho na versão alterada.
-   - Na versão CONSOLIDADA (`texto_principal_consolidada`), omita os dispositivos revogados e exiba apenas o texto atualizado sem riscos.
-4. NOTA REMISSIVA: a nota indicando o ato alterador vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses, com o nome do documento em CAIXA ALTA (ex.: "Redação dada pela PORTARIA Nº 108/PGJM, DE 28 DE MAIO DE 2026."). NUNCA repita a nota remissiva dentro do texto principal.
+2. ALTERAÇÃO DE DISPOSITIVO: quando a norma der "nova redação", na versão ALTERADA mantenha obrigatoriamente o texto revogado riscado e em vermelho 
+   (<strike><font color="red">texto antigo alterado ou revogado</font></strike>) seguido do novo texto normal. Se um artigo ou parágrafo foi revogado, o texto original dele DEVE constar riscado em vermelho na versão alterada.
+3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado em vermelho na versão ALTERADA e é OMITIDO na versão CONSOLIDADA.
+4. NOTA REMISSIVA: a nota indicando o ato alterador vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses. 
+   O nome do documento DEVE FICAR EM CAIXA ALTA. Exemplo Correto: "Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026."
+   NUNCA escreva a nota dentro do 'texto_principal_alterada' ou 'texto_principal_consolidada'. O sistema injeta automaticamente.
 """
 
 def executar_com_fallback(client, contents, response_schema):
@@ -427,7 +427,7 @@ class Dispositivo(BaseModel):
 class Consolidacao(BaseModel):
     arquivos_originais_identificados: List[str]; arquivos_alteradores_identificados: List[str]
     norma_base: MetadadosNorma; normas_alteradoras: List[MetadadosNorma]
-    cabecalho_complemento: str; orgaos_emissores: str; titulo_portaria: str; ementa: str; preambulo: str
+    cabecalho_complemento: str; orgaos_emissores: str; titulo_portaria: str; ementa_preambulo: str
     assinatura_nome: str; assinatura_cargo: str; dispositivos: List[Dispositivo]
 
 class AnaliseGlobal(BaseModel):
@@ -509,7 +509,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
 
     if not arquivos_alteradores:
         conteudo_loop = ["Texto Base:"] + textos_extraidos[arquivo_base['nome_arquivo_upload']]
-        resp_loop = executar_com_fallback(client, conteudo_loop + ["Estruture o documento separando a ementa do preâmbulo e aplicando rigorosamente o mapeamento de dispositivos." + memoria_aprendida], Consolidacao)
+        resp_loop = executar_com_fallback(client, conteudo_loop + ["Estruture o documento. " + memoria_aprendida], Consolidacao)
         return json.loads(resp_loop.text)
 
     resp_loop = None
@@ -524,8 +524,8 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({alt['nome_arquivo_upload']}):")
         conteudo_loop.extend(textos_extraidos[alt['nome_arquivo_upload']])
         prompt_loop = f"""
-        Aplique a portaria alteradora cruzando detalhadamente com o ato base. 
-        Obrigatório: mantenha <b>, itálico <i> e envelopar com <strike><font color="red">texto antigo alterado ou revogado</font></strike> todo dispositivo modificado ou revogado na versão alterada.
+        Aplique a portaria alteradora. Mantenha negrito <b>, itálico <i> e use obrigatoriamente <strike><font color="red">texto revogado</font></strike> para revogações ou alterações de mérito.
+        Atenção para não duplicar a nota remissiva.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
@@ -549,29 +549,18 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
         <title>{titulo_doc}</title>
         <style>
             @page {{ size: A4; margin: 2.5cm 2cm; }}
-            /* FONTE EXATA EM 11pt / 11px */
             body {{ font-family: 'Times New Roman', Times, serif; font-size: 11pt; line-height: 1.5; text-align: justify; }}
             .topo {{ text-align: center; color: #444; font-size: 10pt; font-weight: bold; margin-bottom: 20px; text-transform: uppercase; }}
-            .brasao {{ text-align: center; margin-bottom: 10px; }}
-            .brasao img {{ width: 45px; height: auto; display: block; margin: 0 auto; }}
             .orgaos {{ text-align: center; font-weight: bold; margin-bottom: 25px; }}
             .titulo {{ text-align: center; font-weight: bold; margin-bottom: 20px; }}
-            
-            /* EMENTA: Alinhada à direita e recuada */
-            .ementa {{ text-align: justify; margin-left: 45%; margin-bottom: 25px; font-weight: normal; }}
-            
-            /* PREÂMBULO E CONSIDERANDOS: Alinhados à esquerda, sem recuo de parágrafo */
-            .preambulo {{ text-align: justify; margin-bottom: 12px; text-indent: 0; }}
-            
-            /* DISPOSITIVOS (Artigos): Recuo padrão de parágrafo legal (40px) */
-            .dispositivo {{ text-align: justify; text-indent: 40px; margin-bottom: 12px; }}
-            
+            .dispositivo {{ text-indent: 40px; margin-bottom: 12px; }}
+            .ementa {{ margin-left: 50%; margin-bottom: 20px; font-style: italic; }}
             .capitulo {{ text-align: center; font-weight: bold; margin-top: 20px; margin-bottom: 12px; text-transform: uppercase; }}
             .assinatura {{ text-align: center; font-weight: bold; margin-top: 50px; margin-bottom: 20px; }}
             table {{ width: 100%; border-collapse: collapse; margin-top: 15px; margin-bottom: 15px; }}
             td, th {{ border: 1px solid black; padding: 6px; text-align: left; vertical-align: middle; }}
             
-            /* GARANTIA ABSOLUTA DE RENDERIZAÇÃO DO TAXADO E CORES */
+            /* CSS CRUCIAL PARA PRESERVAR FORMATAÇÃO WEASYPRINT/HTML */
             strike, s, del {{ text-decoration: line-through; }}
             b, strong {{ font-weight: bold; }}
             i, em {{ font-style: italic; }}
@@ -586,13 +575,13 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
         import base64
         with open("brasao.png", "rb") as image_file:
             encoded_string = base64.b64encode(image_file.read()).decode()
-            html += f"<div class='brasao'><img src='data:image/png;base64,{encoded_string}'/></div>"
+            html += f"<div style='text-align: center; margin-bottom: 10px;'><img src='data:image/png;base64,{encoded_string}' width='60' height='60'/></div>"
 
     html += f"""
         <div class="orgaos">{limpar_texto_ia(consolidacao_dict.get("orgaos_emissores") or "").replace('<br/>', '<br>')}</div>
         <div class="titulo">{limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or "").replace('<br/>', '<br>')}</div>
-        <div class="ementa">{limpar_texto_ia(consolidacao_dict.get("ementa") or "").replace('<br/>', '<br>')}</div>
-        <div class="preambulo">{limpar_texto_ia(consolidacao_dict.get("preambulo") or "").replace('<br/>', '<br>')}</div>
+        
+        <div class="ementa">{limpar_texto_ia(consolidacao_dict.get("ementa_preambulo") or "").replace('<br/>', '<br>')}</div>
     """
     
     for item in consolidacao_dict.get("dispositivos", []):
@@ -631,6 +620,7 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
 def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
     html_str = gerar_html_dinamico(consolidacao_dict, tipo_versao)
     if not HAS_WEASYPRINT: return b"Erro: WeasyPrint nao instalado no servidor."
+    
     buffer = io.BytesIO()
     WeasyHTML(string=html_str).write_pdf(buffer)
     buffer.seek(0)
@@ -690,15 +680,8 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
                 aplicar_html_no_docx(p_obj, p_html)
             p_obj.add_run("\n")
 
-    p_ementa = doc.add_paragraph()
-    p_ementa.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    p_ementa.paragraph_format.left_indent = Inches(3)
-    _render_docx_p(p_ementa, consolidacao_dict.get("ementa", ""))
-
-    p_preambulo = doc.add_paragraph()
-    p_preambulo.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    p_preambulo.paragraph_format.left_indent = Inches(0)
-    _render_docx_p(p_preambulo, consolidacao_dict.get("preambulo", ""))
+    p_ementa = doc.add_paragraph(); p_ementa.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; p_ementa.paragraph_format.left_indent = Inches(3)
+    _render_docx_p(p_ementa, consolidacao_dict.get("ementa_preambulo", ""))
 
     for item in consolidacao_dict.get("dispositivos", []):
         t = (item.get("tipo") or "").lower()
@@ -741,8 +724,7 @@ def salvar_no_supabase(cons, cons_original):
                     try: supabase.table("memoria_de_correcoes").insert({"texto_ia": json.dumps(original) if not isinstance(original, str) else original, "texto_corrigido": json.dumps(editado) if not isinstance(editado, str) else editado}).execute()
                     except: pass
 
-            _registrar("ementa", cons_original.get('ementa'), cons.get('ementa'))
-            _registrar("preambulo", cons_original.get('preambulo'), cons.get('preambulo'))
+            _registrar("ementa", cons_original.get('ementa_preambulo'), cons.get('ementa_preambulo'))
             for j, disp_editado in enumerate(cons.get("dispositivos", [])):
                 if j >= len(cons_original.get("dispositivos", [])): break
                 disp_original = cons_original["dispositivos"][j]
@@ -800,16 +782,10 @@ if st.session_state.dados_processados:
             st.markdown("### 📝 Editor Visual de Documento")
             
             cons['titulo_portaria'] = st.text_input("Título da Portaria", cons.get('titulo_portaria', ''), key=f"titulo_{i}")
-            
-            st.markdown("**Ementa**")
-            val_ementa = ia_para_editor(cons.get('ementa', ''))
+            st.markdown("**Ementa e Preâmbulo**")
+            val_ementa = ia_para_editor(cons.get('ementa_preambulo', ''))
             ementa_editada = st_quill(value=val_ementa, key=f"q_ementa_{i}")
-            if ementa_editada is not None: cons['ementa'] = editor_para_pdf(ementa_editada)
-            
-            st.markdown("**Preâmbulo e Considerandos**")
-            val_preambulo = ia_para_editor(cons.get('preambulo', ''))
-            preambulo_editado = st_quill(value=val_preambulo, key=f"q_preambulo_{i}")
-            if preambulo_editado is not None: cons['preambulo'] = editor_para_pdf(preambulo_editado)
+            if ementa_editada is not None: cons['ementa_preambulo'] = editor_para_pdf(ementa_editada)
             
             st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos)")
             for j, disp in enumerate(cons.get("dispositivos", [])):
