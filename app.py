@@ -299,19 +299,18 @@ Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasi
 
 1. FIDELIDADE ABSOLUTA: transcreva com exatidão o conteúdo de cada dispositivo, preservando formatação (<b>, <i>, quebras <br/>).
 2. SEPARAÇÃO ESTRUTURAL OBRIGATÓRIA:
-   - 'ementa': Deve conter exclusivamente o resumo descritivo do objeto da norma (geralmente localizado logo abaixo do número).
-   - 'preambulo': Deve conter exclusivamente a autoridade expedidora (ex: "O PROCURADOR-GERAL DE JUSTIÇA MILITAR..."), as leis de competência e todos os "CONSIDERANDO...". NUNCA misture ementa com preâmbulo.
-3. ALTERAÇÃO DE DISPOSITIVO: quando a norma der "nova redação", na versão ALTERADA mantenha o texto revogado riscado e em vermelho 
-   (<strike><font color="red">texto antigo</font></strike>) seguido do novo texto normal.
-4. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado em vermelho na versão ALTERADA e é OMITIDO na versão CONSOLIDADA.
-5. NOTA REMISSIVA: a nota indicando o ato alterador vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses. 
-   O nome do documento DEVE FICAR EM CAIXA ALTA. Exemplo Correto: "Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026."
-   NUNCA escreva a nota dentro do 'texto_principal_alterada' ou 'texto_principal_consolidada'. O sistema injeta automaticamente.
-6. NUNCA altere dispositivos não mencionados pela norma alteradora.
-7. ANEXOS E TABELAS: classifique cabeçalhos de anexo com tipo="anexo" (ex.: "ANEXO I").
+   - 'ementa': Resumo descritivo do objeto da norma.
+   - 'preambulo': Autoridade expedidora e os Considerandos.
+3. CRITÉRIO RIGOROSO DE ALTERAÇÃO E REVOGAÇÃO: 
+   - Analise cirurgicamente o texto original do ato base em confronto com a portaria alteradora.
+   - Na versão ALTERADA (`texto_principal_alterada`), todo dispositivo, parágrafo, inciso ou alínea que sofreu alteração de mérito ou revogação expressa DEVE obrigatoriamente aparecer envelopado com a tag exata: `<strike><font color="red">texto antigo alterado ou revogado</font></strike>` seguido imediatamente pelo texto novo vigente (quando houver nova redação). Se o dispositivo foi apenas revogado, ele permanece taxado em vermelho com a tag citada.
+   - NUNCA deixe de taxar o dispositivo correto. Se a portaria alteradora substituiu o § 3º do Art. 1º ou o Art. 2º inteiro, exiba o texto original desses dispositivos específicos estritamente riscados em vermelho na versão alterada.
+   - Na versão CONSOLIDADA (`texto_principal_consolidada`), omita os dispositivos revogados e exiba apenas o texto atualizado sem riscos.
+4. NOTA REMISSIVA: a nota indicando o ato alterador vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses, com o nome do documento em CAIXA ALTA (ex.: "Redação dada pela PORTARIA Nº 108/PGJM, DE 28 DE MAIO DE 2026."). NUNCA repita a nota remissiva dentro do texto principal.
 """
 
 def executar_com_fallback(client, contents, response_schema):
+    """Função blindada contra erro 503 e 429 com Espera Exponencial"""
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=response_schema,
@@ -510,7 +509,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
 
     if not arquivos_alteradores:
         conteudo_loop = ["Texto Base:"] + textos_extraidos[arquivo_base['nome_arquivo_upload']]
-        resp_loop = executar_com_fallback(client, conteudo_loop + ["Estruture o documento separando a ementa do preâmbulo (considerandos e autoridade)." + memoria_aprendida], Consolidacao)
+        resp_loop = executar_com_fallback(client, conteudo_loop + ["Estruture o documento separando a ementa do preâmbulo e aplicando rigorosamente o mapeamento de dispositivos." + memoria_aprendida], Consolidacao)
         return json.loads(resp_loop.text)
 
     resp_loop = None
@@ -525,8 +524,8 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({alt['nome_arquivo_upload']}):")
         conteudo_loop.extend(textos_extraidos[alt['nome_arquivo_upload']])
         prompt_loop = f"""
-        Aplique a portaria alteradora. Mantenha negrito <b>, itálico <i> e use <strike><font color="red">texto revogado</font></strike> para revogações.
-        Separe rigidamente a Ementa do Preâmbulo (Considerandos).
+        Aplique a portaria alteradora cruzando detalhadamente com o ato base. 
+        Obrigatório: mantenha <b>, itálico <i> e envelopar com <strike><font color="red">texto antigo alterado ou revogado</font></strike> todo dispositivo modificado ou revogado na versão alterada.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
@@ -550,7 +549,7 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
         <title>{titulo_doc}</title>
         <style>
             @page {{ size: A4; margin: 2.5cm 2cm; }}
-            /* TAMANHO DA FONTE EXATO EM 11pt / 11px */
+            /* FONTE EXATA EM 11pt / 11px */
             body {{ font-family: 'Times New Roman', Times, serif; font-size: 11pt; line-height: 1.5; text-align: justify; }}
             .topo {{ text-align: center; color: #444; font-size: 10pt; font-weight: bold; margin-bottom: 20px; text-transform: uppercase; }}
             .brasao {{ text-align: center; margin-bottom: 10px; }}
@@ -802,13 +801,11 @@ if st.session_state.dados_processados:
             
             cons['titulo_portaria'] = st.text_input("Título da Portaria", cons.get('titulo_portaria', ''), key=f"titulo_{i}")
             
-            # Caixa separada para Ementa
             st.markdown("**Ementa**")
             val_ementa = ia_para_editor(cons.get('ementa', ''))
             ementa_editada = st_quill(value=val_ementa, key=f"q_ementa_{i}")
             if ementa_editada is not None: cons['ementa'] = editor_para_pdf(ementa_editada)
             
-            # Caixa separada para Preâmbulo e Considerandos
             st.markdown("**Preâmbulo e Considerandos**")
             val_preambulo = ia_para_editor(cons.get('preambulo', ''))
             preambulo_editado = st_quill(value=val_preambulo, key=f"q_preambulo_{i}")
