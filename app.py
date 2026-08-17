@@ -301,10 +301,11 @@ SYSTEM_INSTRUCTION_LEGISTECNICA = """
 Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasileiro. Regras obrigatórias:
 
 1. FIDELIDADE ABSOLUTA: transcreva com exatidão o conteúdo de cada dispositivo, preservando formatação (<b>, <i>, quebras <br/>).
-2. ALTERAÇÃO DE DISPOSITIVO: quando a norma der "nova redação", na versão ALTERADA mantenha o texto revogado riscado e em vermelho 
+2. EMENTA E PREÂMBULO: Separe rigorosamente a ementa (resumo alinhado à direita ou centro) do preâmbulo (autoridade expedidora, leis de competência e "CONSIDERANDO..."). Os considerandos NUNCA devem ser tratados como ementa.
+3. ALTERAÇÃO DE DISPOSITIVO: quando a norma der "nova redação", na versão ALTERADA mantenha o texto revogado riscado e em vermelho 
    (<strike><font color="red">texto antigo</font></strike>) seguido do novo texto normal.
-3. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado em vermelho na versão ALTERADA e é OMITIDO na versão CONSOLIDADA.
-4. NOTA REMISSIVA: a nota indicando o ato alterador vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses. 
+4. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado em vermelho na versão ALTERADA e é OMITIDO na versão CONSOLIDADA.
+5. NOTA REMISSIVA: a nota indicando o ato alterador vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses. 
    O nome do documento DEVE FICAR EM CAIXA ALTA. Exemplo Correto: "Redação dada pela PORTARIA Nº XX, DE 10 DE MAIO DE 2026."
    NUNCA escreva a nota dentro do 'texto_principal_alterada' ou 'texto_principal_consolidada'. O sistema injeta automaticamente.
 """
@@ -457,7 +458,7 @@ def resgatar_memoria():
         try:
             res = supabase.table("memoria_de_correcoes").select("*").order("id", desc=True).limit(5).execute()
             if res.data:
-                memoria = "\n\n⚠️ HISTÓRICO DE CORREÇÕES:\n"
+                memoria = "\n\n⚠️ HISTÓRICO DE CORREÇÕES (Não repita os erros da IA):\n"
                 for m in res.data: memoria += f"- Erro: {m['texto_ia']}\n- Correção: {m['texto_corrigido']}\n\n"
         except: pass
     return memoria
@@ -509,7 +510,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
 
     if not arquivos_alteradores:
         conteudo_loop = ["Texto Base:"] + textos_extraidos[arquivo_base['nome_arquivo_upload']]
-        resp_loop = executar_com_fallback(client, conteudo_loop + ["Estruture o documento. " + memoria_aprendida], Consolidacao)
+        resp_loop = executar_com_fallback(client, conteudo_loop + ["Estruture o documento separando rigorosamente a ementa dos considerandos e preâmbulo." + memoria_aprendida], Consolidacao)
         return json.loads(resp_loop.text)
 
     resp_loop = None
@@ -525,7 +526,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         conteudo_loop.extend(textos_extraidos[alt['nome_arquivo_upload']])
         prompt_loop = f"""
         Aplique a portaria alteradora. Mantenha negrito <b>, itálico <i> e use <strike><font color="red">texto revogado</font></strike> para revogações.
-        Atenção para não duplicar a nota remissiva.
+        Separe rigidamente a Ementa dos Considerandos.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
@@ -549,12 +550,23 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
         <title>{titulo_doc}</title>
         <style>
             @page {{ size: A4; margin: 2.5cm 2cm; }}
+            /* TAMANHO DA FONTE EXATO EM 11px / 11pt conforme exigido */
             body {{ font-family: 'Times New Roman', Times, serif; font-size: 11pt; line-height: 1.5; text-align: justify; }}
             .topo {{ text-align: center; color: #444; font-size: 10pt; font-weight: bold; margin-bottom: 20px; text-transform: uppercase; }}
+            .brasao {{ text-align: center; margin-bottom: 10px; }}
+            .brasao img {{ width: 45px; height: auto; display: block; margin: 0 auto; }}
             .orgaos {{ text-align: center; font-weight: bold; margin-bottom: 25px; }}
             .titulo {{ text-align: center; font-weight: bold; margin-bottom: 20px; }}
-            .dispositivo {{ text-indent: 40px; margin-bottom: 12px; }}
-            .ementa {{ margin-left: 50%; margin-bottom: 20px; font-style: italic; }}
+            
+            /* EMENTA: Alinhada à direita e recuada */
+            .ementa {{ text-align: justify; margin-left: 45%; margin-bottom: 25px; font-weight: normal; }}
+            
+            /* PREÂMBULO E CONSIDERANDOS: Sem recuo de parágrafo nas linhas iniciais */
+            .preambulo {{ text-align: justify; margin-bottom: 12px; text-indent: 0; }}
+            
+            /* DISPOSITIVOS (Artigos): Recuo padrão de 40px */
+            .dispositivo {{ text-align: justify; text-indent: 40px; margin-bottom: 12px; }}
+            
             .capitulo {{ text-align: center; font-weight: bold; margin-top: 20px; margin-bottom: 12px; text-transform: uppercase; }}
             .assinatura {{ text-align: center; font-weight: bold; margin-top: 50px; margin-bottom: 20px; }}
             table {{ width: 100%; border-collapse: collapse; margin-top: 15px; margin-bottom: 15px; }}
@@ -570,17 +582,29 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
         <div class="topo">{titulo_doc}</div>
     """
     
+    # Brasão redimensionado proporcionalmente
     if os.path.exists("brasao.png"):
         import base64
         with open("brasao.png", "rb") as image_file:
             encoded_string = base64.b64encode(image_file.read()).decode()
-            html += f"<div style='text-align: center; margin-bottom: 10px;'><img src='data:image/png;base64,{encoded_string}' width='60' height='60'/></div>"
+            html += f"<div class='brasao'><img src='data:image/png;base64,{encoded_string}'/></div>"
 
     html += f"""
         <div class="orgaos">{limpar_texto_ia(consolidacao_dict.get("orgaos_emissores") or "").replace('<br/>', '<br>')}</div>
         <div class="titulo">{limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or "").replace('<br/>', '<br>')}</div>
-        <div class="ementa">{limpar_texto_ia(consolidacao_dict.get("ementa_preambulo") or "").replace('<br/>', '<br>')}</div>
     """
+    
+    # Tratamento dedicado para a Ementa e Preâmbulo/Considerandos
+    ementa_preambulo_texto = limpar_texto_ia(consolidacao_dict.get("ementa_preambulo") or "")
+    blocos_ep = ementa_preambulo_texto.split("<br/>")
+    for bloco in blocos_ep:
+        bloco_limpo = bloco.strip()
+        if not bloco_limpo: continue
+        # Identifica se é Ementa (geralmente começa antes do PROCURADOR-GERAL ou O PROCURADOR)
+        if "O PROCURADOR" in bloco_limpo.upper() or "CONSIDERANDO" in bloco_limpo.upper():
+            html += f"<div class='preambulo'>{bloco_limpo}</div>"
+        else:
+            html += f"<div class='ementa'>{bloco_limpo}</div>"
     
     for item in consolidacao_dict.get("dispositivos", []):
         t = (item.get("tipo") or "").lower()
@@ -617,8 +641,7 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
 
 def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
     html_str = gerar_html_dinamico(consolidacao_dict, tipo_versao)
-    if not HAS_WEASYPRINT: return b"Erro: WeasyPrint nao instalado no servidor. Adicione 'weasyprint' ao requirements.txt e as dependencias de SO ao packages.txt."
-    
+    if not HAS_WEASYPRINT: return b"Erro: WeasyPrint nao instalado no servidor."
     buffer = io.BytesIO()
     WeasyHTML(string=html_str).write_pdf(buffer)
     buffer.seek(0)
@@ -674,12 +697,21 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
             if bold_all:
                 run = p_obj.add_run(re.sub(r'<[^>]+>', '', p_html).replace("&nbsp;", "\xa0"))
                 run.font.name, run.font.size, run.bold = 'Times New Roman', Pt(10), True
-            else: 
-                aplicar_html_no_docx(p_obj, p_html)
+            else: aplicar_html_no_docx(p_obj, p_html)
             p_obj.add_run("\n")
 
-    p_ementa = doc.add_paragraph(); p_ementa.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; p_ementa.paragraph_format.left_indent = Inches(3)
-    _render_docx_p(p_ementa, consolidacao_dict.get("ementa_preambulo", ""))
+    ementa_preambulo_texto = limpar_texto_ia(consolidacao_dict.get("ementa_preambulo") or "")
+    for bloco in ementa_preambulo_texto.split("<br/>"):
+        bloco_limpo = bloco.strip()
+        if not bloco_limpo: continue
+        p_ementa = doc.add_paragraph()
+        if "O PROCURADOR" in bloco_limpo.upper() or "CONSIDERANDO" in bloco_limpo.upper():
+            p_ementa.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            p_ementa.paragraph_format.left_indent = Inches(0)
+        else:
+            p_ementa.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            p_ementa.paragraph_format.left_indent = Inches(3)
+        _render_docx_p(p_ementa, bloco_limpo)
 
     for item in consolidacao_dict.get("dispositivos", []):
         t = (item.get("tipo") or "").lower()
@@ -782,8 +814,8 @@ if st.session_state.dados_processados:
             cons['titulo_portaria'] = st.text_input("Título da Portaria", cons.get('titulo_portaria', ''), key=f"titulo_{i}")
             st.markdown("**Ementa e Preâmbulo**")
             val_ementa = ia_para_editor(cons.get('ementa_preambulo', ''))
-            ementa_editada = st_quill(value=val_ementa, html=True, key=f"q_ementa_{i}")
-            if ementa_editada: cons['ementa_preambulo'] = editor_para_pdf(ementa_editada)
+            ementa_editada = st_quill(value=val_ementa, key=f"q_ementa_{i}")
+            if ementa_editada is not None: cons['ementa_preambulo'] = editor_para_pdf(ementa_editada)
             
             st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos)")
             for j, disp in enumerate(cons.get("dispositivos", [])):
@@ -793,13 +825,13 @@ if st.session_state.dados_processados:
                 with c_alt:
                     st.markdown("*Versão Alterada*")
                     val_alt = ia_para_editor(disp.get('texto_principal_alterada', ''))
-                    alt_editada = st_quill(value=val_alt, html=True, key=f"q_alt_{i}_{j}")
+                    alt_editada = st_quill(value=val_alt, key=f"q_alt_{i}_{j}")
                     if alt_editada is not None: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
                     
                 with c_cons:
                     st.markdown("*Versão Consolidada*")
                     val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
-                    cons_editada = st_quill(value=val_cons, html=True, key=f"q_cons_{i}_{j}")
+                    cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
                     if cons_editada is not None: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
                 
                 st.markdown("*Nota Remissiva (Injetada automaticamente no final)*")
@@ -827,7 +859,6 @@ if st.session_state.dados_processados:
                 if salvar_no_supabase(cons, cons_original): st.success(f"Banco atualizado!")
             
             c_html, c_pdf, c_docx = st.columns(3)
-            
             html_alt = gerar_html_dinamico(cons, "alterada")
             html_cons = gerar_html_dinamico(cons, "consolidada")
             pdf_alt, docx_alt = gerar_pdf_dinamico(cons, "alterada"), gerar_docx_dinamico(cons, "alterada")
@@ -835,8 +866,8 @@ if st.session_state.dados_processados:
             
             nome_arquivo_base = nome_exibicao_base.replace(' ', '_').replace('/', '-')
             
-            c_html.download_button("🌐 Baixar HTML (Alterada)", data=html_alt.encode('utf-8'), file_name=f"{nome_arquivo_base}_Alt.html", mime="text/html", key=f"ha_{i}")
-            c_html.download_button("🌐 Baixar HTML (Consolidada)", data=html_cons.encode('utf-8'), file_name=f"{nome_arquivo_base}_Cons.html", mime="text/html", key=f"hc_{i}")
+            c_html.download_button("🌐 Baixar HTML (Alterada)", data=html_alt, file_name=f"{nome_arquivo_base}_Alt.html", mime="text/html", key=f"ha_{i}")
+            c_html.download_button("🌐 Baixar HTML (Consolidada)", data=html_cons, file_name=f"{nome_arquivo_base}_Cons.html", mime="text/html", key=f"hc_{i}")
             
             c_pdf.download_button("📄 Baixar PDF (Alterada)", data=pdf_alt, file_name=f"{nome_arquivo_base}_Alt.pdf", mime="application/pdf", key=f"pa_{i}")
             c_pdf.download_button("📄 Baixar PDF (Consolidada)", data=pdf_cons, file_name=f"{nome_arquivo_base}_Cons.pdf", mime="application/pdf", key=f"pc_{i}")
