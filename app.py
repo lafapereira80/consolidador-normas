@@ -130,9 +130,6 @@ if not st.session_state.autenticado:
 # ÁREA AUTENTICADA DO SISTEMA
 # =====================================================================
 
-if not HAS_WEASYPRINT:
-    st.error("🚨 WeasyPrint não encontrado! O gerador de PDF não funcionará. Certifique-se de adicionar 'weasyprint' ao requirements.txt e as dependências ao packages.txt no Streamlit Cloud.")
-
 st.markdown("""
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
@@ -301,7 +298,7 @@ SYSTEM_INSTRUCTION_LEGISTECNICA = """
 Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasileiro. Regras obrigatórias:
 
 1. FIDELIDADE ABSOLUTA: transcreva com exatidão o conteúdo de cada dispositivo, preservando formatação (<b>, <i>, quebras <br/>).
-2. EMENTA E PREÂMBULO: Separe rigorosamente a ementa (resumo alinhado à direita ou centro) do preâmbulo (autoridade expedidora, leis de competência e "CONSIDERANDO..."). Os considerandos NUNCA devem ser tratados como ementa.
+2. EMENTA E PREÂMBULO: Separe rigorosamente a ementa (resumo alinhado à direita ou centro) do preâmbulo (autoridade expedidora como "O PROCURADOR-GERAL DE JUSTIÇA MILITAR...", leis de competência e "CONSIDERANDO..."). Os considerandos NUNCA devem ser tratados como ementa.
 3. ALTERAÇÃO DE DISPOSITIVO: quando a norma der "nova redação", na versão ALTERADA mantenha o texto revogado riscado e em vermelho 
    (<strike><font color="red">texto antigo</font></strike>) seguido do novo texto normal.
 4. REVOGAÇÃO EXPRESSA: dispositivo revogado aparece riscado em vermelho na versão ALTERADA e é OMITIDO na versão CONSOLIDADA.
@@ -311,7 +308,6 @@ Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasi
 """
 
 def executar_com_fallback(client, contents, response_schema):
-    """Função blindada contra erro 503 e 429 com Espera Exponencial"""
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=response_schema,
@@ -348,7 +344,7 @@ def executar_com_fallback(client, contents, response_schema):
                 else:
                     raise e
                     
-    raise Exception(f"Erro 503 UNAVAILABLE: Os servidores do Google estão congestionados neste momento. O sistema tentou reprocessar em todos os modelos e não obteve sucesso. Tente novamente em 2 minutos.")
+    raise Exception(f"Erro 503 UNAVAILABLE: Os servidores do Google estão congestionados neste momento. Tente novamente em 2 minutos.")
 
 def _validar_resposta(resp):
     candidatos = getattr(resp, "candidates", None) or []
@@ -510,7 +506,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
 
     if not arquivos_alteradores:
         conteudo_loop = ["Texto Base:"] + textos_extraidos[arquivo_base['nome_arquivo_upload']]
-        resp_loop = executar_com_fallback(client, conteudo_loop + ["Estruture o documento separando rigorosamente a ementa dos considerandos e preâmbulo." + memoria_aprendida], Consolidacao)
+        resp_loop = executar_com_fallback(client, conteudo_loop + ["Estruture o documento separando a ementa dos considerandos e preâmbulo." + memoria_aprendida], Consolidacao)
         return json.loads(resp_loop.text)
 
     resp_loop = None
@@ -526,7 +522,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         conteudo_loop.extend(textos_extraidos[alt['nome_arquivo_upload']])
         prompt_loop = f"""
         Aplique a portaria alteradora. Mantenha negrito <b>, itálico <i> e use <strike><font color="red">texto revogado</font></strike> para revogações.
-        Separe rigidamente a Ementa dos Considerandos.
+        Separe rigidamente a Ementa dos Considerandos e Preâmbulo.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
@@ -550,7 +546,7 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
         <title>{titulo_doc}</title>
         <style>
             @page {{ size: A4; margin: 2.5cm 2cm; }}
-            /* TAMANHO DA FONTE EXATO EM 11px / 11pt conforme exigido */
+            /* FONTE EXATA EM 11pt / 11px */
             body {{ font-family: 'Times New Roman', Times, serif; font-size: 11pt; line-height: 1.5; text-align: justify; }}
             .topo {{ text-align: center; color: #444; font-size: 10pt; font-weight: bold; margin-bottom: 20px; text-transform: uppercase; }}
             .brasao {{ text-align: center; margin-bottom: 10px; }}
@@ -561,10 +557,10 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
             /* EMENTA: Alinhada à direita e recuada */
             .ementa {{ text-align: justify; margin-left: 45%; margin-bottom: 25px; font-weight: normal; }}
             
-            /* PREÂMBULO E CONSIDERANDOS: Sem recuo de parágrafo nas linhas iniciais */
+            /* PREÂMBULO E CONSIDERANDOS: Alinhados à esquerda, sem recuo na primeira linha */
             .preambulo {{ text-align: justify; margin-bottom: 12px; text-indent: 0; }}
             
-            /* DISPOSITIVOS (Artigos): Recuo padrão de 40px */
+            /* DISPOSITIVOS (Artigos): Recuo padrão de parágrafo legal (40px) */
             .dispositivo {{ text-align: justify; text-indent: 40px; margin-bottom: 12px; }}
             
             .capitulo {{ text-align: center; font-weight: bold; margin-top: 20px; margin-bottom: 12px; text-transform: uppercase; }}
@@ -572,17 +568,17 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
             table {{ width: 100%; border-collapse: collapse; margin-top: 15px; margin-bottom: 15px; }}
             td, th {{ border: 1px solid black; padding: 6px; text-align: left; vertical-align: middle; }}
             
+            /* GARANTIA DE RENDERIZAÇÃO DO TAXADO E CORES */
             strike, s, del {{ text-decoration: line-through; }}
             b, strong {{ font-weight: bold; }}
             i, em {{ font-style: italic; }}
-            font[color="red"], span[style*="color: red"] {{ color: red !important; }}
+            font[color="red"], span[style*="color: red"], span[style*="color:rgb(230"] {{ color: red !important; }}
         </style>
     </head>
     <body>
         <div class="topo">{titulo_doc}</div>
     """
     
-    # Brasão redimensionado proporcionalmente
     if os.path.exists("brasao.png"):
         import base64
         with open("brasao.png", "rb") as image_file:
@@ -594,14 +590,14 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
         <div class="titulo">{limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or "").replace('<br/>', '<br>')}</div>
     """
     
-    # Tratamento dedicado para a Ementa e Preâmbulo/Considerandos
+    # Tratamento dedicado para separar ementa do preâmbulo/considerandos
     ementa_preambulo_texto = limpar_texto_ia(consolidacao_dict.get("ementa_preambulo") or "")
     blocos_ep = ementa_preambulo_texto.split("<br/>")
     for bloco in blocos_ep:
         bloco_limpo = bloco.strip()
         if not bloco_limpo: continue
-        # Identifica se é Ementa (geralmente começa antes do PROCURADOR-GERAL ou O PROCURADOR)
-        if "O PROCURADOR" in bloco_limpo.upper() or "CONSIDERANDO" in bloco_limpo.upper():
+        # Identifica se é preâmbulo/considerando ou autoridade expedidora
+        if "O PROCURADOR" in bloco_limpo.upper() or "CONSIDERANDO" in bloco_limpo.upper() or "RESOLVE" in bloco_limpo.upper():
             html += f"<div class='preambulo'>{bloco_limpo}</div>"
         else:
             html += f"<div class='ementa'>{bloco_limpo}</div>"
@@ -697,7 +693,8 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
             if bold_all:
                 run = p_obj.add_run(re.sub(r'<[^>]+>', '', p_html).replace("&nbsp;", "\xa0"))
                 run.font.name, run.font.size, run.bold = 'Times New Roman', Pt(10), True
-            else: aplicar_html_no_docx(p_obj, p_html)
+            else: 
+                aplicar_html_no_docx(p_obj, p_html)
             p_obj.add_run("\n")
 
     ementa_preambulo_texto = limpar_texto_ia(consolidacao_dict.get("ementa_preambulo") or "")
@@ -705,7 +702,7 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
         bloco_limpo = bloco.strip()
         if not bloco_limpo: continue
         p_ementa = doc.add_paragraph()
-        if "O PROCURADOR" in bloco_limpo.upper() or "CONSIDERANDO" in bloco_limpo.upper():
+        if "O PROCURADOR" in bloco_limpo.upper() or "CONSIDERANDO" in bloco_limpo.upper() or "RESOLVE" in bloco_limpo.upper():
             p_ementa.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             p_ementa.paragraph_format.left_indent = Inches(0)
         else:
