@@ -283,6 +283,17 @@ def ia_para_editor(texto):
     texto = re.sub(r'</i>', '</em>', texto, flags=re.IGNORECASE)
     return texto.replace("<p></p>", "")
 
+def editor_para_pdf(texto):
+    if not texto: return ""
+    parser = QuillParser()
+    try:
+        parser.feed(texto)
+        return "<br/>".join(parser.get_paragraphs())
+    except Exception:
+        # Fallback simples caso o parser falhe por tag malformada
+        texto_limpo = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto, flags=re.IGNORECASE)
+        return texto_limpo
+
 # =====================================================================
 # LÓGICA DE NEGÓCIO E INTELIGÊNCIA ARTIFICIAL
 # =====================================================================
@@ -308,7 +319,6 @@ def executar_com_fallback(client, contents, response_schema):
         thinking_config=types.ThinkingConfig(thinking_level="high")
     )
     
-    # Modelos conforme exigido
     modelos_oficiais = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash']
     max_tentativas = 5
     ultimo_erro = None
@@ -448,8 +458,8 @@ def resgatar_memoria():
         try:
             res = supabase.table("memoria_de_correcoes").select("*").order("id", desc=True).limit(5).execute()
             if res.data:
-                memoria = "\n\n⚠️ HISTÓRICO DE CORREÇÕES (Não repita os erros da IA):\n"
-                for m in res.data: memoria += f"- Erro da IA: {m['texto_ia']}\n- Correção do Usuário: {m['texto_corrigido']}\n\n"
+                memoria = "\n\n⚠️ HISTÓRICO DE CORREÇÕES:\n"
+                for m in res.data: memoria += f"- Erro: {m['texto_ia']}\n- Correção: {m['texto_corrigido']}\n\n"
         except: pass
     return memoria
 
@@ -460,7 +470,7 @@ def analisar_lote_arquivos(arquivos, key):
     textos_extraidos = {}
     for arq in arquivos: textos_extraidos[arq.name] = extrair_conteudo_multimodal(arq.getvalue(), arq.name)
 
-    contents_triagem = [f"Analise os documentos. Agrupe cada ato original com seus derivativos no mesmo grupo_id. ARQUIVOS: {', '.join(textos_extraidos.keys())}"]
+    contents_triagem = [f"Analise os documentos. Agrupe cada ato original com seus derivativos. ARQUIVOS: {', '.join(textos_extraidos.keys())}"]
     for partes in textos_extraidos.values(): contents_triagem.extend(partes)
     resp_triagem = executar_com_fallback(client, contents_triagem, TriagemDocumentos)
     triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
@@ -555,14 +565,13 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
             strike, s, del {{ text-decoration: line-through; }}
             b, strong {{ font-weight: bold; }}
             i, em {{ font-style: italic; }}
-            font[color="red"] {{ color: red; }}
+            font[color="red"], span[style*="color: red"] {{ color: red !important; }}
         </style>
     </head>
     <body>
         <div class="topo">{titulo_doc}</div>
         <div class="orgaos">{limpar_texto_ia(consolidacao_dict.get("orgaos_emissores") or "").replace('<br/>', '<br>')}</div>
         <div class="titulo">{limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or "").replace('<br/>', '<br>')}</div>
-        
         <div class="ementa">{limpar_texto_ia(consolidacao_dict.get("ementa_preambulo") or "").replace('<br/>', '<br>')}</div>
     """
     
@@ -583,7 +592,7 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
                 html += "<table>"
                 for linha in linhas:
                     html += "<tr>"
-                    for celula in linha: html += f"<td>{celula}</td>"
+                    for celula in linha: html += f"<td>{editor_para_pdf(celula)}</td>"
                     html += "</tr>"
                 html += "</table>"
                 
@@ -597,7 +606,6 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
 def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
     html_str = gerar_html_dinamico(consolidacao_dict, tipo_versao)
     if not HAS_WEASYPRINT: return b"Erro: WeasyPrint nao instalado no servidor."
-    
     buffer = io.BytesIO()
     WeasyHTML(string=html_str).write_pdf(buffer)
     buffer.seek(0)
@@ -761,8 +769,8 @@ if st.session_state.dados_processados:
             cons['titulo_portaria'] = st.text_input("Título da Portaria", cons.get('titulo_portaria', ''), key=f"titulo_{i}")
             st.markdown("**Ementa e Preâmbulo**")
             val_ementa = ia_para_editor(cons.get('ementa_preambulo', ''))
-            ementa_editada = st_quill(value=val_ementa, key=f"q_ementa_{i}")
-            if ementa_editada is not None: cons['ementa_preambulo'] = editor_para_pdf(ementa_editada)
+            ementa_editada = st_quill(value=val_ementa, html=True, key=f"q_ementa_{i}")
+            if ementa_editada: cons['ementa_preambulo'] = editor_para_pdf(ementa_editada)
             
             st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos)")
             for j, disp in enumerate(cons.get("dispositivos", [])):
@@ -772,14 +780,14 @@ if st.session_state.dados_processados:
                 with c_alt:
                     st.markdown("*Versão Alterada*")
                     val_alt = ia_para_editor(disp.get('texto_principal_alterada', ''))
-                    alt_editada = st_quill(value=val_alt, key=f"q_alt_{i}_{j}")
-                    if alt_editada is not None: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
+                    alt_editada = st_quill(value=val_alt, html=True, key=f"q_alt_{i}_{j}")
+                    if alt_editada: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
                     
                 with c_cons:
                     st.markdown("*Versão Consolidada*")
                     val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
-                    cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
-                    if cons_editada is not None: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
+                    cons_editada = st_quill(value=val_cons, html=True, key=f"q_cons_{i}_{j}")
+                    if cons_editada: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
                 
                 st.markdown("*Nota Remissiva (Injetada automaticamente no final)*")
                 nota_editada = st.text_input("Nota", value=disp.get('nota_remissiva', ''), key=f"nota_{i}_{j}", label_visibility="collapsed")
