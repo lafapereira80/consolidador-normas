@@ -10,6 +10,7 @@ import hashlib
 from html.parser import HTMLParser
 from html import unescape
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
@@ -309,17 +310,17 @@ Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasi
 4. NOTA REMISSIVA: a nota indicando o ato alterador vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses, com o nome do documento em CAIXA ALTA (ex.: "Redação dada pela PORTARIA Nº 108/PGJM, DE 28 DE MAIO DE 2026."). NUNCA repita a nota remissiva dentro do texto principal.
 """
 
-def executar_com_fallback(client, contents, response_schema):
+def executar_com_fallback(client, contents, response_schema, thinking_level="high"):
     """Função blindada contra erro 503 e 429 com Espera Exponencial"""
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=response_schema,
         system_instruction=SYSTEM_INSTRUCTION_LEGISTECNICA,
-        thinking_config=types.ThinkingConfig(thinking_level="high")
+        thinking_config=types.ThinkingConfig(thinking_level=thinking_level)
     )
     
     modelos_oficiais = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash']
-    max_tentativas = 5
+    max_tentativas = 3
     ultimo_erro = None
     
     for modelo in modelos_oficiais:
@@ -334,7 +335,7 @@ def executar_com_fallback(client, contents, response_schema):
                 
                 if "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str or "503" in erro_str or "UNAVAILABLE" in erro_str:
                     if tentativa < max_tentativas:
-                        tempo_espera = tentativa * 5
+                        tempo_espera = min(tentativa * 3, 10)
                         st.toast(f"⚡ Fila no Google ({modelo}). Tentativa {tentativa}/{max_tentativas}. Aguardando {tempo_espera}s...", icon="⏳")
                         time.sleep(tempo_espera)
                         continue
@@ -467,16 +468,20 @@ def analisar_lote_arquivos(arquivos, key):
     memoria_aprendida = resgatar_memoria()
 
     textos_extraidos = {}
-    for arq in arquivos: textos_extraidos[arq.name] = extrair_conteudo_multimodal(arq.getvalue(), arq.name)
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(arquivos)))) as ex:
+        futuros = {ex.submit(extrair_conteudo_multimodal, arq.getvalue(), arq.name): arq.name for arq in arquivos}
+        for fut in as_completed(futuros):
+            textos_extraidos[futuros[fut]] = fut.result()
 
     contents_triagem = [f"Analise os documentos. Agrupe cada ato original com seus derivativos. ARQUIVOS: {', '.join(textos_extraidos.keys())}"]
     for partes in textos_extraidos.values(): contents_triagem.extend(partes)
-    resp_triagem = executar_com_fallback(client, contents_triagem, TriagemDocumentos)
+    resp_triagem = executar_com_fallback(client, contents_triagem, TriagemDocumentos, thinking_level="low")
     triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
 
     grupos = {}
     for a in triagem_dados: grupos.setdefault(a.get('grupo_id', 0), []).append(a)
 
+    grupos_validos = []
     consolidacoes_geradas, arquivos_nao_alterados = [], []
     for grupo_id, itens in grupos.items():
         arquivo_base = next((a for a in itens if a['tipo'] == 'Base'), None)
@@ -486,14 +491,23 @@ def analisar_lote_arquivos(arquivos, key):
         if not arquivo_base:
             arquivos_nao_alterados.extend([a['nome_arquivo_upload'] for a in arquivos_alteradores])
             continue
+        grupos_validos.append((arquivo_base, arquivos_alteradores))
 
-        st.toast(f"⚙️ Processando: {arquivo_base.get('nome_padronizado_identificado', grupo_id)}...", icon="⏳")
-        try:
-            consolidacoes_geradas.append(_processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida))
-        except Exception as e:
-            st.error(f"❌ Falha em '{arquivo_base.get('nome_padronizado_identificado')}': {e}")
-            arquivos_nao_alterados.append(arquivo_base['nome_arquivo_upload'])
-            arquivos_nao_alterados.extend([a['nome_arquivo_upload'] for a in arquivos_alteradores])
+    if grupos_validos:
+        with ThreadPoolExecutor(max_workers=min(4, len(grupos_validos))) as ex:
+            futuros = {}
+            for arquivo_base, arquivos_alteradores in grupos_validos:
+                st.toast(f"⚙️ Processando: {arquivo_base.get('nome_padronizado_identificado')}...", icon="⏳")
+                fut = ex.submit(_processar_cascata_grupo, client, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida)
+                futuros[fut] = (arquivo_base, arquivos_alteradores)
+            for fut in as_completed(futuros):
+                arquivo_base, arquivos_alteradores = futuros[fut]
+                try:
+                    consolidacoes_geradas.append(fut.result())
+                except Exception as e:
+                    st.error(f"❌ Falha em '{arquivo_base.get('nome_padronizado_identificado')}': {e}")
+                    arquivos_nao_alterados.append(arquivo_base['nome_arquivo_upload'])
+                    arquivos_nao_alterados.extend([a['nome_arquivo_upload'] for a in arquivos_alteradores])
 
     return {"consolidacoes_geradas": consolidacoes_geradas, "arquivos_nao_alterados": arquivos_nao_alterados}
 
