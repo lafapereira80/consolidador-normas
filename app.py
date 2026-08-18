@@ -803,12 +803,12 @@ if st.session_state.dados_processados:
             
             st.markdown("**Ementa**")
             val_ementa = ia_para_editor(cons.get('ementa', ''))
-            ementa_editada = st_quill(value=val_ementa, key=f"q_ementa_{i}")
+            ementa_editada = st_quill(value=val_ementa, html=True, key=f"q_ementa_{i}")
             if ementa_editada is not None: cons['ementa'] = editor_para_pdf(ementa_editada)
             
             st.markdown("**Preâmbulo e Considerandos**")
             val_preambulo = ia_para_editor(cons.get('preambulo', ''))
-            preambulo_editado = st_quill(value=val_preambulo, key=f"q_preambulo_{i}")
+            preambulo_editado = st_quill(value=val_preambulo, html=True, key=f"q_preambulo_{i}")
             if preambulo_editado is not None: cons['preambulo'] = editor_para_pdf(preambulo_editado)
             
             st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos)")
@@ -819,13 +819,13 @@ if st.session_state.dados_processados:
                 with c_alt:
                     st.markdown("*Versão Alterada*")
                     val_alt = ia_para_editor(disp.get('texto_principal_alterada', ''))
-                    alt_editada = st_quill(value=val_alt, key=f"q_alt_{i}_{j}")
+                    alt_editada = st_quill(value=val_alt, html=True, key=f"q_alt_{i}_{j}")
                     if alt_editada is not None: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
                     
                 with c_cons:
                     st.markdown("*Versão Consolidada*")
                     val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
-                    cons_editada = st_quill(value=val_cons, key=f"q_cons_{i}_{j}")
+                    cons_editada = st_quill(value=val_cons, html=True, key=f"q_cons_{i}_{j}")
                     if cons_editada is not None: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
                 
                 st.markdown("*Nota Remissiva (Injetada automaticamente no final)*")
