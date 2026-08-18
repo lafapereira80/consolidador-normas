@@ -306,8 +306,9 @@ Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasi
    - Analise cirurgicamente o texto original do ato base em confronto com a portaria alteradora.
    - Na versão ALTERADA (`texto_principal_alterada`), todo dispositivo, parágrafo, inciso ou alínea que sofreu alteração de mérito ou revogação expressa DEVE obrigatoriamente aparecer envelopado com a tag exata: `<strike><font color="red">texto antigo alterado ou revogado</font></strike>` seguido imediatamente pelo texto novo vigente (quando houver nova redação). Se o dispositivo foi apenas revogado, ele permanece taxado em vermelho com a tag citada.
    - NUNCA deixe de taxar o dispositivo correto. Se a portaria alteradora substituiu o § 3º do Art. 1º ou o Art. 2º inteiro, exiba o texto original desses dispositivos específicos estritamente riscados em vermelho na versão alterada.
-   - Na versão CONSOLIDADA (`texto_principal_consolidada`), omita os dispositivos revogados e exiba apenas o texto atualizado sem riscos.
-4. NOTA REMISSIVA: a nota indicando o ato alterador vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses, com o nome do documento em CAIXA ALTA (ex.: "Redação dada pela PORTARIA Nº 108/PGJM, DE 28 DE MAIO DE 2026."). NUNCA repita a nota remissiva dentro do texto principal.
+   - Na versão CONSOLIDADA (`texto_principal_consolidada`) de um dispositivo ALTERADO (nova redação), exiba o número/identificador do dispositivo (ex.: "Art. 5º", "§ 3º", "Inciso II") seguido da NOVA REDAÇÃO VIGENTE por extenso, sem riscos — nunca a redação antiga.
+   - Na versão CONSOLIDADA de um dispositivo REVOGADO, NUNCA omita a linha inteiramente: mantenha o número/identificador do dispositivo (ex.: "Art. 5º", "§ 3º", "Inciso II") seguido de "(Revogado)", SEM riscar e SEM repetir o texto revogado. O identificador do dispositivo precisa continuar visível para referência.
+4. NOTA REMISSIVA: a nota indicando o ato alterador vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses, com o nome do documento em CAIXA ALTA (ex.: "Redação dada pela PORTARIA Nº 108/PGJM, DE 28 DE MAIO DE 2026." ou "Revogado pela PORTARIA Nº 108/PGJM, DE 28 DE MAIO DE 2026."). Esse campo é usado nas DUAS versões (alterada e consolidada) — preencha sempre que houver alteração ou revogação. NUNCA repita a nota remissiva dentro do texto principal.
 """
 
 def executar_com_fallback(client, contents, response_schema, thinking_level="high"):
@@ -399,8 +400,8 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
         if caracteres_uteis < 30 * max(doc.page_count, 1):
             partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO. Leia o conteúdo visualmente:"]
             for page in doc:
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                partes.append(types.Part.from_bytes(data=pix.tobytes("png"), mime_type="image/png"))
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                partes.append(types.Part.from_bytes(data=pix.tobytes("jpg", jpg_quality=78), mime_type="image/jpeg"))
             return partes
 
         return [html_text]
@@ -540,6 +541,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         prompt_loop = f"""
         Aplique a portaria alteradora cruzando detalhadamente com o ato base. 
         Obrigatório: mantenha <b>, itálico <i> e envelopar com <strike><font color="red">texto antigo alterado ou revogado</font></strike> todo dispositivo modificado ou revogado na versão alterada.
+        Obrigatório na versão CONSOLIDADA: dispositivo alterado mostra o identificador (Art./§/Inciso) seguido da nova redação vigente; dispositivo revogado mostra o identificador seguido de "(Revogado)", nunca omita a linha inteira nem o texto revogado.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
