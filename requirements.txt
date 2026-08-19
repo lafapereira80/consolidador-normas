@@ -1,9 +1,10 @@
 streamlit
-weasyprint
+supabase
+python-docx
 PyMuPDF
+streamlit-quill
 google-genai
 pydantic
-requests 
-python-docx
-supabase
-streamlit-quill
+weasyprint
+groq
+openai
