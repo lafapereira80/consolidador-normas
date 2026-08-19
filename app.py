@@ -504,7 +504,11 @@ def analisar_lote_arquivos(arquivos, key):
             for fut in as_completed(futuros):
                 arquivo_base, arquivos_alteradores = futuros[fut]
                 try:
-                    consolidacoes_geradas.append(fut.result())
+                    resultado, mensagens = fut.result()
+                    consolidacoes_geradas.append(resultado)
+                    for tipo_msg, texto_msg in mensagens:
+                        if tipo_msg == "info": st.info(texto_msg)
+                        elif tipo_msg == "warning": st.warning(texto_msg)
                 except Exception as e:
                     st.error(f"❌ Falha em '{arquivo_base.get('nome_padronizado_identificado')}': {e}")
                     arquivos_nao_alterados.append(arquivo_base['nome_arquivo_upload'])
@@ -512,23 +516,50 @@ def analisar_lote_arquivos(arquivos, key):
 
     return {"consolidacoes_geradas": consolidacoes_geradas, "arquivos_nao_alterados": arquivos_nao_alterados}
 
-def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida):
-    estado_json_atual = None
-    if supabase:
-        try:
-            nome_padrao = arquivo_base.get('nome_padronizado_identificado', '')
-            res_bd = supabase.table("portarias_base").select("documento_consolidado_json").eq("nome_padronizado", nome_padrao).execute()
-            if res_bd.data and res_bd.data[0].get("documento_consolidado_json"):
-                estado_json_atual = json.dumps(res_bd.data[0]['documento_consolidado_json'])
-        except: pass
+def _consultar_estado_e_historico(nome_padrao):
+    """Verifica no Supabase se este ato original já tem processamento salvo e
+    quais alteradoras/revogadoras já foram aplicadas a ele anteriormente."""
+    if not supabase or not nome_padrao:
+        return None, []
+    try:
+        res_bd = supabase.table("portarias_base").select("id, documento_consolidado_json").eq("nome_padronizado", nome_padrao).execute()
+        if not res_bd.data:
+            return None, []
+        base_id = res_bd.data[0]['id']
+        estado = res_bd.data[0].get("documento_consolidado_json")
+        res_alt = supabase.table("portarias_alteradoras").select("nome_padronizado").eq("portaria_base_id", base_id).execute()
+        ja_processadas = [r['nome_padronizado'] for r in (res_alt.data or []) if r.get('nome_padronizado')]
+        return (json.dumps(estado) if estado else None), ja_processadas
+    except Exception:
+        return None, []
 
-    if not arquivos_alteradores:
+def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida):
+    nome_padrao = arquivo_base.get('nome_padronizado_identificado', '')
+    estado_json_atual, ja_processadas = _consultar_estado_e_historico(nome_padrao)
+    mensagens = []
+
+    if estado_json_atual is not None:
+        detalhe = f" ({', '.join(ja_processadas)})" if ja_processadas else ""
+        mensagens.append(("info", f"🧠 '{nome_padrao}' já possui histórico no banco: {len(ja_processadas)} alteração(ões)/revogação(ões) processada(s) anteriormente{detalhe}."))
+
+    ja_processadas_lower = {j.lower() for j in ja_processadas}
+    alteradoras_para_aplicar = []
+    for alt in arquivos_alteradores:
+        nome_alt = alt.get('nome_padronizado_identificado', '')
+        if nome_alt and nome_alt.lower() in ja_processadas_lower:
+            mensagens.append(("warning", f"⚠️ '{nome_alt}' já havia sido processada e aplicada anteriormente a '{nome_padrao}' — não será reaplicada agora para evitar duplicar a alteração/revogação."))
+        else:
+            alteradoras_para_aplicar.append(alt)
+
+    if not alteradoras_para_aplicar:
+        if estado_json_atual:
+            return json.loads(estado_json_atual), mensagens
         conteudo_loop = ["Texto Base:"] + textos_extraidos[arquivo_base['nome_arquivo_upload']]
         resp_loop = executar_com_fallback(client, conteudo_loop + ["Estruture o documento separando a ementa do preâmbulo e aplicando rigorosamente o mapeamento de dispositivos." + memoria_aprendida], Consolidacao)
-        return json.loads(resp_loop.text)
+        return json.loads(resp_loop.text), mensagens
 
     resp_loop = None
-    for i, alt in enumerate(arquivos_alteradores):
+    for i, alt in enumerate(alteradoras_para_aplicar):
         conteudo_loop = []
         if estado_json_atual:
             conteudo_loop.append(f"ESTADO ATUAL (JSON):\n{estado_json_atual}")
@@ -547,7 +578,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
         conteudo_loop.append(prompt_loop)
         resp_loop = executar_com_fallback(client, conteudo_loop, Consolidacao)
         estado_json_atual = resp_loop.text
-    return json.loads(resp_loop.text)
+    return json.loads(resp_loop.text), mensagens
 
 # =====================================================================
 # EXPORTAÇÃO (HTML UNIVERSAL -> WEASYPRINT PDF -> DOCX AST)
