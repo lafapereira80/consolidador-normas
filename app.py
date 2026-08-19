@@ -414,6 +414,8 @@ class ArquivoClassificado(BaseModel):
     grupo_id: int = Field(description="Identificador da família normativa (comece em 1).")
     nome_padronizado_identificado: str = Field(description="Nome padronizado da norma (tipo, número, órgão e data)")
     data_oficial_iso: str = Field(description="Data formatada estritamente em YYYY-MM-DD.")
+    ato_base_referenciado_tipo: Optional[str] = Field(default=None, description="APENAS para 'Alteradora' cujo ato original NÃO está presente neste lote: o tipo do ato que ela declara alterar/revogar (ex.: 'PORTARIA'). Deixe vazio se o ato base está no próprio lote ou se tipo='Base'.")
+    ato_base_referenciado_numero: Optional[str] = Field(default=None, description="APENAS para 'Alteradora' cujo ato original NÃO está presente neste lote: o número/identificador do ato que ela declara alterar/revogar (ex.: '158/PGJM'), extraído do próprio texto da alteradora (normalmente citado no preâmbulo/ementa). Deixe vazio se o ato base está no próprio lote ou se tipo='Base'.")
 
 class TriagemDocumentos(BaseModel): arquivos: List[ArquivoClassificado]
 
@@ -464,6 +466,30 @@ def resgatar_memoria():
         except: pass
     return memoria
 
+def _localizar_base_no_banco(tipo_ref, numero_ref):
+    """Quando uma alteradora chega isolada (sem o ato original no mesmo lote),
+    procura no Supabase um ato base já cadastrado que corresponda ao que ela
+    declara alterar/revogar."""
+    if not supabase or not numero_ref or not str(numero_ref).strip():
+        return None
+    try:
+        numero_limpo = str(numero_ref).strip()
+        query = supabase.table("portarias_base").select("id, nome_padronizado, tipo_documento, numero_documento, documento_consolidado_json")
+        res = query.ilike("numero_documento", f"%{numero_limpo}%").execute()
+        candidatos = res.data or []
+        if not candidatos and tipo_ref:
+            res2 = query.ilike("nome_padronizado", f"%{numero_limpo}%").execute()
+            candidatos = res2.data or []
+        if not candidatos:
+            return None
+        if tipo_ref:
+            for c in candidatos:
+                if str(c.get('tipo_documento', '')).strip().lower() == str(tipo_ref).strip().lower():
+                    return c
+        return candidatos[0]
+    except Exception:
+        return None
+
 def analisar_lote_arquivos(arquivos, key):
     client = genai.Client(api_key=key)
     memoria_aprendida = resgatar_memoria()
@@ -474,7 +500,7 @@ def analisar_lote_arquivos(arquivos, key):
         for fut in as_completed(futuros):
             textos_extraidos[futuros[fut]] = fut.result()
 
-    contents_triagem = [f"Analise os documentos. Agrupe cada ato original com seus derivativos. ARQUIVOS: {', '.join(textos_extraidos.keys())}"]
+    contents_triagem = [f"Analise os documentos. Agrupe cada ato original com seus derivativos presentes neste lote. Se uma Alteradora citar um ato original que NÃO está entre os arquivos deste lote, preencha ato_base_referenciado_tipo/numero com o que ela declara alterar/revogar, para localização posterior no banco de dados. ARQUIVOS: {', '.join(textos_extraidos.keys())}"]
     for partes in textos_extraidos.values(): contents_triagem.extend(partes)
     resp_triagem = executar_com_fallback(client, contents_triagem, TriagemDocumentos, thinking_level="low")
     triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
@@ -490,7 +516,23 @@ def analisar_lote_arquivos(arquivos, key):
 
         if not arquivo_base and not arquivos_alteradores: continue
         if not arquivo_base:
-            arquivos_nao_alterados.extend([a['nome_arquivo_upload'] for a in arquivos_alteradores])
+            base_reconstruida = None
+            for alt in arquivos_alteradores:
+                candidato = _localizar_base_no_banco(alt.get('ato_base_referenciado_tipo'), alt.get('ato_base_referenciado_numero'))
+                if candidato:
+                    base_reconstruida = candidato
+                    break
+            if base_reconstruida:
+                arquivo_base = {
+                    "nome_arquivo_upload": None,
+                    "tipo": "Base",
+                    "nome_padronizado_identificado": base_reconstruida.get("nome_padronizado", ""),
+                    "data_oficial_iso": "",
+                    "_reconstruida_do_banco": True,
+                }
+                grupos_validos.append((arquivo_base, arquivos_alteradores))
+            else:
+                arquivos_nao_alterados.extend([a['nome_arquivo_upload'] for a in arquivos_alteradores])
             continue
         grupos_validos.append((arquivo_base, arquivos_alteradores))
 
@@ -511,7 +553,8 @@ def analisar_lote_arquivos(arquivos, key):
                         elif tipo_msg == "warning": st.warning(texto_msg)
                 except Exception as e:
                     st.error(f"❌ Falha em '{arquivo_base.get('nome_padronizado_identificado')}': {e}")
-                    arquivos_nao_alterados.append(arquivo_base['nome_arquivo_upload'])
+                    if arquivo_base.get('nome_arquivo_upload'):
+                        arquivos_nao_alterados.append(arquivo_base['nome_arquivo_upload'])
                     arquivos_nao_alterados.extend([a['nome_arquivo_upload'] for a in arquivos_alteradores])
 
     return {"consolidacoes_geradas": consolidacoes_geradas, "arquivos_nao_alterados": arquivos_nao_alterados}
@@ -535,12 +578,20 @@ def _consultar_estado_e_historico(nome_padrao):
 
 def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida):
     nome_padrao = arquivo_base.get('nome_padronizado_identificado', '')
+    reconstruida = bool(arquivo_base.get('_reconstruida_do_banco'))
     estado_json_atual, ja_processadas = _consultar_estado_e_historico(nome_padrao)
     mensagens = []
 
-    if estado_json_atual is not None:
+    if reconstruida:
+        detalhe = f" com {len(ja_processadas)} derivação(ões) já aplicada(s) ({', '.join(ja_processadas)})" if ja_processadas else ""
+        mensagens.append(("info", f"📎 Os arquivos enviados alteram/revogam o ato '{nome_padrao}', já cadastrado no banco{detalhe}. Recomendamos anexar também o arquivo ORIGINAL de '{nome_padrao}' em um novo envio para garantir a máxima fidelidade; por ora, o processamento usará o estado já consolidado salvo no banco de dados."))
+    elif estado_json_atual is not None:
         detalhe = f" ({', '.join(ja_processadas)})" if ja_processadas else ""
         mensagens.append(("info", f"🧠 '{nome_padrao}' já possui histórico no banco: {len(ja_processadas)} alteração(ões)/revogação(ões) processada(s) anteriormente{detalhe}."))
+
+    if reconstruida and estado_json_atual is None:
+        mensagens.append(("warning", f"⚠️ '{nome_padrao}' foi localizado no banco, mas sem conteúdo consolidado salvo. Envie também o arquivo ORIGINAL de '{nome_padrao}' junto com as alteradoras para que o processamento seja possível."))
+        raise Exception(f"Ato base '{nome_padrao}' localizado no banco sem conteúdo salvo — reenvie junto com o arquivo original.")
 
     ja_processadas_lower = {j.lower() for j in ja_processadas}
     alteradoras_para_aplicar = []
@@ -550,6 +601,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
             mensagens.append(("warning", f"⚠️ '{nome_alt}' já havia sido processada e aplicada anteriormente a '{nome_padrao}' — não será reaplicada agora para evitar duplicar a alteração/revogação."))
         else:
             alteradoras_para_aplicar.append(alt)
+    alteradoras_para_aplicar.sort(key=lambda x: x.get('data_oficial_iso') or '')
 
     if not alteradoras_para_aplicar:
         if estado_json_atual:
@@ -567,7 +619,7 @@ def _processar_cascata_grupo(client, arquivo_base, arquivos_alteradores, textos_
             conteudo_loop.append("DOCUMENTO BASE ORIGINAL:")
             conteudo_loop.extend(textos_extraidos[arquivo_base['nome_arquivo_upload']])
 
-        conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} A SER APLICADA ({alt['nome_arquivo_upload']}):")
+        conteudo_loop.append(f"PORTARIA ALTERADORA Nº {i+1} DE {len(alteradoras_para_aplicar)} A SER APLICADA, EM ORDEM CRONOLÓGICA DO MAIS ANTIGO PARA O MAIS NOVO ({alt['nome_arquivo_upload']}):")
         conteudo_loop.extend(textos_extraidos[alt['nome_arquivo_upload']])
         prompt_loop = f"""
         Aplique a portaria alteradora cruzando detalhadamente com o ato base. 
