@@ -138,7 +138,7 @@ if not st.session_state.autenticado:
 st.markdown("""
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
-    <p>Motor Multi-IA: Groq (Llama 3.1), Google Gemini, OpenRouter e Mistral</p>
+    <p>Motor Multi-IA Hub: Catálogo Atualizado (Groq GPT-OSS, Gemini, OpenRouter)</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -181,17 +181,17 @@ st.markdown("---")
 # =====================================================================
 
 PROVEDORES_CONFIG = {
-    "⚡ Groq (Llama 3.1 70B - Velocidade Máxima)": {
+    "⚡ Groq (GPT-OSS 120B - Nova Geração/Alta Capacidade)": {
         "id": "groq",
-        "model": "llama-3.1-70b-versatile",
+        "model": "openai/gpt-oss-120b",
         "secret_key": "GROQ_API_KEY",
-        "help": "Execução quase instantânea (~250-300 tokens/s). Ideal para PDFs com texto selecionável."
+        "help": "Execução ultrarrápida da Groq para cenários complexos (substitui o antigo Llama 70B)."
     },
-    "⚡ Groq (Llama 3.1 8B - Instantâneo / Limites Maiores)": {
+    "⚡ Groq (GPT-OSS 20B - Velocidade Extrema)": {
         "id": "groq",
-        "model": "llama-3.1-8b-instant",
+        "model": "openai/gpt-oss-20b",
         "secret_key": "GROQ_API_KEY",
-        "help": "Modelo leve e ultrarrápido com limites de requisição generosos."
+        "help": "Modelo leve e ultrarrápido da Groq (substitui o antigo Llama 8B)."
     },
     "🧠 Google Gemini (Flash - Multimodal & OCR)": {
         "id": "gemini",
