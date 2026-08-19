@@ -138,7 +138,7 @@ if not st.session_state.autenticado:
 st.markdown("""
 <div class="main-header">
     <h1>⚖️ Autopilot Normativo</h1>
-    <p>Motor Multi-IA: Groq (Llama 3.3), Google Gemini, OpenRouter e Mistral</p>
+    <p>Motor Multi-IA: Groq (Llama 3.1), Google Gemini, OpenRouter e Mistral</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -181,11 +181,17 @@ st.markdown("---")
 # =====================================================================
 
 PROVEDORES_CONFIG = {
-    "⚡ Groq (Llama 3.3 70B - Velocidade Máxima)": {
+    "⚡ Groq (Llama 3.1 70B - Velocidade Máxima)": {
         "id": "groq",
-        "model": "llama-3.3-70b-versatile",
+        "model": "llama-3.1-70b-versatile",
         "secret_key": "GROQ_API_KEY",
         "help": "Execução quase instantânea (~250-300 tokens/s). Ideal para PDFs com texto selecionável."
+    },
+    "⚡ Groq (Llama 3.1 8B - Instantâneo / Limites Maiores)": {
+        "id": "groq",
+        "model": "llama-3.1-8b-instant",
+        "secret_key": "GROQ_API_KEY",
+        "help": "Modelo leve e ultrarrápido com limites de requisição generosos."
     },
     "🧠 Google Gemini (Flash - Multimodal & OCR)": {
         "id": "gemini",
