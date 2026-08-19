@@ -12,7 +12,7 @@ from html import unescape
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 
 # Provedores de IA
 from google import genai
@@ -185,28 +185,28 @@ PROVEDORES_CONFIG = {
         "id": "groq",
         "model": "llama-3.3-70b-versatile",
         "secret_key": "GROQ_API_KEY",
-        "help": "Execução quase instantânea (~250-300 tokens/s). Ideal para PDFs com texto selecionável.",
+        "help": "Execução quase instantânea (~250-300 tokens/s). Ideal para PDFs textuais.",
         "placeholder": "gsk_..."
     },
     "🧠 Google Gemini (Flash - Multimodal & OCR)": {
         "id": "gemini",
         "model": "gemini-2.5-flash",
         "secret_key": "GEMINI_API_KEY",
-        "help": "Excelente para documentos escaneados e reconhecimento visual complexo.",
+        "help": "Excelente para documentos escaneados com OCR visual integrado.",
         "placeholder": "AIzaSy..."
     },
     "🌐 OpenRouter (Qwen 2.5 72B / R1)": {
         "id": "openrouter",
         "model": "qwen/qwen-2.5-72b-instruct:free",
         "secret_key": "OPENROUTER_API_KEY",
-        "help": "Acesso a modelos avançados de código aberto via roteamento gratuito.",
+        "help": "Modelos avançados de código aberto via roteamento público.",
         "placeholder": "sk-or-v1-..."
     },
     "🌪️ Mistral AI (Mistral Small)": {
         "id": "mistral",
         "model": "mistral-small-latest",
         "secret_key": "MISTRAL_API_KEY",
-        "help": "Excelente controle sintático e estruturação rigorosa de JSON.",
+        "help": "Excelente controle sintático e aderência estrita de JSON.",
         "placeholder": "..."
     }
 }
@@ -398,7 +398,7 @@ Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasi
 # CLIENTE UNIFICADO MULTI-IA
 # =====================================================================
 
-def executar_chamada_ia(provedor_id: str, api_key: str, modelo: str, user_prompt: str, schema_model: type[BaseModel], contents_gemini_raw=None) -> dict:
+def executar_chamada_ia(provedor_id: str, api_key: str, modelo: str, user_prompt: Any, schema_model: type[BaseModel]) -> dict:
     schema_json = json.dumps(schema_model.model_json_schema(), ensure_ascii=False)
     
     # 1. GOOGLE GEMINI
@@ -410,7 +410,7 @@ def executar_chamada_ia(provedor_id: str, api_key: str, modelo: str, user_prompt
             system_instruction=SYSTEM_INSTRUCTION_LEGISTECNICA,
             thinking_config=genai_types.ThinkingConfig(thinking_level="low")
         )
-        contents = contents_gemini_raw if contents_gemini_raw is not None else [user_prompt]
+        contents = user_prompt if isinstance(user_prompt, list) else [user_prompt]
         resp = client.models.generate_content(model=modelo, contents=contents, config=config)
         return json.loads(resp.text)
 
@@ -422,7 +422,17 @@ def executar_chamada_ia(provedor_id: str, api_key: str, modelo: str, user_prompt
     elif provedor_id == "mistral":
         client_openai = OpenAI(base_url="https://api.mistral.ai/v1", api_key=api_key)
     else:
-        raise ValueError("Provedor não reconhecido.")
+        raise ValueError(f"Provedor '{provedor_id}' não reconhecido.")
+
+    # Converte listas de partes em texto puro se vier do extrator multimodal
+    if isinstance(user_prompt, list):
+        textos_limpos = []
+        for item in user_prompt:
+            if isinstance(item, str): textos_limpos.append(item)
+            elif hasattr(item, "text"): textos_limpos.append(item.text)
+        user_prompt_str = "\n".join(textos_limpos)
+    else:
+        user_prompt_str = str(user_prompt)
 
     system_prompt = (
         f"{SYSTEM_INSTRUCTION_LEGISTECNICA}\n\n"
@@ -438,18 +448,19 @@ def executar_chamada_ia(provedor_id: str, api_key: str, modelo: str, user_prompt
                 model=modelo,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt_str}
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.1
             )
             raw_text = chat_completion.choices[0].message.content.strip()
             
+            # Limpeza de markdown
             if raw_text.startswith("```"):
-                raw_text = re.sub(r'^```(json)?', '', raw_text)
-                raw_text = re.sub(r'```$', '', raw_text).strip()
+                raw_text = re.sub(r'^```(?:json)?\s*', '', raw_text, flags=re.IGNORECASE)
+                raw_text = re.sub(r'\s*```$', '', raw_text)
                 
-            return json.loads(raw_text)
+            return json.loads(raw_text.strip())
         except Exception as e:
             if tentativa < max_tentativas:
                 time.sleep(tentativa * 2)
@@ -468,7 +479,8 @@ def converter_para_iso(data_str):
     except: return None
 
 def extrair_conteudo_arquivo(file_bytes, nome_arquivo, modo_gemini=False):
-    if nome_arquivo.lower().endswith(".docx"): return f"ARQUIVO DOCX: {nome_arquivo}"
+    if nome_arquivo.lower().endswith(".docx"): 
+        return [f"ARQUIVO DOCX: {nome_arquivo}"] if modo_gemini else f"ARQUIVO DOCX: {nome_arquivo}"
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         html_text = f"CONTEÚDO DO ARQUIVO {nome_arquivo}:\n\n"
@@ -500,9 +512,10 @@ def extrair_conteudo_arquivo(file_bytes, nome_arquivo, modo_gemini=False):
                 partes.append(genai_types.Part.from_bytes(data=pix.tobytes("jpg", jpg_quality=78), mime_type="image/jpeg"))
             return partes
 
-        return html_text if not modo_gemini else [html_text]
+        return [html_text] if modo_gemini else html_text
     except Exception as e:
-        return f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"
+        erro = f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"
+        return [erro] if modo_gemini else erro
 
 def limpar_texto_ia(texto):
     if not texto: return ""
@@ -571,9 +584,9 @@ def _processar_cascata_grupo(prov_id, api_k, model_name, arquivo_base, arquivos_
 
     if reconstruida:
         detalhe = f" com {len(ja_processadas)} derivação(ões) já aplicada(s)" if ja_processadas else ""
-        mensagens.append(("info", f"📎 Reutilizando consolidação salva de '{nome_padrao}' no banco{detalhe}."))
+        mensagens.append(("info", f"📎 Reutilizando consolidação de '{nome_padrao}' salva no banco{detalhe}."))
     elif estado_json_atual is not None:
-        mensagens.append(("info", f"🧠 '{nome_padrao}' já possui histórico no banco ({len(ja_processadas)} alterações prévias)."))
+        mensagens.append(("info", f"🧠 '{nome_padrao}' já possui histórico no banco ({len(ja_processadas)} portarias anteriores)."))
 
     if reconstruida and estado_json_atual is None:
         raise Exception(f"Ato base '{nome_padrao}' sem conteúdo consolidado prévio no banco.")
@@ -582,27 +595,46 @@ def _processar_cascata_grupo(prov_id, api_k, model_name, arquivo_base, arquivos_
     alteradoras_para_aplicar = [alt for alt in arquivos_alteradores if alt.get('nome_padronizado_identificado', '').lower() not in ja_processadas_lower]
     alteradoras_para_aplicar.sort(key=lambda x: x.get('data_oficial_iso') or '')
 
+    modo_gem = (prov_id == "gemini")
+
     if not alteradoras_para_aplicar:
         if estado_json_atual:
             return json.loads(estado_json_atual), mensagens
         
-        texto_b = textos_extraidos[arquivo_base['nome_arquivo_upload']]
-        prompt = f"DOCUMENTO BASE ORIGINAL:\n{texto_b}\n\nEstruture o documento separando ementa e preâmbulo.\n{memoria_aprendida}"
-        dados_resultado = executar_chamada_ia(prov_id, api_k, model_name, prompt, Consolidacao)
+        texto_base = textos_extraidos[arquivo_base['nome_arquivo_upload']]
+        if modo_gem:
+            conteudo = ["DOCUMENTO BASE ORIGINAL:"] + (texto_base if isinstance(texto_base, list) else [texto_base])
+            conteudo.append(f"Estruture o documento separando a ementa do preâmbulo e aplicando rigorosamente o mapeamento de dispositivos.\n{memoria_aprendida}")
+        else:
+            conteudo = f"DOCUMENTO BASE ORIGINAL:\n{texto_base}\n\nEstruture o documento separando a ementa do preâmbulo e aplicando rigorosamente o mapeamento de dispositivos.\n{memoria_aprendida}"
+            
+        dados_resultado = executar_chamada_ia(prov_id, api_k, model_name, conteudo, Consolidacao)
         return dados_resultado, mensagens
 
     dados_resultado = None
     for i, alt in enumerate(alteradoras_para_aplicar):
-        prompt_acumulado = ""
-        if estado_json_atual:
-            prompt_acumulado += f"ESTADO CONSOLIDADO ATUAL (JSON):\n{estado_json_atual}\n\n"
-        elif i == 0:
-            prompt_acumulado += f"DOCUMENTO BASE ORIGINAL:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}\n\n"
+        if modo_gem:
+            conteudo = []
+            if estado_json_atual:
+                conteudo.append(f"ESTADO CONSOLIDADO ATUAL (JSON):\n{estado_json_atual}")
+            elif i == 0:
+                conteudo.append("DOCUMENTO BASE ORIGINAL:")
+                conteudo.extend(textos_extraidos[arquivo_base['nome_arquivo_upload']])
 
-        prompt_acumulado += f"PORTARIA ALTERADORA Nº {i+1} ({alt['nome_arquivo_upload']}):\n{textos_extraidos[alt['nome_arquivo_upload']]}\n\n"
-        prompt_acumulado += f"Aplique as alterações cruzando o ato base com a alteradora. Mantenha <b>, <i> e envelopamento <strike><font color=\"red\">...</font></strike> em dispositivos alterados/revogados na versão alterada. Na consolidada, mostre o número e a nova redação vigente (ou '(Revogado)').\n{memoria_aprendida}"
-        
-        dados_resultado = executar_chamada_ia(prov_id, api_k, model_name, prompt_acumulado, Consolidacao)
+            conteudo.append(f"PORTARIA ALTERADORA Nº {i+1} ({alt['nome_arquivo_upload']}):")
+            conteudo.extend(textos_extraidos[alt['nome_arquivo_upload']])
+            conteudo.append(f"Aplique as alterações cruzando o ato base com a alteradora. Mantenha <b>, <i> e envelopamento <strike><font color=\"red\">...</font></strike> em dispositivos alterados/revogados na versão alterada. Na consolidada, mostre o número e a nova redação vigente (ou '(Revogado)').\n{memoria_aprendida}")
+        else:
+            conteudo = ""
+            if estado_json_atual:
+                conteudo += f"ESTADO CONSOLIDADO ATUAL (JSON):\n{estado_json_atual}\n\n"
+            elif i == 0:
+                conteudo += f"DOCUMENTO BASE ORIGINAL:\n{textos_extraidos[arquivo_base['nome_arquivo_upload']]}\n\n"
+
+            conteudo += f"PORTARIA ALTERADORA Nº {i+1} ({alt['nome_arquivo_upload']}):\n{textos_extraidos[alt['nome_arquivo_upload']]}\n\n"
+            conteudo += f"Aplique as alterações cruzando o ato base com a alteradora. Mantenha <b>, <i> e envelopamento <strike><font color=\"red\">...</font></strike> em dispositivos alterados/revogados na versão alterada. Na consolidada, mostre o número e a nova redação vigente (ou '(Revogado)').\n{memoria_aprendida}"
+
+        dados_resultado = executar_chamada_ia(prov_id, api_k, model_name, conteudo, Consolidacao)
         estado_json_atual = json.dumps(dados_resultado)
 
     return dados_resultado, mensagens
@@ -617,10 +649,15 @@ def analisar_lote_arquivos(arquivos, prov_id, api_k, model_name):
         for fut in as_completed(futuros):
             textos_extraidos[futuros[fut]] = fut.result()
 
-    prompt_triagem = "Analise os documentos. Identifique 'Base' ou 'Alteradora' e relacione os grupos familiares normativos.\nDOCUMENTOS:\n"
-    for nome_arq, texto in textos_extraidos.items():
-        bloco_txt = texto if isinstance(texto, str) else texto[0]
-        prompt_triagem += f"\n--- INÍCIO {nome_arq} ---\n{str(bloco_txt)[:3500]}\n--- FIM {nome_arq} ---\n"
+    if modo_gem:
+        prompt_triagem = ["Analise os documentos. Agrupe cada ato original com seus derivativos. Se uma Alteradora citar um ato original ausente, preencha ato_base_referenciado_tipo/numero."]
+        for partes in textos_extraidos.values():
+            if isinstance(partes, list): prompt_triagem.extend(partes)
+            else: prompt_triagem.append(partes)
+    else:
+        prompt_triagem = "Analise os seguintes documentos normativos. Identifique 'Base' ou 'Alteradora' e relacione os grupos familiares normativos.\nDOCUMENTOS:\n"
+        for nome_arq, texto in textos_extraidos.items():
+            prompt_triagem += f"\n--- INÍCIO {nome_arq} ---\n{str(texto)[:3500]}\n--- FIM {nome_arq} ---\n"
 
     triagem_obj = executar_chamada_ia(prov_id, api_k, model_name, prompt_triagem, TriagemDocumentos)
     triagem_dados = triagem_obj.get("arquivos", [])
