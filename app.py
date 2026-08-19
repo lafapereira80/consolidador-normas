@@ -177,7 +177,7 @@ with col_logout:
 st.markdown("---")
 
 # =====================================================================
-# SELETOR DE PROVEDORES DE IA
+# SELETOR LIMPO DE PROVEDORES DE IA (SEM EXIBIÇÃO DE CHAVE)
 # =====================================================================
 
 PROVEDORES_CONFIG = {
@@ -185,58 +185,37 @@ PROVEDORES_CONFIG = {
         "id": "groq",
         "model": "llama-3.3-70b-versatile",
         "secret_key": "GROQ_API_KEY",
-        "help": "Execução quase instantânea (~250-300 tokens/s). Ideal para PDFs textuais.",
-        "placeholder": "gsk_..."
+        "help": "Execução quase instantânea (~250-300 tokens/s). Ideal para PDFs com texto selecionável."
     },
     "🧠 Google Gemini (Flash - Multimodal & OCR)": {
         "id": "gemini",
         "model": "gemini-2.5-flash",
         "secret_key": "GEMINI_API_KEY",
-        "help": "Excelente para documentos escaneados com OCR visual integrado.",
-        "placeholder": "AIzaSy..."
+        "help": "Excelente para documentos escaneados e reconhecimento visual direto."
     },
     "🌐 OpenRouter (Qwen 2.5 72B / R1)": {
         "id": "openrouter",
         "model": "qwen/qwen-2.5-72b-instruct:free",
         "secret_key": "OPENROUTER_API_KEY",
-        "help": "Modelos avançados de código aberto via roteamento público.",
-        "placeholder": "sk-or-v1-..."
+        "help": "Modelos avançados de código aberto via roteamento gratuito."
     },
     "🌪️ Mistral AI (Mistral Small)": {
         "id": "mistral",
         "model": "mistral-small-latest",
         "secret_key": "MISTRAL_API_KEY",
-        "help": "Excelente controle sintático e aderência estrita de JSON.",
-        "placeholder": "..."
+        "help": "Excelente controle sintático e estruturação rigorosa de JSON."
     }
 }
 
 with st.container(border=True):
     st.markdown("### 🎛️ Motor de Inteligência Artificial")
-    col_sel_ia, col_key_ia = st.columns([1.2, 1.8])
-    
-    with col_sel_ia:
-        provedor_selecionado = st.selectbox(
-            "Selecione o Provedor de IA:",
-            options=list(PROVEDORES_CONFIG.keys()),
-            index=0
-        )
-        conf_atual = PROVEDORES_CONFIG[provedor_selecionado]
-        st.caption(f"💡 {conf_atual['help']}")
-
-    with col_key_ia:
-        chave_secreta_padrao = ""
-        try:
-            chave_secreta_padrao = st.secrets.get(conf_atual["secret_key"], "")
-        except:
-            pass
-        
-        api_key_input = st.text_input(
-            f"Chave da API ({conf_atual['secret_key']})",
-            value=chave_secreta_padrao,
-            type="password",
-            placeholder=f"Insira sua chave {conf_atual['placeholder']}"
-        )
+    provedor_selecionado = st.selectbox(
+        "Selecione o Motor de IA para a Análise:",
+        options=list(PROVEDORES_CONFIG.keys()),
+        index=0
+    )
+    conf_atual = PROVEDORES_CONFIG[provedor_selecionado]
+    st.caption(f"💡 {conf_atual['help']}")
 
 st.markdown("### 📥 Upload de Arquivos Normativos")
 arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF) — um ato original e todos os seus derivativos", type=["pdf"], accept_multiple_files=True, key="uploader_lote")
@@ -424,7 +403,6 @@ def executar_chamada_ia(provedor_id: str, api_key: str, modelo: str, user_prompt
     else:
         raise ValueError(f"Provedor '{provedor_id}' não reconhecido.")
 
-    # Converte listas de partes em texto puro se vier do extrator multimodal
     if isinstance(user_prompt, list):
         textos_limpos = []
         for item in user_prompt:
@@ -455,7 +433,6 @@ def executar_chamada_ia(provedor_id: str, api_key: str, modelo: str, user_prompt
             )
             raw_text = chat_completion.choices[0].message.content.strip()
             
-            # Limpeza de markdown
             if raw_text.startswith("```"):
                 raw_text = re.sub(r'^```(?:json)?\s*', '', raw_text, flags=re.IGNORECASE)
                 raw_text = re.sub(r'\s*```$', '', raw_text)
@@ -948,8 +925,14 @@ if "dados_originais_ia" not in st.session_state: st.session_state.dados_originai
 st.markdown("<br>", unsafe_allow_html=True)
 
 if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_width=True):
-    if not api_key_input:
-        st.error(f"⚠️ Insira a chave da API para o provedor selecionado ({conf_atual['secret_key']}).")
+    chave_resolvida = None
+    try:
+        chave_resolvida = st.secrets.get(conf_atual["secret_key"])
+    except Exception:
+        chave_resolvida = None
+
+    if not chave_resolvida or not str(chave_resolvida).strip():
+        st.error(f"⚠️ A chave `{conf_atual['secret_key']}` não foi encontrada no arquivo `.streamlit/secrets.toml`.")
     elif not arquivos_enviados:
         st.warning("⚠️ Envie os arquivos normativos primeiro.")
     else:
@@ -958,7 +941,7 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
                 st.session_state.dados_processados = analisar_lote_arquivos(
                     arquivos=arquivos_enviados,
                     prov_id=conf_atual["id"],
-                    api_k=api_key_input.strip(),
+                    api_k=str(chave_resolvida).strip(),
                     model_name=conf_atual["model"]
                 )
                 st.session_state.dados_originais_ia = copy.deepcopy(st.session_state.dados_processados)
