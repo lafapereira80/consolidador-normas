@@ -311,7 +311,7 @@ Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasi
 4. NOTA REMISSIVA: a nota indicando o ato alterador vai EXCLUSIVAMENTE no campo 'nota_remissiva', SEM parênteses, com o nome do documento em CAIXA ALTA (ex.: "Redação dada pela PORTARIA Nº 108/PGJM, DE 28 DE MAIO DE 2026." ou "Revogado pela PORTARIA Nº 108/PGJM, DE 28 DE MAIO DE 2026."). Esse campo é usado nas DUAS versões (alterada e consolidada) — preencha sempre que houver alteração ou revogação. NUNCA repita a nota remissiva dentro do texto principal.
 """
 
-def executar_com_fallback(client, contents, response_schema, thinking_level="low"):
+def executar_com_fallback(client, contents, response_schema, thinking_level="high"):
     """Função blindada contra erro 503 e 429 com Espera Exponencial"""
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
