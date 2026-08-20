@@ -1,0 +1,12 @@
+streamlit
+PyMuPDF
+google-genai
+pydantic
+requests
+python-docx
+supabase
+weasyprint
+streamlit-ace
+groq
+mistralai
+openai
