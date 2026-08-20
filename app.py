@@ -230,16 +230,11 @@ with col_logout:
 
 st.markdown("---")
 
-col_prov, col_key = st.columns([2, 3])
-with col_prov:
-    provedor_escolhido = st.selectbox("🧠 Motor de IA (Hub Multi-IA)", list(PROVEDORES_IA.keys()), key="provedor_ia_select")
-with col_key:
-    cfg_provedor = PROVEDORES_IA[provedor_escolhido]
-    api_key = obter_chave_provedor(provedor_escolhido)
-    if api_key:
-        st.text_input(f"Chave detectada ({cfg_provedor['secret']})", value="•" * 12, disabled=True)
-    else:
-        api_key = st.text_input(f"Chave da API ({cfg_provedor['secret']} não encontrada nos secrets)", type="password", placeholder=f"Cole sua chave de {provedor_escolhido} aqui...")
+provedor_escolhido = st.selectbox("🧠 Motor de IA (Hub Multi-IA)", list(PROVEDORES_IA.keys()), key="provedor_ia_select")
+cfg_provedor = PROVEDORES_IA[provedor_escolhido]
+api_key = obter_chave_provedor(provedor_escolhido)
+if not api_key:
+    api_key = st.text_input(f"Chave da API ({cfg_provedor['secret']} não encontrada nos secrets)", type="password", placeholder=f"Cole sua chave de {provedor_escolhido} aqui...")
 st.caption(f"Modelos utilizados (do mais capaz ao mais estável): {' → '.join(cfg_provedor['modelos'])}")
 
 st.markdown("### 📥 Upload de Arquivos Normativos")
