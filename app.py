@@ -12,6 +12,8 @@ from html.parser import HTMLParser
 from html import unescape
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field, ValidationError
@@ -72,6 +74,18 @@ PROVEDORES_IA = {
         "secret": "MISTRAL_API_KEY",
     },
 }
+
+def submit_com_contexto(executor, fn, *args, **kwargs):
+    """Envia uma tarefa ao ThreadPoolExecutor propagando o ScriptRunContext do
+    Streamlit — sem isso, st.toast/st.info/st.warning chamados de dentro da
+    thread são descartados silenciosamente (a sessão do usuário não é
+    identificada), fazendo avisos de retry/erro desaparecerem sob carga."""
+    ctx = get_script_run_ctx()
+    def _wrapper(*a, **kw):
+        if ctx is not None:
+            add_script_run_ctx(threading.current_thread(), ctx)
+        return fn(*a, **kw)
+    return executor.submit(_wrapper, *args, **kwargs)
 
 def obter_chave_provedor(nome_provedor):
     cfg = PROVEDORES_IA[nome_provedor]
@@ -861,7 +875,7 @@ def analisar_lote_arquivos(arquivos, key, provedor):
 
     textos_extraidos = {}
     with ThreadPoolExecutor(max_workers=min(8, max(1, len(arquivos)))) as ex:
-        futuros = {ex.submit(extrair_conteudo_multimodal, arq.getvalue(), arq.name): arq.name for arq in arquivos}
+        futuros = {submit_com_contexto(ex, extrair_conteudo_multimodal, arq.getvalue(), arq.name): arq.name for arq in arquivos}
         for fut in as_completed(futuros):
             textos_extraidos[futuros[fut]] = fut.result()
 
@@ -906,7 +920,7 @@ def analisar_lote_arquivos(arquivos, key, provedor):
             futuros = {}
             for arquivo_base, arquivos_alteradores in grupos_validos:
                 st.toast(f"⚙️ Processando: {arquivo_base.get('nome_padronizado_identificado')}...", icon="⏳")
-                fut = ex.submit(_processar_cascata_grupo, key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida)
+                fut = submit_com_contexto(ex, _processar_cascata_grupo, key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida)
                 futuros[fut] = (arquivo_base, arquivos_alteradores)
             for fut in as_completed(futuros):
                 arquivo_base, arquivos_alteradores = futuros[fut]
@@ -1097,7 +1111,12 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
 
 def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
     html_str = gerar_html_dinamico(consolidacao_dict, tipo_versao)
-    if not HAS_WEASYPRINT: return b"Erro: WeasyPrint nao instalado no servidor."
+    if not HAS_WEASYPRINT:
+        raise Exception(
+            "WeasyPrint não está disponível neste servidor (faltam bibliotecas nativas do "
+            "sistema — Pango/Cairo/GDK-Pixbuf). Adicione um arquivo packages.txt na raiz do "
+            "repositório com as dependências do sistema e faça um novo deploy."
+        )
     buffer = io.BytesIO()
     WeasyHTML(string=html_str).write_pdf(buffer)
     buffer.seek(0)
@@ -1219,15 +1238,22 @@ def salvar_no_supabase(cons, cons_original):
         base = cons['norma_base']
         alteradoras = cons.get('normas_alteradoras', [])
         data_base_iso = converter_para_iso(base.get('data_assinatura'))
-        res_busca = supabase.table("portarias_base").select("id").eq("nome_padronizado", base['nome_padronizado']).execute()
-        
-        if res_busca.data:
-            base_id = res_busca.data[0]['id']
-            supabase.table("portarias_base").update({"documento_consolidado_json": cons}).eq("id", base_id).execute()
+        # upsert atômico por 'nome_padronizado' (requer a UNIQUE constraint de
+        # fix_concorrencia.sql) — elimina a corrida entre dois usuários
+        # salvando o mesmo ato original ao mesmo tempo, que antes podia gerar
+        # linhas duplicadas com o padrão "verifica se existe, depois insere".
+        res_upsert = supabase.table("portarias_base").upsert({
+            "tipo_documento": base['tipo_documento'], "numero_documento": base['numero_documento'],
+            "orgao_emissor": base['orgao_emissor'], "data_assinatura": data_base_iso,
+            "nome_padronizado": base['nome_padronizado'], "titulo_original": cons.get("titulo_portaria"),
+            "orgaos_emissores": cons.get("orgaos_emissores"), "assinatura_nome": cons.get("assinatura_nome"),
+            "assinatura_cargo": cons.get("assinatura_cargo"), "documento_consolidado_json": cons,
+        }, on_conflict="nome_padronizado").execute()
+        if res_upsert.data:
+            base_id = res_upsert.data[0]['id']
         else:
-            res_ins = supabase.table("portarias_base").insert({"tipo_documento": base['tipo_documento'], "numero_documento": base['numero_documento'], "orgao_emissor": base['orgao_emissor'], "data_assinatura": data_base_iso, "nome_padronizado": base['nome_padronizado'], "titulo_original": cons.get("titulo_portaria"), "orgaos_emissores": cons.get("orgaos_emissores"), "assinatura_nome": cons.get("assinatura_nome"), "assinatura_cargo": cons.get("assinatura_cargo"), "documento_consolidado_json": cons}).execute()
-            base_id = res_ins.data[0]['id']
-            
+            base_id = supabase.table("portarias_base").select("id").eq("nome_padronizado", base['nome_padronizado']).execute().data[0]['id']
+
         for alt in alteradoras:
             res_alt = supabase.table("portarias_alteradoras").select("id").eq("portaria_base_id", base_id).eq("nome_padronizado", alt['nome_padronizado']).execute()
             if not res_alt.data:
@@ -1319,20 +1345,30 @@ if st.session_state.dados_processados:
                 if salvar_no_supabase(cons, cons_original): st.success(f"Banco atualizado!")
             
             c_html, c_pdf, c_docx = st.columns(3)
-            html_alt = gerar_html_dinamico(cons, "alterada")
-            html_cons = gerar_html_dinamico(cons, "consolidada")
-            pdf_alt, docx_alt = gerar_pdf_dinamico(cons, "alterada"), gerar_docx_dinamico(cons, "alterada")
-            pdf_cons, docx_cons = gerar_pdf_dinamico(cons, "consolidada"), gerar_docx_dinamico(cons, "consolidada")
-            
             nome_arquivo_base = nome_exibicao_base.replace(' ', '_').replace('/', '-')
-            
-            c_html.download_button("🌐 Baixar HTML (Alterada)", data=html_alt, file_name=f"{nome_arquivo_base}_Alt.html", mime="text/html", key=f"ha_{i}")
-            c_html.download_button("🌐 Baixar HTML (Consolidada)", data=html_cons, file_name=f"{nome_arquivo_base}_Cons.html", mime="text/html", key=f"hc_{i}")
-            
-            c_pdf.download_button("📄 Baixar PDF (Alterada)", data=pdf_alt, file_name=f"{nome_arquivo_base}_Alt.pdf", mime="application/pdf", key=f"pa_{i}")
-            c_pdf.download_button("📄 Baixar PDF (Consolidada)", data=pdf_cons, file_name=f"{nome_arquivo_base}_Cons.pdf", mime="application/pdf", key=f"pc_{i}")
-            
-            c_docx.download_button("📝 Baixar DOCX (Alterada)", data=docx_alt, file_name=f"{nome_arquivo_base}_Alt.docx", mime="application/vnd.openxmlformats", key=f"da_{i}")
-            c_docx.download_button("📝 Baixar DOCX (Consolidada)", data=docx_cons, file_name=f"{nome_arquivo_base}_Cons.docx", mime="application/vnd.openxmlformats", key=f"dc_{i}")
+
+            try:
+                html_alt = gerar_html_dinamico(cons, "alterada")
+                html_cons = gerar_html_dinamico(cons, "consolidada")
+                c_html.download_button("🌐 Baixar HTML (Alterada)", data=html_alt, file_name=f"{nome_arquivo_base}_Alt.html", mime="text/html", key=f"ha_{i}")
+                c_html.download_button("🌐 Baixar HTML (Consolidada)", data=html_cons, file_name=f"{nome_arquivo_base}_Cons.html", mime="text/html", key=f"hc_{i}")
+            except Exception as e:
+                c_html.error(f"Falha ao gerar HTML: {e}")
+
+            try:
+                pdf_alt = gerar_pdf_dinamico(cons, "alterada")
+                pdf_cons = gerar_pdf_dinamico(cons, "consolidada")
+                c_pdf.download_button("📄 Baixar PDF (Alterada)", data=pdf_alt, file_name=f"{nome_arquivo_base}_Alt.pdf", mime="application/pdf", key=f"pa_{i}")
+                c_pdf.download_button("📄 Baixar PDF (Consolidada)", data=pdf_cons, file_name=f"{nome_arquivo_base}_Cons.pdf", mime="application/pdf", key=f"pc_{i}")
+            except Exception as e:
+                c_pdf.error(f"Falha ao gerar PDF: {e}")
+
+            try:
+                docx_alt = gerar_docx_dinamico(cons, "alterada")
+                docx_cons = gerar_docx_dinamico(cons, "consolidada")
+                c_docx.download_button("📝 Baixar DOCX (Alterada)", data=docx_alt, file_name=f"{nome_arquivo_base}_Alt.docx", mime="application/vnd.openxmlformats", key=f"da_{i}")
+                c_docx.download_button("📝 Baixar DOCX (Consolidada)", data=docx_cons, file_name=f"{nome_arquivo_base}_Cons.docx", mime="application/vnd.openxmlformats", key=f"dc_{i}")
+            except Exception as e:
+                c_docx.error(f"Falha ao gerar DOCX: {e}")
 
     if st.button("🔄 Nova Análise", type="secondary"): st.session_state.dados_processados = None; st.session_state.dados_originais_ia = None; st.rerun()
