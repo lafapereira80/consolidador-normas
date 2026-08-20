@@ -313,12 +313,12 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
      sofreu alteração de mérito ou revogação expressa DEVE seguir ESTA ESTRUTURA EM DUAS LINHAS SEPARADAS
      POR QUEBRA DE PARÁGRAFO (nunca concatenadas na mesma linha):
        Linha 1 (texto antigo, riscado): repita o identificador do dispositivo (ex.: "Art. 8º –") seguido do
-       texto antigo INTEGRAL, tudo envelopado em `<strike><font color="red">Art. 8º – texto antigo...</font></strike>`
+       texto antigo INTEGRAL, tudo envelopado em Art. 8º – `<strike><font color="red">texto antigo...</font></strike>`
        <br/><br/>
        Linha 2 (texto novo ou marca de revogação): repita o MESMO identificador do dispositivo (ex.: "Art. 8º")
        seguido da nova redação vigente por extenso (se alteração) OU de "(Revogado)" (se revogação) — sem riscar.
      Exemplo correto:
-       <strike><font color="red">Art. 8º – Eventuais reclamações dos Assessores Jurídicos deverão ser levadas
+       Art. 8º – <strike><font color="red">Eventuais reclamações dos Assessores Jurídicos deverão ser levadas
        ao conhecimento do Coordenador, para que seja possível aprimorar o trabalho de assessoria jurídica e
        preservar um ambiente sadio de trabalho.</font></strike><br/><br/>Art. 8º Os casos omissos ou eventuais
        irresignações devem ser levados pelo Coordenador ao conhecimento do Vice-Procurador-Geral de Justiça
