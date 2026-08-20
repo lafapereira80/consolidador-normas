@@ -375,37 +375,60 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
 3. TABELAS: quando o dispositivo contiver uma tabela (identificada por marcadores [TABELA]...[/TABELA] no
    texto de origem), transcreva TODAS as linhas e colunas com fidelidade absoluta em 'tabela_alterada' e
    'tabela_consolidada' (uma lista de listas, uma sublista por linha, mantendo a ordem exata de colunas).
-   NUNCA descreva a tabela em prosa, NUNCA a omita, e NUNCA resuma seu conteúdo — reproduza célula a célula.
-4. CRITÉRIO RIGOROSO DE ALTERAÇÃO E REVOGAÇÃO, COM QUEBRA ESTRUTURAL OBRIGATÓRIA:
-   - Analise cirurgicamente o texto original do ato base em confronto com o ato alterador.
-   - Na versão ALTERADA (`texto_principal_alterada`), todo dispositivo, parágrafo, inciso ou alínea que
-     sofreu alteração de mérito ou revogação expressa DEVE seguir ESTA ESTRUTURA EM DUAS LINHAS SEPARADAS
-     POR QUEBRA DE PARÁGRAFO (nunca concatenadas na mesma linha):
-       Linha 1 (texto antigo, riscado): repita o identificador do dispositivo (ex.: "Art. 8º –") seguido do
-       texto antigo INTEGRAL, tudo envelopado em `<strike><font color="red">Art. 8º – texto antigo...</font></strike>`
-       <br/><br/>
-       Linha 2 (texto novo ou marca de revogação): repita o MESMO identificador do dispositivo (ex.: "Art. 8º")
-       seguido da nova redação vigente por extenso (se alteração) OU de "(Revogado)" (se revogação) — sem riscar.
-     Exemplo correto:
-       <strike><font color="red">Art. 8º – Eventuais reclamações dos Assessores Jurídicos deverão ser levadas
-       ao conhecimento do Coordenador, para que seja possível aprimorar o trabalho de assessoria jurídica e
-       preservar um ambiente sadio de trabalho.</font></strike><br/><br/>Art. 8º Os casos omissos ou eventuais
-       irresignações devem ser levados pelo Coordenador ao conhecimento do Vice-Procurador-Geral de Justiça
-       Militar para a tomada de decisão.
-   - NUNCA deixe de taxar o dispositivo correto, e NUNCA junte texto antigo e novo na mesma linha sem a
-     quebra de parágrafo dupla `<br/><br/>` entre eles.
-   - Na versão CONSOLIDADA (`texto_principal_consolidada`) de um dispositivo ALTERADO, exiba o
-     identificador seguido SOMENTE da nova redação vigente, sem riscos e sem repetir o texto antigo.
-   - Na versão CONSOLIDADA de um dispositivo REVOGADO, mantenha o identificador seguido de "(Revogado)",
-     sem riscar e sem repetir o texto revogado.
-5. NOTA REMISSIVA — formatos diferentes para alteração e revogação (NÃO MISTURE os dois formatos):
-   - ALTERAÇÃO (nova redação): cite o artigo/dispositivo específico do ato alterador que promoveu a mudança,
-     no formato "Alterado pelo Art. <N> da <TIPO> Nº <NÚMERO>, DE <DATA>." — por exemplo:
-     "Alterado pelo Art. 8º da PORTARIA Nº 108/PGJM, DE 28 DE MAIO DE 2026."
-   - REVOGAÇÃO: mantenha o formato já validado "Revogado pela <TIPO> Nº <NÚMERO>, DE <DATA>." (NÃO altere
-     esse formato) — por exemplo: "Revogado pela PORTARIA Nº 108/PGJM, DE 28 DE MAIO DE 2026."
-   - O campo 'nota_remissiva' NUNCA leva parênteses (o aplicativo os adiciona) e é usado nas DUAS versões.
-     NUNCA repita a nota remissiva dentro do texto principal.
+   NUNCA descreva a tabela em prosa, NUNCA a omita, e NUNCA resuma seu conteúdo — reproduza célula a célula,
+   mesmo que a tabela seja grande. Se um ato alterador modifica o conteúdo de uma tabela (acrescenta,
+   remove ou muda linhas/colunas), 'tabela_alterada' deve conter a tabela NOVA e COMPLETA (com todas as
+   linhas, alteradas ou não), e o campo 'texto_pos_tabela_alterada' deve trazer a nota
+   "(Nova redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<ANO> - <SIGLA>)" logo abaixo da tabela.
+   'tabela_consolidada' sempre reflete a versão vigente (mais recente) da tabela.
+4. CRITÉRIO RIGOROSO DE ALTERAÇÃO E REVOGAÇÃO — formato EXATO e obrigatório (siga rigorosamente a
+   pontuação, os parênteses e a ordem abaixo; NUNCA misture os dois casos):
+
+   a) DISPOSITIVO ALTERADO (nova redação) — na versão ALTERADA (`texto_principal_alterada`), escreva em
+      DUAS LINHAS separadas por quebra de parágrafo dupla `<br/><br/>` (nunca concatenadas na mesma linha):
+
+      Linha 1 — identificador + texto ANTIGO INTEGRAL riscado em vermelho, seguido IMEDIATAMENTE (fora do
+      risco, na mesma linha) da nota "(Alterada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<ANO> - <SIGLA>)":
+        <strike><font color="red">X - texto antigo integral...</font></strike> (Alterada pelo Art. 8 da
+        PORTARIA Nº 1/2026 - PGJ/CG)
+      <br/><br/>
+      Linha 2 — repita o MESMO identificador + a NOVA redação vigente por extenso, sem riscar, seguida da
+      nota "(Redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<ANO> - <SIGLA>).":
+        X - texto novo integral... (Redação dada pelo Art. 8 da PORTARIA Nº 1/2026 - PGJ/CG).
+
+      Exemplo completo (copie exatamente este padrão, adaptando o conteúdo):
+        <strike><font color="red">X - apresentar ao final do período de instrutoria "Relatório das
+        Atividades desenvolvidas durante o processo de Instrutoria", conforme modelo padrão.</font></strike>
+        (Alterada pelo Art. 8 da PORTARIA Nº 1/2026 - PGJ/CG)<br/><br/>X - apresentar trimestralmente
+        relatórios de atividade ao(à) instruendo(a), conforme modelo anexo; (Redação dada pelo Art. 8 da
+        PORTARIA Nº 1/2026 - PGJ/CG).
+
+      Na versão CONSOLIDADA (`texto_principal_consolidada`) do MESMO dispositivo, mostre SOMENTE a Linha 2
+      (a nova redação), nunca a antiga, nunca riscada:
+        X - apresentar trimestralmente relatórios de atividade ao(à) instruendo(a), conforme modelo anexo;
+        (Redação dada pelo Art. 8 da PORTARIA Nº 1/2026 - PGJ/CG).
+
+   b) DISPOSITIVO REVOGADO — na versão ALTERADA, UMA ÚNICA LINHA (NÃO repita/acrescente uma segunda linha):
+      identificador + texto INTEGRAL riscado em vermelho, seguido IMEDIATAMENTE da nota
+      "(Revogado pelo Art. <N> da <TIPO> Nº <NÚMERO>/<ANO> - <SIGLA>);":
+        <strike><font color="red">X - apresentar ao final do período de instrutoria "Relatório das
+        Atividades desenvolvidas durante o processo de Instrutoria", conforme modelo padrão.</font></strike>
+        (Revogado pelo Art. 8 da PORTARIA Nº 1/2026 - PGJ/CG);
+
+      Na versão CONSOLIDADA do mesmo dispositivo, mostre APENAS o identificador + a nota de revogação,
+      sem repetir o texto revogado:
+        X - (Revogado pelo Art. 8 da PORTARIA Nº 1/2026 - PGJ/CG).
+
+   c) As notas "(Alterada pelo ...)", "(Redação dada pelo ...)" e "(Revogado pelo ...)" vão SEMPRE
+      embutidas diretamente no texto de 'texto_principal_alterada'/'texto_principal_consolidada' (não em
+      campo separado), citando o ARTIGO ESPECÍFICO do ato alterador que promoveu a mudança — nunca cite
+      só o ato inteiro sem o artigo. Preencha também 'nota_remissiva' com o mesmo trecho da citação (sem
+      parênteses), só para fins de indexação/auditoria — mas isso é redundante ao texto, não substitui.
+   d) NUNCA deixe de taxar o dispositivo correto, e NUNCA junte texto antigo e novo na mesma linha sem a
+      quebra de parágrafo dupla `<br/><br/>` entre eles, exceto no caso de revogação (que é uma única linha).
+5. GENERALIDADE: as regras acima valem para qualquer espécie normativa (Lei, Decreto, Resolução, Portaria,
+   Enunciado, Instrução Normativa etc.) e para qualquer tipo de dispositivo (Artigo, Parágrafo, Parágrafo
+   Único, Inciso, Alínea, Item).
 """
 
 # ----------------- SCHEMA JSON PARA PROVEDORES SEM STRUCTURED OUTPUT NATIVO -----------------
@@ -708,7 +731,7 @@ class Dispositivo(BaseModel):
     tipo: str; texto_principal_alterada: str; texto_principal_consolidada: str; is_tabela: bool
     tabela_alterada: Optional[List[List[str]]] = None; tabela_consolidada: Optional[List[List[str]]] = None
     texto_pos_tabela_alterada: Optional[str] = None; texto_pos_tabela_consolidada: Optional[str] = None
-    nota_remissiva: Optional[str] = Field(default="")
+    nota_remissiva: Optional[str] = Field(default="", description="Apenas o trecho da citação, sem prefixo e sem parênteses, ex.: 'Art. 8 da PORTARIA Nº 1/2026 - PGJ/CG'. A citação completa com o prefixo ('Alterada pelo', 'Redação dada pelo' ou 'Revogado pelo') já vai embutida em texto_principal_alterada/consolidada — este campo é só para indexação.")
 
 class Consolidacao(BaseModel):
     arquivos_originais_identificados: List[str]; arquivos_alteradores_identificados: List[str]
@@ -911,10 +934,11 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
         prompt_loop = f"""
         Aplique o ato alterador/revogador cruzando detalhadamente com o ato base (seja Lei, Decreto,
         Resolução, Enunciado, Portaria ou qualquer outra espécie normativa).
-        Obrigatório: siga EXATAMENTE a estrutura em duas linhas com quebra de parágrafo dupla <br/><br/>
-        entre o texto antigo riscado e o texto novo/marca de revogação, repetindo o identificador do
-        dispositivo em ambas as linhas, conforme definido nas regras do sistema. Preserve <b>/<i> e
-        tabelas ([TABELA]...[/TABELA]) com fidelidade absoluta.
+        Obrigatório: siga EXATAMENTE o formato de citação e a estrutura de parágrafos definidos nas regras
+        do sistema (item 4) — "(Alterada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" na linha riscada,
+        "(Redação dada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" na linha nova, ou "(Revogado pelo Art. N
+        da TIPO Nº NÚMERO/ANO - SIGLA)" para revogação (sem repetir linha). Preserve <b>/<i> e tabelas
+        ([TABELA]...[/TABELA]) com fidelidade absoluta, redesenhando a tabela inteira quando alterada.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
