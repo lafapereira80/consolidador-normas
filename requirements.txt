@@ -1,12 +1,9 @@
 streamlit
+reportlab
 PyMuPDF
 google-genai
 pydantic
-requests
+requests 
 python-docx
 supabase
-weasyprint
-streamlit-ace
-groq
-mistralai
-openai
+streamlit-quill
