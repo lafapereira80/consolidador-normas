@@ -399,11 +399,41 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
    texto de origem), transcreva TODAS as linhas e colunas com fidelidade absoluta em 'tabela_alterada' e
    'tabela_consolidada' (uma lista de listas, uma sublista por linha, mantendo a ordem exata de colunas).
    NUNCA descreva a tabela em prosa, NUNCA a omita, e NUNCA resuma seu conteúdo — reproduza célula a célula,
-   mesmo que a tabela seja grande. Se um ato alterador modifica um o conteúdo e dentro desse conteúdo existe uma tabela (acrescenta,
-   remove ou muda linhas/colunas) ela deve ser taxada, com  <strike><font color="red"> Célula </font></strike>, 'tabela_alterada' deve conter a tabela NOVA e COMPLETA (com todas as
-   linhas, alteradas ou não), e o campo 'texto_pos_tabela_alterada' deve trazer a nota
-   "(Nova redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)" logo abaixo da tabela.
-   'tabela_consolidada' sempre reflete a versão vigente (mais recente) da tabela, a nova redação no caso de alterada deve vir após a tabela ou texto, verifique o que vem por último e após isos que deve vir a nova redação.
+   mesmo que a tabela seja grande.
+
+   ORDEM OBRIGATÓRIA quando o dispositivo com tabela é ALTERADO ou tem NOVA REDAÇÃO (aplica-se também a
+   Capítulos/Anexos com tabela): a tabela é sempre o ÚLTIMO elemento do dispositivo, depois do texto. NUNCA
+   coloque a nova redação depois da tabela. A ordem correta é sempre:
+     1º) em 'texto_principal_alterada': o texto ANTIGO integral riscado (com a nota "(Alterada pelo Art. <N>
+         da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)"), seguido de `<br/><br/>`, seguido da NOVA redação do texto
+         (se houver — se só a tabela mudou e o texto do caput não mudou, repita o mesmo texto sem riscar),
+         com a nota "(Redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)." — EXATAMENTE como
+         a regra 4a abaixo, IGNORANDO a tabela nesta etapa.
+     2º) SÓ DEPOIS disso, em 'tabela_alterada': a tabela (nova e completa se ela mudou; ou a mesma se não
+         mudou), e em 'texto_pos_tabela_alterada' a nota "(Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)"
+         referente à tabela.
+   Ou seja: texto antigo riscado → texto novo → (só então) a tabela. NUNCA: texto antigo → tabela → texto
+   novo. Se a própria tabela teve células alteradas, marque as células mudadas com
+   <strike><font color="red">célula antiga</font></strike> dentro de 'tabela_alterada'.
+   'tabela_consolidada' e 'texto_principal_consolidada'/'texto_pos_tabela_consolidada' sempre refletem
+   apenas a versão vigente (mais recente), sem riscos.
+
+   Exemplo completo obrigatório (dispositivo com tabela cujo caput foi alterado):
+     texto_principal_alterada = <strike><font color="red">X - Fixar a lotação dos Assessores Jurídicos
+     dos Gabinetes dos Subprocuradores-Gerais de Justiça Militar, de acordo com Ofícios Gerais abaixo
+     relacionados:</font></strike> (Alterada pelo Art. 1º da PORTARIA Nº 103/PGJM, DE 21 DE MAIO DE
+     2026)<br/><br/>X Os Assessores Jurídicos dos Subprocuradores-Gerais de Justiça Militar são lotados
+     nos respectivos Gabinetes. (Redação dada pelo Art. 1º da PORTARIA Nº 103/PGJM, DE 21 DE MAIO DE
+     2026).
+     tabela_alterada = [["Lotação","Servidor"], ["1º Ofício Geral - PGJM","Maria Carolina Mazzei de
+     Freitas"], ...todas as linhas da tabela antiga, célula a célula...]
+     texto_pos_tabela_alterada = (Art. 1º da PORTARIA Nº 103/PGJM, DE 21 DE MAIO DE 2026)
+     texto_principal_consolidada = X Os Assessores Jurídicos dos Subprocuradores-Gerais de Justiça
+     Militar são lotados nos respectivos Gabinetes. (Redação dada pelo Art. 1º da PORTARIA Nº 103/PGJM,
+     DE 21 DE MAIO DE 2026).
+     tabela_consolidada = [] (vazia — a tabela deixou de existir na redação vigente; se a nova redação
+     ainda usa tabela, coloque aqui a tabela vigente)
+     texto_pos_tabela_consolidada = ""
 4. CRITÉRIO RIGOROSO DE ALTERAÇÃO E REVOGAÇÃO — formato EXATO e obrigatório (siga rigorosamente a
    pontuação, os parênteses e a ordem abaixo; NUNCA misture os dois casos):
 
