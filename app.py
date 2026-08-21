@@ -482,6 +482,7 @@ def _chamar_gemini(chave, itens, response_schema, thinking_level, modelos):
     contents = _itens_para_parts_gemini(itens)
     ultimo_erro = None
     for modelo in modelos:
+        cota_diaria_esgotada = False
         for tentativa in range(1, 4):
             try:
                 resp = client.models.generate_content(model=modelo, contents=contents, config=config)
@@ -491,7 +492,13 @@ def _chamar_gemini(chave, itens, response_schema, thinking_level, modelos):
             except Exception as e:
                 ultimo_erro = e
                 erro_str = str(e).upper()
-                if "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str or "503" in erro_str or "UNAVAILABLE" in erro_str:
+                if "PERDAY" in erro_str.replace(" ", "") or "FREE_TIER" in erro_str or "GENERATEREQUESTSPERDAY" in erro_str.replace(" ", ""):
+                    # Cota DIÁRIA (não por minuto) esgotada — retry não adianta, o limite só
+                    # reseta no dia seguinte. Pula direto para o próximo modelo/provedor.
+                    st.toast(f"⚠️ Cota diária do {modelo} esgotada (free tier). Pulando para o próximo modelo...", icon="📅")
+                    cota_diaria_esgotada = True
+                    break
+                elif "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str or "503" in erro_str or "UNAVAILABLE" in erro_str:
                     if tentativa < 3:
                         tempo_espera = min(tentativa * 3, 10)
                         st.toast(f"⚡ Fila no Google ({modelo}). Tentativa {tentativa}/3. Aguardando {tempo_espera}s...", icon="⏳")
@@ -504,7 +511,9 @@ def _chamar_gemini(chave, itens, response_schema, thinking_level, modelos):
                     break
                 else:
                     raise e
-    raise Exception(f"Google Gemini: todos os modelos falharam. Último erro: {ultimo_erro}")
+        if cota_diaria_esgotada:
+            continue
+    raise Exception(f"Google Gemini: todos os modelos falharam (cota diária pode estar esgotada no free tier). Último erro: {ultimo_erro}")
 
 def _validar_resposta_gemini(resp):
     candidatos = getattr(resp, "candidates", None) or []
@@ -621,21 +630,44 @@ def _chamar_mistral(chave, itens, response_schema, modelos):
                     raise e
     raise Exception(f"Mistral AI: todos os modelos falharam. Último erro: {ultimo_erro}")
 
+def _chamar_por_motor(motor, chave, itens, response_schema, thinking_level, modelos):
+    if motor == "gemini":
+        return _chamar_gemini(chave, itens, response_schema, thinking_level, modelos)
+    elif motor == "groq":
+        return _chamar_groq(chave, itens, response_schema, modelos)
+    elif motor == "openrouter":
+        return _chamar_openrouter(chave, itens, response_schema, modelos)
+    elif motor == "mistral":
+        return _chamar_mistral(chave, itens, response_schema, modelos)
+    raise Exception(f"Provedor desconhecido: {motor}")
+
 def executar_com_fallback(chave, itens, response_schema, provedor, thinking_level="high"):
     """Despacha a chamada para o provedor de IA escolhido (Gemini, Groq, OpenRouter
-    ou Mistral), sempre validando o resultado contra o schema Pydantic esperado."""
+    ou Mistral), sempre validando o resultado contra o schema Pydantic esperado.
+    Se o provedor escolhido falhar por completo (ex.: cota diária esgotada no free
+    tier), tenta automaticamente os outros provedores que tiverem chave configurada
+    nos secrets, na ordem do Hub Multi-IA, antes de desistir."""
     cfg = PROVEDORES_IA[provedor]
-    motor, modelos = cfg["motor"], cfg["modelos"]
-    if motor == "gemini":
-        resultado = _chamar_gemini(chave, itens, response_schema, thinking_level, modelos)
-    elif motor == "groq":
-        resultado = _chamar_groq(chave, itens, response_schema, modelos)
-    elif motor == "openrouter":
-        resultado = _chamar_openrouter(chave, itens, response_schema, modelos)
-    elif motor == "mistral":
-        resultado = _chamar_mistral(chave, itens, response_schema, modelos)
-    else:
-        raise Exception(f"Provedor desconhecido: {provedor}")
+    try:
+        resultado = _chamar_por_motor(cfg["motor"], chave, itens, response_schema, thinking_level, cfg["modelos"])
+    except Exception as erro_provedor_escolhido:
+        outros = [p for p in PROVEDORES_IA if p != provedor]
+        ultimo_erro = erro_provedor_escolhido
+        resultado = None
+        for nome_alt in outros:
+            chave_alt = obter_chave_provedor(nome_alt)
+            if not chave_alt:
+                continue
+            try:
+                st.toast(f"🔀 {provedor} indisponível. Tentando automaticamente com {nome_alt}...", icon="🔁")
+                cfg_alt = PROVEDORES_IA[nome_alt]
+                resultado = _chamar_por_motor(cfg_alt["motor"], chave_alt, itens, response_schema, thinking_level, cfg_alt["modelos"])
+                break
+            except Exception as e2:
+                ultimo_erro = e2
+                continue
+        if resultado is None:
+            raise Exception(f"{provedor} falhou e nenhum provedor alternativo configurado deu certo. Último erro: {ultimo_erro}")
 
     class _RespCompat:
         def __init__(self, obj): self.text = obj.model_dump_json()
