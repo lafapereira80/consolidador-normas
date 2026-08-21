@@ -399,11 +399,11 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
    texto de origem), transcreva TODAS as linhas e colunas com fidelidade absoluta em 'tabela_alterada' e
    'tabela_consolidada' (uma lista de listas, uma sublista por linha, mantendo a ordem exata de colunas).
    NUNCA descreva a tabela em prosa, NUNCA a omita, e NUNCA resuma seu conteúdo — reproduza célula a célula,
-   mesmo que a tabela seja grande. Se um ato alterador modifica o conteúdo de uma tabela (acrescenta,
-   remove ou muda linhas/colunas), 'tabela_alterada' deve conter a tabela NOVA e COMPLETA (com todas as
+   mesmo que a tabela seja grande. Se um ato alterador modifica um o conteúdo e dentro desse conteúdo existe uma tabela (acrescenta,
+   remove ou muda linhas/colunas) ela deve ser taxada, com  <strike><font color="red"> Célula </font></strike>, 'tabela_alterada' deve conter a tabela NOVA e COMPLETA (com todas as
    linhas, alteradas ou não), e o campo 'texto_pos_tabela_alterada' deve trazer a nota
-   "(Nova redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<ANO> - <SIGLA>)" logo abaixo da tabela.
-   'tabela_consolidada' sempre reflete a versão vigente (mais recente) da tabela.
+   "(Nova redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)" logo abaixo da tabela.
+   'tabela_consolidada' sempre reflete a versão vigente (mais recente) da tabela, a nova redação no caso de alterada deve vir após a tabela ou texto, verifique o que vem por último e após isos que deve vir a nova redação.
 4. CRITÉRIO RIGOROSO DE ALTERAÇÃO E REVOGAÇÃO — formato EXATO e obrigatório (siga rigorosamente a
    pontuação, os parênteses e a ordem abaixo; NUNCA misture os dois casos):
 
@@ -411,36 +411,36 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
       DUAS LINHAS separadas por quebra de parágrafo dupla `<br/><br/>` (nunca concatenadas na mesma linha):
 
       Linha 1 — identificador + texto ANTIGO INTEGRAL riscado em vermelho, seguido IMEDIATAMENTE (fora do
-      risco, na mesma linha) da nota "(Alterada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<ANO> - <SIGLA>)":
-        <strike><font color="red">X - texto antigo integral...</font></strike> (Alterada pelo Art. 8 da
-        PORTARIA Nº 1/2026 - PGJ/CG)
+      risco, na mesma linha) da nota "(Alterada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)":
+        <strike><font color="red">X - texto antigo integral, incluindo tabelas ...</font></strike> (Alterada pelo Art. 8 da
+        PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026) ou o texto continua.
       <br/><br/>
       Linha 2 — repita o MESMO identificador + a NOVA redação vigente por extenso, sem riscar, seguida da
-      nota "(Redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<ANO> - <SIGLA>).":
-        X - texto novo integral... (Redação dada pelo Art. 8 da PORTARIA Nº 1/2026 - PGJ/CG).
+      nota "(Redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>).":
+        X - texto novo integral... (Redação dada pelo Art. 8 da PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026).
 
       Exemplo completo (copie exatamente este padrão, adaptando o conteúdo):
         <strike><font color="red">X - apresentar ao final do período de instrutoria "Relatório das
         Atividades desenvolvidas durante o processo de Instrutoria", conforme modelo padrão.</font></strike>
-        (Alterada pelo Art. 8 da PORTARIA Nº 1/2026 - PGJ/CG)<br/><br/>X - apresentar trimestralmente
+        (Alterada pelo Art. 8 da PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026)<br/><br/>X - apresentar trimestralmente
         relatórios de atividade ao(à) instruendo(a), conforme modelo anexo; (Redação dada pelo Art. 8 da
-        PORTARIA Nº 1/2026 - PGJ/CG).
+        PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026).
 
       Na versão CONSOLIDADA (`texto_principal_consolidada`) do MESMO dispositivo, mostre SOMENTE a Linha 2
       (a nova redação), nunca a antiga, nunca riscada:
         X - apresentar trimestralmente relatórios de atividade ao(à) instruendo(a), conforme modelo anexo;
-        (Redação dada pelo Art. 8 da PORTARIA Nº 1/2026 - PGJ/CG).
+        (Redação dada pelo Art. 8 daPORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026).
 
    b) DISPOSITIVO REVOGADO — na versão ALTERADA, UMA ÚNICA LINHA (NÃO repita/acrescente uma segunda linha):
       identificador + texto INTEGRAL riscado em vermelho, seguido IMEDIATAMENTE da nota
-      "(Revogado pelo Art. <N> da <TIPO> Nº <NÚMERO>/<ANO> - <SIGLA>);":
+      "(Revogado pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>);":
         <strike><font color="red">X - apresentar ao final do período de instrutoria "Relatório das
         Atividades desenvolvidas durante o processo de Instrutoria", conforme modelo padrão.</font></strike>
-        (Revogado pelo Art. 8 da PORTARIA Nº 1/2026 - PGJ/CG);
+        (Revogado pelo Art. 8 da PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026);
 
       Na versão CONSOLIDADA do mesmo dispositivo, mostre APENAS o identificador + a nota de revogação,
       sem repetir o texto revogado:
-        X - (Revogado pelo Art. 8 da PORTARIA Nº 1/2026 - PGJ/CG).
+        X - (Revogado pelo Art. 8 da PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026).
 
    c) As notas "(Alterada pelo ...)", "(Redação dada pelo ...)" e "(Revogado pelo ...)" vão SEMPRE
       embutidas diretamente no texto de 'texto_principal_alterada'/'texto_principal_consolidada' (não em
