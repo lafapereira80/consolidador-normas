@@ -390,7 +390,7 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
       Linha 1 — identificador + texto ANTIGO INTEGRAL riscado em vermelho, seguido IMEDIATAMENTE (fora do
       risco, na mesma linha) da nota "(Alterada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)":
         <strike><font color="red">X - texto antigo integral...</font></strike> (Alterada pelo Art. 8 da
-        PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026)
+        PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026), veja se existe uma tabela e ela não faz parte dessa linha uma dica e verificar se tem ":" e se logo depois vem uma tabela ou o texto continua.
       <br/><br/>
       Linha 2 — repita o MESMO identificador + a NOVA redação vigente por extenso, sem riscar, seguida da
       nota "(Redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>).":
