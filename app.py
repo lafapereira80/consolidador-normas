@@ -378,8 +378,10 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
    NUNCA descreva a tabela em prosa, NUNCA a omita, e NUNCA resuma seu conteúdo — reproduza célula a célula,
    mesmo que a tabela seja grande. Se um ato alterador modifica um o conteúdo e dentro desse conteúdo existe uma tabela (acrescenta,
    remove ou muda linhas/colunas) ela deve ser taxada, com  <strike><font color="red"> Célula </font></strike>, 'tabela_alterada' deve conter a tabela NOVA e COMPLETA (com todas as
-   linhas, alteradas ou não), e o campo 'texto_pos_tabela_alterada' deve trazer a nota
-   "(Nova redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)" logo abaixo da tabela.
+   linhas, alteradas ou não), e o campo 'texto_pos_tabela_alterada', se a tabela foi a última informação daquele trecho deve trazer a nota
+   "(Nova redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)" logo abaixo da tabela, e logo após deve vir a nova redação vigente por extenso, sem riscar, seguida da
+      nota "(Redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>).":
+        X - texto novo integral... (Redação dada pelo Art. 8 da PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026).
    'tabela_consolidada' sempre reflete a versão vigente (mais recente) da tabela, a nova redação no caso de alterada deve vir após a tabela ou texto, verifique o que vem por último e após isos que deve vir a nova redação.
 4. CRITÉRIO RIGOROSO DE ALTERAÇÃO E REVOGAÇÃO — formato EXATO e obrigatório (siga rigorosamente a
    pontuação, os parênteses e a ordem abaixo; NUNCA misture os dois casos):
