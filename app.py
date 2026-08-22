@@ -48,25 +48,25 @@ except ImportError:
 # Cada provedor tem uma cadeia de fallback (mais novo/capaz -> mais estável) dentro
 # dele mesmo. A troca de PROVEDOR é feita pelo usuário na tela.
 PROVEDORES_IA = {
-    "Google Gemini": {
-        "motor": "gemini",
-        "modelos": ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-        "secret": "GEMINI_API_KEY",
-    },
     "Groq (Llama / GPT-OSS)": {
         "motor": "groq",
         "modelos": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"],
         "secret": "GROQ_API_KEY",
     },
-    "OpenRouter (Qwen / DeepSeek / Llama)": {
-        "motor": "openrouter",
-        "modelos": ["deepseek/deepseek-v4-flash", "qwen/qwen3.5-plus", "meta-llama/llama-4-maverick"],
-        "secret": "OPENROUTER_API_KEY",
-    },
     "Mistral AI (Small / Nemo)": {
         "motor": "mistral",
         "modelos": ["mistral-small-latest", "open-mistral-nemo"],
         "secret": "MISTRAL_API_KEY",
+    },
+    "Google Gemini": {
+        "motor": "gemini",
+        "modelos": ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+        "secret": "GEMINI_API_KEY",
+    },
+    "OpenRouter (Qwen / DeepSeek / Llama)": {
+        "motor": "openrouter",
+        "modelos": ["deepseek/deepseek-v4-flash", "qwen/qwen3.5-plus", "meta-llama/llama-4-maverick"],
+        "secret": "OPENROUTER_API_KEY",
     },
 }
 
