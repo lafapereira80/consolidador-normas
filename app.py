@@ -108,7 +108,7 @@ st.markdown("""
     [data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
     
-    .block-container { padding-top: 2rem; }
+    .block-container { padding-top: 2rem; padding-left: 1.2rem; padding-right: 1.2rem; }
     .main-header {
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
         padding: 30px 20px;
@@ -120,6 +120,19 @@ st.markdown("""
     }
     .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.8rem; margin-bottom: 10px; }
     .main-header p { font-size: 1.2rem; color: #f1f1f1; margin-bottom: 0; }
+
+    /* ---------- AJUSTES PARA TELAS DE CELULAR ---------- */
+    @media (max-width: 640px) {
+        .block-container { padding-top: 1rem; padding-left: 0.6rem; padding-right: 0.6rem; }
+        .main-header { padding: 16px 10px; margin-bottom: 14px; border-radius: 8px; }
+        .main-header h1 { font-size: 1.5rem; line-height: 1.25; margin-bottom: 4px; }
+        .main-header p { font-size: 0.85rem; }
+        [data-testid="stForm"] { padding: 0.8rem !important; }
+        div[data-testid="stExpander"] summary { font-size: 0.9rem; }
+        .stButton button, .stDownloadButton button { font-size: 0.85rem; padding: 0.4rem 0.6rem; }
+        [data-testid="column"] { min-width: 100% !important; }
+        .st-key-info_sistema { display: none; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -172,6 +185,12 @@ if not st.session_state.autenticado:
         .st-key-login_card [data-testid="stForm"] { border: none; padding: 0; }
         .login-title { text-align: center; color: #1e3c72; font-weight: 800; font-size: 1.8rem; margin-bottom: 0.3rem; }
         .login-subtitle { text-align: center; color: #666; margin-bottom: 1.5rem; }
+
+        @media (max-width: 640px) {
+            .st-key-login_card { max-width: 100%; margin: 1.5rem auto; padding: 1.2rem 1rem; box-shadow: none; border-radius: 8px; }
+            .login-title { font-size: 1.3rem; }
+            .login-subtitle { font-size: 0.85rem; margin-bottom: 1rem; }
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -208,7 +227,8 @@ st.markdown("""
 col_info, col_hist, col_usr, col_logout = st.columns([3, 1.5, 1.5, 1])
 
 with col_info:
-    st.info("💡 **Sistema Autenticado:** Proteção de dados ativa.")
+    with st.container(key="info_sistema"):
+        st.info("💡 **Sistema Autenticado:** Proteção de dados ativa.")
 
 hist_path = "pages/historico.py"
 usr_path = "pages/usuarios.py"
