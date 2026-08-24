@@ -48,25 +48,25 @@ except ImportError:
 # Cada provedor tem uma cadeia de fallback (mais novo/capaz -> mais estável) dentro
 # dele mesmo. A troca de PROVEDOR é feita pelo usuário na tela.
 PROVEDORES_IA = {
-    "Google Gemini": {
-        "motor": "gemini",
-        "modelos": ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-        "secret": "GEMINI_API_KEY",
-    },
     "Groq (Llama / GPT-OSS)": {
         "motor": "groq",
         "modelos": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"],
         "secret": "GROQ_API_KEY",
     },
-    "OpenRouter (Qwen / DeepSeek / Llama)": {
-        "motor": "openrouter",
-        "modelos": ["deepseek/deepseek-v4-flash", "qwen/qwen3.5-plus", "meta-llama/llama-4-maverick"],
-        "secret": "OPENROUTER_API_KEY",
-    },
     "Mistral AI (Small / Nemo)": {
         "motor": "mistral",
         "modelos": ["mistral-small-latest", "open-mistral-nemo"],
         "secret": "MISTRAL_API_KEY",
+    },
+    "Google Gemini": {
+        "motor": "gemini",
+        "modelos": ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+        "secret": "GEMINI_API_KEY",
+    },
+    "OpenRouter (Qwen / DeepSeek / Llama)": {
+        "motor": "openrouter",
+        "modelos": ["deepseek/deepseek-v4-flash", "qwen/qwen3.5-plus", "meta-llama/llama-4-maverick"],
+        "secret": "OPENROUTER_API_KEY",
     },
 }
 
@@ -108,7 +108,7 @@ st.markdown("""
     [data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
     
-    .block-container { padding-top: 2rem; }
+    .block-container { padding-top: 2rem; padding-left: 1.2rem; padding-right: 1.2rem; }
     .main-header {
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
         padding: 30px 20px;
@@ -120,6 +120,19 @@ st.markdown("""
     }
     .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.8rem; margin-bottom: 10px; }
     .main-header p { font-size: 1.2rem; color: #f1f1f1; margin-bottom: 0; }
+
+    /* ---------- AJUSTES PARA TELAS DE CELULAR ---------- */
+    @media (max-width: 640px) {
+        .block-container { padding-top: 1rem; padding-left: 0.6rem; padding-right: 0.6rem; }
+        .main-header { padding: 16px 10px; margin-bottom: 14px; border-radius: 8px; }
+        .main-header h1 { font-size: 1.5rem; line-height: 1.25; margin-bottom: 4px; }
+        .main-header p { font-size: 0.85rem; }
+        [data-testid="stForm"] { padding: 0.8rem !important; }
+        div[data-testid="stExpander"] summary { font-size: 0.9rem; }
+        .stButton button, .stDownloadButton button { font-size: 0.85rem; padding: 0.4rem 0.6rem; }
+        [data-testid="column"] { min-width: 100% !important; }
+        .st-key-info_sistema { display: none; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -172,6 +185,12 @@ if not st.session_state.autenticado:
         .st-key-login_card [data-testid="stForm"] { border: none; padding: 0; }
         .login-title { text-align: center; color: #1e3c72; font-weight: 800; font-size: 1.8rem; margin-bottom: 0.3rem; }
         .login-subtitle { text-align: center; color: #666; margin-bottom: 1.5rem; }
+
+        @media (max-width: 640px) {
+            .st-key-login_card { max-width: 100%; margin: 1.5rem auto; padding: 1.2rem 1rem; box-shadow: none; border-radius: 8px; }
+            .login-title { font-size: 1.3rem; }
+            .login-subtitle { font-size: 0.85rem; margin-bottom: 1rem; }
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -208,7 +227,8 @@ st.markdown("""
 col_info, col_hist, col_usr, col_logout = st.columns([3, 1.5, 1.5, 1])
 
 with col_info:
-    st.info("💡 **Sistema Autenticado:** Proteção de dados ativa.")
+    with st.container(key="info_sistema"):
+        st.info("💡 **Sistema Autenticado:** Proteção de dados ativa.")
 
 hist_path = "pages/historico.py"
 usr_path = "pages/usuarios.py"
@@ -349,6 +369,29 @@ def ia_para_editor(texto):
     texto = re.sub(r'</i>', '</em>', texto, flags=re.IGNORECASE)
     return texto.replace("<p></p>", "")
 
+# Toolbar explícito: o pacote streamlit-quill está sem novas versões há mais de
+# 12 meses (projeto praticamente abandonado), então nunca confiamos no toolbar
+# padrão dele — fixamos aqui exatamente os formatos que o sistema depende
+# (negrito, itálico, riscado e cor), garantindo que fiquem sempre disponíveis
+# independentemente do que o pacote definir por padrão.
+_QUILL_TOOLBAR = [
+    ["bold", "italic", "underline", "strike"],
+    [{"color": []}, {"background": []}],
+    [{"list": "ordered"}, {"list": "bullet"}],
+    ["clean"],
+]
+
+def editor_rico(value, key):
+    """Editor de texto rico usado em todo o app. Tenta o Quill (streamlit-quill)
+    com toolbar fixo; se o componente falhar ao carregar (risco real dado que o
+    pacote está sem manutenção ativa), cai automaticamente para um campo de
+    texto simples em HTML, sem derrubar a página."""
+    try:
+        return st_quill(value=value, html=True, toolbar=_QUILL_TOOLBAR, key=key)
+    except Exception:
+        st.caption("⚠️ Editor visual indisponível no momento — editando o HTML diretamente.")
+        return st.text_area("HTML", value=value, key=f"{key}_fallback", label_visibility="collapsed", height=150)
+
 def editor_para_pdf(texto):
     if not texto: return ""
     parser = QuillParser()
@@ -376,11 +419,41 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
    texto de origem), transcreva TODAS as linhas e colunas com fidelidade absoluta em 'tabela_alterada' e
    'tabela_consolidada' (uma lista de listas, uma sublista por linha, mantendo a ordem exata de colunas).
    NUNCA descreva a tabela em prosa, NUNCA a omita, e NUNCA resuma seu conteúdo — reproduza célula a célula,
-   mesmo que a tabela seja grande. Se um ato alterador modifica um o conteúdo e dentro desse conteúdo existe uma tabela (acrescenta,
-   remove ou muda linhas/colunas) ela deve ser taxada, com  <strike><font color="red"> Célula </font></strike>, 'tabela_alterada' deve conter a tabela NOVA e COMPLETA (com todas as
-   linhas, alteradas ou não), e o campo 'texto_pos_tabela_alterada' deve trazer a nota
-   "(Nova redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)" logo abaixo da tabela.
-   'tabela_consolidada' sempre reflete a versão vigente (mais recente) da tabela, a nova redação no caso de alterada deve vir após a tabela ou texto, verifique o que vem por último e após isos que deve vir a nova redação.
+   mesmo que a tabela seja grande.
+
+   ORDEM OBRIGATÓRIA quando o dispositivo com tabela é ALTERADO ou tem NOVA REDAÇÃO (aplica-se também a
+   Capítulos/Anexos com tabela): a tabela é sempre o ÚLTIMO elemento do dispositivo, depois do texto. NUNCA
+   coloque a nova redação depois da tabela. A ordem correta é sempre:
+     1º) em 'texto_principal_alterada': o texto ANTIGO integral riscado (com a nota "(Alterada pelo Art. <N>
+         da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)"), seguido de `<br/><br/>`, seguido da NOVA redação do texto
+         (se houver — se só a tabela mudou e o texto do caput não mudou, repita o mesmo texto sem riscar),
+         com a nota "(Redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)." — EXATAMENTE como
+         a regra 4a abaixo, IGNORANDO a tabela nesta etapa.
+     2º) SÓ DEPOIS disso, em 'tabela_alterada': a tabela (nova e completa se ela mudou; ou a mesma se não
+         mudou), e em 'texto_pos_tabela_alterada' a nota "(Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)"
+         referente à tabela.
+   Ou seja: texto antigo riscado → texto novo → (só então) a tabela. NUNCA: texto antigo → tabela → texto
+   novo. Se a própria tabela teve células alteradas, marque as células mudadas com
+   <strike><font color="red">célula antiga</font></strike> dentro de 'tabela_alterada'.
+   'tabela_consolidada' e 'texto_principal_consolidada'/'texto_pos_tabela_consolidada' sempre refletem
+   apenas a versão vigente (mais recente), sem riscos.
+
+   Exemplo completo obrigatório (dispositivo com tabela cujo caput foi alterado):
+     texto_principal_alterada = <strike><font color="red">X - Fixar a lotação dos Assessores Jurídicos
+     dos Gabinetes dos Subprocuradores-Gerais de Justiça Militar, de acordo com Ofícios Gerais abaixo
+     relacionados:</font></strike> (Alterada pelo Art. 1º da PORTARIA Nº 103/PGJM, DE 21 DE MAIO DE
+     2026)<br/><br/>X Os Assessores Jurídicos dos Subprocuradores-Gerais de Justiça Militar são lotados
+     nos respectivos Gabinetes. (Redação dada pelo Art. 1º da PORTARIA Nº 103/PGJM, DE 21 DE MAIO DE
+     2026).
+     tabela_alterada = [["Lotação","Servidor"], ["1º Ofício Geral - PGJM","Maria Carolina Mazzei de
+     Freitas"], ...todas as linhas da tabela antiga, célula a célula...]
+     texto_pos_tabela_alterada = (Art. 1º da PORTARIA Nº 103/PGJM, DE 21 DE MAIO DE 2026)
+     texto_principal_consolidada = X Os Assessores Jurídicos dos Subprocuradores-Gerais de Justiça
+     Militar são lotados nos respectivos Gabinetes. (Redação dada pelo Art. 1º da PORTARIA Nº 103/PGJM,
+     DE 21 DE MAIO DE 2026).
+     tabela_consolidada = [] (vazia — a tabela deixou de existir na redação vigente; se a nova redação
+     ainda usa tabela, coloque aqui a tabela vigente)
+     texto_pos_tabela_consolidada = ""
 4. CRITÉRIO RIGOROSO DE ALTERAÇÃO E REVOGAÇÃO — formato EXATO e obrigatório (siga rigorosamente a
    pontuação, os parênteses e a ordem abaixo; NUNCA misture os dois casos):
 
@@ -1262,12 +1335,12 @@ if st.session_state.dados_processados:
 
             st.markdown("**Ementa**")
             val_ementa = ia_para_editor(cons.get('ementa', ''))
-            ementa_editada = st_quill(value=val_ementa, html=True, key=f"q_ementa_{i}")
+            ementa_editada = editor_rico(value=val_ementa, key=f"q_ementa_{i}")
             if ementa_editada is not None: cons['ementa'] = editor_para_pdf(ementa_editada)
 
             st.markdown("**Preâmbulo e Considerandos**")
             val_preambulo = ia_para_editor(cons.get('preambulo', ''))
-            preambulo_editado = st_quill(value=val_preambulo, html=True, key=f"q_preambulo_{i}")
+            preambulo_editado = editor_rico(value=val_preambulo, key=f"q_preambulo_{i}")
             if preambulo_editado is not None: cons['preambulo'] = editor_para_pdf(preambulo_editado)
 
             st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos, Anexos)")
@@ -1278,13 +1351,13 @@ if st.session_state.dados_processados:
                 with c_alt:
                     st.markdown("*Versão Alterada*")
                     val_alt = ia_para_editor(disp.get('texto_principal_alterada', ''))
-                    alt_editada = st_quill(value=val_alt, html=True, key=f"q_alt_{i}_{j}")
+                    alt_editada = editor_rico(value=val_alt, key=f"q_alt_{i}_{j}")
                     if alt_editada is not None: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
 
                 with c_cons:
                     st.markdown("*Versão Consolidada*")
                     val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
-                    cons_editada = st_quill(value=val_cons, html=True, key=f"q_cons_{i}_{j}")
+                    cons_editada = editor_rico(value=val_cons, key=f"q_cons_{i}_{j}")
                     if cons_editada is not None: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
 
                 st.markdown("*Nota Remissiva (Injetada automaticamente no final)*")
