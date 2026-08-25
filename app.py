@@ -225,14 +225,6 @@ st.markdown("---")
 
 provedor_escolhido = st.selectbox("🧠 Motor de IA (Hub Multi-IA)", list(PROVEDORES_IA.keys()), key="provedor_ia_select")
 
-modo_processamento = st.radio(
-    "⚡ Modo de Processamento",
-    ["Equilibrado", "Rápido", "Máxima Qualidade"],
-    index=0,
-    horizontal=True,
-    help="Rápido: menor tempo, pode perder detalhes. Máxima Qualidade: mais preciso, porém mais lento."
-)
-
 cfg_provedor = PROVEDORES_IA[provedor_escolhido]
 api_key = obter_chave_provedor(provedor_escolhido)
 if not api_key:
@@ -734,7 +726,7 @@ def converter_para_iso(data_str):
     try: return datetime.strptime(data_str, "%d/%m/%Y").strftime("%Y-%m-%d")
     except: return None
 
-# AJUSTE: extração com cache e parâmetros de otimização
+# AJUSTE: extração com cache e parâmetros otimizados (sempre máxima qualidade)
 @st.cache_data(show_spinner=False, max_entries=20)
 def extrair_conteudo_cache(file_bytes, nome_arquivo, dpi_ocr=1.5, max_paginas_ocr=None):
     return extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr, max_paginas_ocr)
@@ -748,7 +740,6 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_pagin
         for page_num, page in enumerate(doc):
             html_text += f"=== PÁGINA {page_num + 1} ===\n"
 
-            # Extração de tabelas
             tabelas_bbox = []
             try:
                 tab_finder = page.find_tables()
@@ -764,36 +755,42 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_pagin
             except Exception:
                 pass
 
-            # Extração de texto com ordenação natural
-            blocks = page.get_text("blocks", sort=True)
+            blocks = page.get_text("dict", sort=True).get("blocks", [])
             for b in blocks:
-                if b[6] != 0:  # type 0 = texto
-                    continue
-                bloco_rect = fitz.Rect(b[:4])
+                if b.get('type') != 0: continue
+                bloco_rect = fitz.Rect(b.get("bbox", (0, 0, 0, 0)))
                 if any(bloco_rect.intersects(tb) for tb in tabelas_bbox):
                     continue
-                texto_bloco = b[4].strip()
-                if not texto_bloco:
-                    continue
-                caracteres_uteis += len(texto_bloco)
-                # Substitui quebras de linha internas por espaço, preservando parágrafos
-                # Aqui, cada bloco é tratado como um parágrafo único.
-                texto_bloco = texto_bloco.replace('\n', ' ').strip()
-                html_text += texto_bloco + "<br/>\n"
-            html_text += "<br/>\n"  # separa páginas
+                bloco_linhas = ""
+                for l in b.get("lines", []):
+                    linha_span = ""
+                    for s in l.get("spans", []):
+                        texto = s.get("text", "")
+                        if not texto: continue
+                        caracteres_uteis += len(texto.strip())
+                        flags = s.get("flags", 0)
+                        # Usar apenas flags oficiais para negrito/itálico
+                        if flags & 2**4:
+                            texto = f"<b>{texto}</b>"
+                        if flags & 2**1:
+                            texto = f"<i>{texto}</i>"
+                        linha_span += texto
+                    if linha_span.strip():
+                        bloco_linhas += linha_span.strip() + " "
+                if bloco_linhas.strip():
+                    html_text += bloco_linhas.strip() + "<br/>\n"
+            html_text += "<br/>\n"
 
         if caracteres_uteis < 30 * max(doc.page_count, 1):
             partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO. Leia o conteúdo visualmente, inclusive tabelas:"]
-            for page_num, page in enumerate(doc):
-                if max_paginas_ocr is not None and page_num >= max_paginas_ocr:
-                    partes.append(f"[Nota: apenas as primeiras {max_paginas_ocr} páginas foram convertidas em imagem por limite do modo de processamento.]")
-                    break
+            for page in doc:
                 pix = page.get_pixmap(matrix=fitz.Matrix(dpi_ocr, dpi_ocr))
                 partes.append({"tipo": "imagem", "mime": "image/jpeg", "dados": pix.tobytes("jpg", jpg_quality=78)})
             return partes
 
         return [html_text]
-    except Exception as e: return [f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"]
+    except Exception as e:
+        return [f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"]
 
 # ----------------- ESTRUTURAS PYDANTIC -----------------
 class ArquivoClassificado(BaseModel):
@@ -908,7 +905,6 @@ def reforcar_negrito_em_consolidacao(cons: dict, textos_extraidos: dict) -> dict
     for nome_arquivo, partes in textos_extraidos.items():
         for parte in partes:
             if isinstance(parte, str):
-                # Captura o conteúdo dentro de <b>...</b>
                 for m in re.finditer(r'<b>(.*?)</b>', parte, re.IGNORECASE | re.DOTALL):
                     termo = re.sub(r'<[^>]+>', '', m.group(1)).strip()
                     if termo:
@@ -1031,12 +1027,11 @@ def _localizar_base_no_banco(tipo_ref, numero_ref):
     except Exception:
         return None
 
-def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi_ocr=1.5, max_paginas_ocr=None, progresso=None):
+def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="high", dpi_ocr=1.5, max_paginas_ocr=None, progresso=None):
     memoria_aprendida = resgatar_memoria()
 
     textos_extraidos = {}
-    max_workers_extração = 2 if thinking_level == "low" else 4
-    with ThreadPoolExecutor(max_workers=min(max_workers_extração, max(1, len(arquivos)))) as ex:
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(arquivos)))) as ex:
         futuros = {submit_com_contexto(ex, extrair_conteudo_cache, arq.getvalue(), arq.name, dpi_ocr, max_paginas_ocr): arq.name for arq in arquivos}
         total_arquivos = len(arquivos)
         for idx, fut in enumerate(as_completed(futuros)):
@@ -1098,8 +1093,7 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
         grupos_validos.append((arquivo_base, arquivos_alteradores))
 
     if grupos_validos:
-        max_workers_processamento = 1 if thinking_level == "low" else 2
-        with ThreadPoolExecutor(max_workers=min(max_workers_processamento, len(grupos_validos))) as ex:
+        with ThreadPoolExecutor(max_workers=min(2, len(grupos_validos))) as ex:
             futuros = {}
             for arquivo_base, arquivos_alteradores in grupos_validos:
                 st.toast(f"⚙️ Processando: {arquivo_base.get('nome_padronizado_identificado')}...", icon="⏳")
@@ -1159,7 +1153,7 @@ def _consultar_estado_e_historico(nome_padrao):
     except Exception:
         return None, []
 
-def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida, thinking_level="medium"):
+def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida, thinking_level="high"):
     nome_padrao = arquivo_base.get('nome_padronizado_identificado', '')
     reconstruida = bool(arquivo_base.get('_reconstruida_do_banco'))
     estado_json_atual, ja_processadas = _consultar_estado_e_historico(nome_padrao)
@@ -1486,19 +1480,6 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     if not api_key: st.error("⚠️ Insira sua chave da API nas configurações.")
     elif not arquivos_enviados: st.warning("⚠️ Envie os arquivos normativos primeiro.")
     else:
-        if modo_processamento == "Rápido":
-            thinking_level = "low"
-            dpi_ocr = 1.2
-            max_paginas_ocr = 10
-        elif modo_processamento == "Equilibrado":
-            thinking_level = "medium"
-            dpi_ocr = 1.5
-            max_paginas_ocr = 20
-        else:
-            thinking_level = "high"
-            dpi_ocr = 1.5
-            max_paginas_ocr = None
-
         with st.spinner("⚡ Executando OCR Estrutural e Consulta ao Histórico de Aprendizado..."):
             progresso = st.progress(0.0, text="Iniciando análise...")
             try:
@@ -1506,9 +1487,9 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
                     arquivos_enviados,
                     api_key.strip(),
                     provedor_escolhido,
-                    thinking_level=thinking_level,
-                    dpi_ocr=dpi_ocr,
-                    max_paginas_ocr=max_paginas_ocr,
+                    thinking_level="high",
+                    dpi_ocr=1.5,
+                    max_paginas_ocr=None,
                     progresso=progresso
                 )
                 st.session_state.dados_originais_ia = copy.deepcopy(st.session_state.dados_processados)
