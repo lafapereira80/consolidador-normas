@@ -748,6 +748,7 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_pagin
         for page_num, page in enumerate(doc):
             html_text += f"=== PÁGINA {page_num + 1} ===\n"
 
+            # Extração de tabelas
             tabelas_bbox = []
             try:
                 tab_finder = page.find_tables()
@@ -759,36 +760,27 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_pagin
                     html_text += "[TABELA]\n"
                     for linha in linhas:
                         html_text += " | ".join((str(c).strip() if c is not None else "") for c in linha) + "\n"
-                    html_text += "[/TABELA]\n<br/>\n"
+                    html_text += "[/TABELA]\n"
             except Exception:
                 pass
 
-            blocks = page.get_text("dict", sort=True).get("blocks", [])
+            # Extração de texto com ordenação natural
+            blocks = page.get_text("blocks", sort=True)
             for b in blocks:
-                if b.get('type') != 0: continue
-                bloco_rect = fitz.Rect(b.get("bbox", (0, 0, 0, 0)))
+                if b[6] != 0:  # type 0 = texto
+                    continue
+                bloco_rect = fitz.Rect(b[:4])
                 if any(bloco_rect.intersects(tb) for tb in tabelas_bbox):
                     continue
-                bloco_linhas = ""
-                for l in b.get("lines", []):
-                    linha_span = ""
-                    for s in l.get("spans", []):
-                        texto = s.get("text", "")
-                        if not texto: continue
-                        caracteres_uteis += len(texto.strip())
-                        flags = s.get("flags", 0)
-                        font_name = s.get("font", "")
-                        # MELHORIA: detectar negrito/itálico também pelo nome da fonte
-                        is_bold = (flags & 2**4) or ('bold' in font_name.lower() or 'negrito' in font_name.lower() or 'black' in font_name.lower())
-                        is_italic = (flags & 2**1) or ('italic' in font_name.lower() or 'itálico' in font_name.lower())
-                        if is_bold:
-                            texto = f"<b>{texto}</b>"
-                        if is_italic:
-                            texto = f"<i>{texto}</i>"
-                        linha_span += texto
-                    if linha_span.strip(): bloco_linhas += linha_span + " "
-                if bloco_linhas.strip(): html_text += bloco_linhas.strip() + "<br/>\n"
-            html_text += "<br/>\n"
+                texto_bloco = b[4].strip()
+                if not texto_bloco:
+                    continue
+                caracteres_uteis += len(texto_bloco)
+                # Substitui quebras de linha internas por espaço, preservando parágrafos
+                # Aqui, cada bloco é tratado como um parágrafo único.
+                texto_bloco = texto_bloco.replace('\n', ' ').strip()
+                html_text += texto_bloco + "<br/>\n"
+            html_text += "<br/>\n"  # separa páginas
 
         if caracteres_uteis < 30 * max(doc.page_count, 1):
             partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO. Leia o conteúdo visualmente, inclusive tabelas:"]
@@ -929,12 +921,10 @@ def reforcar_negrito_em_consolidacao(cons: dict, textos_extraidos: dict) -> dict
             return texto
         for termo in termos_negrito:
             termo_escape = re.escape(termo)
-            # Evita adicionar dentro de tags já existentes: procura o termo fora de <b> e não dentro de qualquer tag
             pattern = re.compile(r'(?<!<)(' + termo_escape + r')(?![^<>]*</b>)', re.IGNORECASE)
             texto = pattern.sub(r'<b>\1</b>', texto)
         return texto
 
-    # Aplicar em campos de texto da consolidação
     for campo in ["ementa", "preambulo", "titulo_portaria", "assinatura_nome", "assinatura_cargo"]:
         if campo in cons:
             cons[campo] = aplicar_negrito(cons[campo])
@@ -955,9 +945,6 @@ def resgatar_memoria():
         except: pass
     return memoria
 
-# =====================================================================
-# NOVA FUNÇÃO: Verificação heurística de referências externas
-# =====================================================================
 def verificar_referencias_externas(arquivos, textos_extraidos):
     if not supabase:
         return []
@@ -1022,10 +1009,6 @@ def verificar_referencias_externas(arquivos, textos_extraidos):
             combinadas[chave]["arquivos_alteradores"].extend(ref["arquivos_alteradores"])
             combinadas[chave]["arquivos_alteradores"] = list(set(combinadas[chave]["arquivos_alteradores"]))
     return list(combinadas.values())
-
-# =====================================================================
-# EDITOR ÚNICO POR TAGS
-# =====================================================================
 
 def _localizar_base_no_banco(tipo_ref, numero_ref):
     if not supabase or not numero_ref or not str(numero_ref).strip():
@@ -1128,7 +1111,6 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
                 try:
                     resultado, mensagens = fut.result()
                     resultado = corrigir_posicionamento_tabela(resultado)
-                    # NOVO: Reforçar negrito perdido
                     resultado = reforcar_negrito_em_consolidacao(resultado, textos_extraidos)
                     consolidacoes_geradas.append(resultado)
                     for tipo_msg, texto_msg in mensagens:
@@ -1142,7 +1124,6 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
                 if progresso:
                     progresso.progress(0.5 + 0.5 * (idx + 1) / total_grupos, text=f"Processando grupo {idx+1}/{total_grupos}...")
 
-    # Verificação heurística de referências externas
     refs_heuristicas = verificar_referencias_externas(arquivos, textos_extraidos)
     chaves_existentes = {(ref["ato_referenciado_tipo"], ref["ato_referenciado_numero"]) for ref in referencias_pendentes}
     for ref in refs_heuristicas:
