@@ -411,21 +411,7 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
         relatórios de atividade ao(à) instruendo(a), conforme modelo anexo; (Redação dada pelo Art. 8 da
         PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026).
 
-      ⚠️ IMPORTANTE PARA DISPOSITIVOS COM TABELA: Se o dispositivo contém uma tabela (is_tabela=True) e foi
-      alterado, a Linha 1 (texto antigo riscado + nota "Alterada pelo...") DEVE ser colocada no campo
-      'texto_principal_alterada'. A Linha 2 (nova redação completa do dispositivo, incluindo qualquer texto
-      fora da tabela e a nota "Redação dada pelo...") DEVE ser colocada NO CAMPO 'texto_pos_tabela_alterada',
-      NUNCA em 'texto_principal_alterada'. Ou seja, na versão ALTERADA, a nova redação deve aparecer DEPOIS
-      da tabela, não antes. Exemplo:
-        texto_principal_alterada = "<strike><font color='red'>X - texto antigo...</font></strike> (Alterada pelo Art. 8 da PORTARIA Nº 1...)"
-        tabela_alterada = [["célula1", "célula2"], ...]  (tabela possivelmente taxada)
-        texto_pos_tabela_alterada = "X - texto novo... (Redação dada pelo Art. 8 da PORTARIA Nº 1...)"
-      NÃO coloque a Linha 2 em 'texto_principal_alterada' se houver tabela.
-
-      Na versão CONSOLIDADA (`texto_principal_consolidada`) do MESMO dispositivo, mostre SOMENTE a Linha 2
-      (a nova redação), nunca a antiga, nunca riscada. Se houver tabela, o texto consolidado deve ficar em
-      'texto_principal_consolidada' e a tabela logo após; a nota de redação pode estar no próprio texto ou
-      em 'texto_pos_tabela_consolidada' (preferencialmente no texto principal, sem duplicação).
+      Para dispositivos com tabela, siga as regras do item 6.
 
    b) DISPOSITIVO REVOGADO — na versão ALTERADA, UMA ÚNICA LINHA (NÃO repita/acrescente uma segunda linha):
       identificador + texto INTEGRAL riscado em vermelho, seguido IMEDIATAMENTE da nota
@@ -448,6 +434,60 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
 5. GENERALIDADE: as regras acima valem para qualquer espécie normativa (Lei, Decreto, Resolução, Portaria,
    Enunciado, Instrução Normativa etc.) e para qualquer tipo de dispositivo (Artigo, Parágrafo, Parágrafo
    Único, Inciso, Alínea, Item).
+
+6. REGRAS ESPECÍFICAS PARA DISPOSITIVOS COM TABELA (is_tabela=True)
+   Quando um dispositivo normativo contiver uma tabela (campo is_tabela=True) e for objeto de alteração
+   por um ato modificador, siga rigorosamente as regras abaixo:
+
+   6.1. Estrutura geral na versão ALTERADA:
+   - O texto ANTIGO (riscado) e a nota "(Alterada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" ficam
+     SEMPRE no campo 'texto_principal_alterada'.
+   - A tabela ALTERADA (com as células taxadas quando houver mudança) fica no campo 'tabela_alterada'.
+   - A NOVA REDAÇÃO completa (texto novo, se houver, e a nota "(Redação dada pelo Art. N da TIPO Nº
+     NÚMERO/ANO - SIGLA)") fica SEMPRE no campo 'texto_pos_tabela_alterada', independentemente de haver
+     texto antes ou depois da tabela no dispositivo original.
+
+   6.2. Casos específicos:
+   a) Dispositivo com texto introdutório + tabela + texto final:
+      - 'texto_principal_alterada': contém o texto antigo completo (introdução + referência à tabela +
+        texto final) riscado, com a nota de alteração.
+      - 'tabela_alterada': a tabela completa, com células taxadas se alteradas.
+      - 'texto_pos_tabela_alterada': contém a NOVA redação do dispositivo inteiro (introdução nova, se
+        aplicável, descrição da tabela, texto final novo), seguida da nota "(Redação dada pelo...)".
+        Exemplo:
+          texto_principal_alterada = "<strike><font color='red'>Art. 5º - O prazo para entrega é de 30 dias,
+          conforme tabela abaixo:</font></strike> (Alterada pelo Art. 2 da PORTARIA Nº 5/PGJ, de 10 de maio de 2025)"
+          tabela_alterada = [["Item", "Prazo"], ["Documento", "10 dias"], ["Relatório", "20 dias"]]
+          texto_pos_tabela_alterada = "Art. 5º - O prazo para entrega é de 60 dias, conforme tabela abaixo:
+          (Redação dada pelo Art. 2 da PORTARIA Nº 5/PGJ, de 10 de maio de 2025)"
+
+   b) Dispositivo que contém APENAS a tabela (sem texto antes ou depois):
+      - 'texto_principal_alterada': conterá apenas a nota "(Alterada pelo...)" (sem texto riscado) e,
+        se o identificador do dispositivo (ex.: "Art. 7º") não for parte da tabela, deve ser incluído
+        riscado antes da nota.
+      - 'tabela_alterada': a tabela completa, com alterações taxadas.
+      - 'texto_pos_tabela_alterada': conterá o identificador do dispositivo (se existir) + a nova
+        redação da tabela em forma de texto descritivo (caso a tabela tenha sido substituída por texto)
+        ou simplesmente a nota "(Redação dada pelo...)" se a tabela apenas foi modificada e não há
+        texto adicional.
+        Importante: se a tabela foi substituída por texto, descreva-a em texto_pos_tabela_alterada;
+        caso contrário, deixe apenas a nota.
+
+   c) Alteração que NÃO afeta a tabela, mas afeta o texto ao redor:
+      - Nesse caso, o campo 'is_tabela' deve ser False se a tabela em si não faz parte da alteração.
+        Ou seja, se a tabela permanece intacta e apenas o texto muda, trate como um dispositivo normal
+        (is_tabela=False) e coloque a Linha 2 em 'texto_principal_alterada' normalmente.
+
+   6.3. Versão CONSOLIDADA:
+   - 'texto_principal_consolidada': deve conter a versão vigente do dispositivo (sem riscados).
+     Se houver texto antes da tabela, ele deve estar aqui; se não, apenas o identificador.
+   - 'tabela_consolidada': a tabela na versão vigente (sem taxações).
+   - 'texto_pos_tabela_consolidada': se existir texto após a tabela na versão vigente, ele deve ser
+     colocado aqui. Caso contrário, deixe vazio.
+   - A nota "(Redação dada pelo...)" pode aparecer em 'texto_principal_consolidada' ou em
+     'texto_pos_tabela_consolidada', conforme a posição natural do texto novo, mas nunca duplicada.
+
+   6.4. A nota de redação deve sempre aparecer **fora** da tabela, nunca dentro de uma célula.
 """
 
 # ----------------- SCHEMA JSON PARA PROVEDORES SEM STRUCTURED OUTPUT NATIVO -----------------
@@ -822,37 +862,57 @@ def corrigir_posicionamento_tabela(consolidacao: dict):
         if "redação dada pelo" in txt_pos_alt.lower() or "nova redação" in txt_pos_alt.lower():
             continue
 
-        # Tenta separar a linha 2 (nova redação) do texto principal
-        partes = re.split(r'<br\s*/?>\s*<br\s*/?>', txt_alt, flags=re.IGNORECASE)
         nova_redacao = None
         texto_antigo = txt_alt
+
+        # Caso 1: quebra dupla separando as linhas
+        partes = re.split(r'<br\s*/?>\s*<br\s*/?>', txt_alt, flags=re.IGNORECASE)
         if len(partes) >= 2:
+            # Pega a última parte como possível nova redação
             primeira = partes[0].strip()
-            segunda = partes[-1].strip()  # usa a última
+            segunda = partes[-1].strip()
             if '<strike' not in segunda.lower() and '<font color="red"' not in segunda.lower() and '<s>' not in segunda.lower():
                 nova_redacao = segunda
                 texto_antigo = primeira
             else:
-                for parte in reversed(partes):
-                    parte_limpa = parte.strip()
+                # Procura da direita para a esquerda a primeira parte sem riscado
+                for idx in range(len(partes)-1, -1, -1):
+                    parte_limpa = partes[idx].strip()
                     if '<strike' not in parte_limpa.lower() and '<font color="red"' not in parte_limpa.lower() and '<s>' not in parte_limpa.lower():
                         nova_redacao = parte_limpa
-                        texto_antigo = "<br/><br/>".join(partes[:partes.index(parte)]).strip()
+                        texto_antigo = "<br/><br/>".join(partes[:idx]).strip()
                         break
         else:
+            # Caso 2: sem quebra dupla, localizar pelo padrão "(Redação dada pelo"
             match = re.search(r'(\(?\s*Redação dada pelo.*)', txt_alt, flags=re.IGNORECASE)
             if match:
                 inicio_nova = match.start()
                 texto_antigo = txt_alt[:inicio_nova].strip()
                 nova_redacao = txt_alt[inicio_nova:].strip()
+            else:
+                # Caso 3: se não encontrou nota, mas o texto principal contém uma parte não riscada no final,
+                # e o campo pos está vazio, pode ser que a nova redação esteja no final sem nota.
+                # Nesse caso, tenta dividir na última quebra simples (<br/>) se houver e a última parte não for riscada.
+                partes_simples = re.split(r'<br\s*/?>', txt_alt, flags=re.IGNORECASE)
+                if len(partes_simples) > 1:
+                    ultima = partes_simples[-1].strip()
+                    if '<strike' not in ultima.lower() and '<font color="red"' not in ultima.lower() and '<s>' not in ultima.lower():
+                        nova_redacao = ultima
+                        texto_antigo = "<br/>".join(partes_simples[:-1]).strip()
+                    else:
+                        # Se tudo é riscado ou não há separação, não faz nada
+                        pass
 
         if nova_redacao:
             disp["texto_principal_alterada"] = texto_antigo if texto_antigo else ""
             if disp["texto_principal_alterada"] and not disp["texto_principal_alterada"].endswith("<br/><br/>"):
                 disp["texto_principal_alterada"] += "<br/><br/>"
-            disp["texto_pos_tabela_alterada"] = nova_redacao
+            # Move a nova redação para o campo pós-tabela, concatenando com algo já existente se necessário
             if txt_pos_alt.strip() and txt_pos_alt.strip() != nova_redacao:
                 disp["texto_pos_tabela_alterada"] = nova_redacao + "<br/><br/>" + txt_pos_alt.strip()
+            else:
+                disp["texto_pos_tabela_alterada"] = nova_redacao
+        # Se não conseguiu separar, mantém como está (pode precisar de revisão manual)
     return consolidacao
 
 def resgatar_memoria():
@@ -897,8 +957,7 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
     memoria_aprendida = resgatar_memoria()
 
     textos_extraidos = {}
-    # Usando cache e workers reduzidos conforme modo
-    max_workers_extração = 2 if thinking_level == "low" else 4  # pensando rápido
+    max_workers_extração = 2 if thinking_level == "low" else 4
     with ThreadPoolExecutor(max_workers=min(max_workers_extração, max(1, len(arquivos)))) as ex:
         futuros = {submit_com_contexto(ex, extrair_conteudo_cache, arq.getvalue(), arq.name, dpi_ocr, max_paginas_ocr): arq.name for arq in arquivos}
         total_arquivos = len(arquivos)
@@ -1038,10 +1097,11 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
         Aplique o ato alterador/revogador cruzando detalhadamente com o ato base (seja Lei, Decreto,
         Resolução, Enunciado, Portaria ou qualquer outra espécie normativa).
         Obrigatório: siga EXATAMENTE o formato de citação e a estrutura de parágrafos definidos nas regras
-        do sistema (item 4) — "(Alterada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" na linha riscada,
-        "(Redação dada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" na linha nova, ou "(Revogado pelo Art. N
-        da TIPO Nº NÚMERO/ANO - SIGLA)" para revogação (sem repetir linha). Preserve <b>/<i> e tabelas
-        ([TABELA]...[/TABELA]) com fidelidade absoluta, redesenhando a tabela inteira quando alterada.
+        do sistema (item 4 e item 6 para tabelas) — "(Alterada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" na
+        linha riscada, "(Redação dada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" na linha nova, ou
+        "(Revogado pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" para revogação (sem repetir linha). Preserve
+        <b>/<i> e tabelas ([TABELA]...[/TABELA]) com fidelidade absoluta, redesenhando a tabela inteira
+        quando alterada.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
