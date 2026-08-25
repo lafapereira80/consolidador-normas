@@ -225,7 +225,6 @@ st.markdown("---")
 
 provedor_escolhido = st.selectbox("🧠 Motor de IA (Hub Multi-IA)", list(PROVEDORES_IA.keys()), key="provedor_ia_select")
 
-# --- NOVO: Seletor de Modo de Processamento ---
 modo_processamento = st.radio(
     "⚡ Modo de Processamento",
     ["Equilibrado", "Rápido", "Máxima Qualidade"],
@@ -846,8 +845,9 @@ def injetar_nota_remissiva(texto, nota):
         return f'<span style="color: red;">{n_fmt}</span>'
     return texto
 
-# Função de pós-processamento aprimorada para mover nota de alteração para após a tabela
 def corrigir_posicionamento_tabela(consolidacao: dict):
+    """Garante que, para dispositivos com tabela e que foram alterados, a nova redação
+    esteja no campo texto_pos_tabela_alterada e não em texto_principal_alterada."""
     if not isinstance(consolidacao, dict):
         return consolidacao
     dispositivos = consolidacao.get("dispositivos", [])
@@ -858,40 +858,61 @@ def corrigir_posicionamento_tabela(consolidacao: dict):
         txt_alt = disp.get("texto_principal_alterada") or ""
         txt_pos_alt = disp.get("texto_pos_tabela_alterada") or ""
 
-        # Se a nota de alteração já está no campo pos (início), ok
-        if txt_pos_alt.strip().lower().startswith("(alterada"):
+        # Se texto_pos_tabela_alterada já contém uma nota de redação completa, assume que está correto
+        if "redação dada pelo" in txt_pos_alt.lower() or "nova redação" in txt_pos_alt.lower():
             continue
 
-        # Tenta encontrar a nota de alteração no texto principal
-        # Padrão: "(Alterada pelo Art. ...)"
-        match_nota = re.search(r'(\(Alterada pelo [^)]+\))', txt_alt, flags=re.IGNORECASE)
-        if not match_nota:
-            # Tenta encontrar no início do texto (pode não ter parênteses?)
-            match_nota = re.search(r'(Alterada pelo [^.]+\.?)', txt_alt, flags=re.IGNORECASE)
+        nova_redacao = None
+        texto_antigo = txt_alt
 
-        if match_nota:
-            nota_alteracao = match_nota.group(0)
-            # Remove a nota do texto principal
-            texto_sem_nota = txt_alt[:match_nota.start()] + txt_alt[match_nota.end():]
-            # Limpa espaços extras e quebras duplas desnecessárias
-            texto_sem_nota = re.sub(r'\s*<br\s*/?>\s*<br\s*/?>\s*$', '', texto_sem_nota).strip()
-            # Se o texto sem nota terminar com quebra simples, remove uma quebra para não ficar dupla
-            texto_sem_nota = re.sub(r'<br\s*/?>\s*$', '', texto_sem_nota)
-            # Garante que o texto principal termine com quebra dupla se não estiver vazio
-            if texto_sem_nota and not texto_sem_nota.endswith("<br/><br/>"):
-                texto_sem_nota += "<br/><br/>"
+        # Caso 1: quebra dupla separando as linhas
+        partes = re.split(r'<br\s*/?>\s*<br\s*/?>', txt_alt, flags=re.IGNORECASE)
+        if len(partes) >= 2:
+            # Pega a última parte como possível nova redação
+            primeira = partes[0].strip()
+            segunda = partes[-1].strip()
+            if '<strike' not in segunda.lower() and '<font color="red"' not in segunda.lower() and '<s>' not in segunda.lower():
+                nova_redacao = segunda
+                texto_antigo = primeira
+            else:
+                # Procura da direita para a esquerda a primeira parte sem riscado
+                for idx in range(len(partes)-1, -1, -1):
+                    parte_limpa = partes[idx].strip()
+                    if '<strike' not in parte_limpa.lower() and '<font color="red"' not in parte_limpa.lower() and '<s>' not in parte_limpa.lower():
+                        nova_redacao = parte_limpa
+                        texto_antigo = "<br/><br/>".join(partes[:idx]).strip()
+                        break
+        else:
+            # Caso 2: sem quebra dupla, localizar pelo padrão "(Redação dada pelo"
+            match = re.search(r'(\(?\s*Redação dada pelo.*)', txt_alt, flags=re.IGNORECASE)
+            if match:
+                inicio_nova = match.start()
+                texto_antigo = txt_alt[:inicio_nova].strip()
+                nova_redacao = txt_alt[inicio_nova:].strip()
+            else:
+                # Caso 3: se não encontrou nota, mas o texto principal contém uma parte não riscada no final,
+                # e o campo pos está vazio, pode ser que a nova redação esteja no final sem nota.
+                # Nesse caso, tenta dividir na última quebra simples (<br/>) se houver e a última parte não for riscada.
+                partes_simples = re.split(r'<br\s*/?>', txt_alt, flags=re.IGNORECASE)
+                if len(partes_simples) > 1:
+                    ultima = partes_simples[-1].strip()
+                    if '<strike' not in ultima.lower() and '<font color="red"' not in ultima.lower() and '<s>' not in ultima.lower():
+                        nova_redacao = ultima
+                        texto_antigo = "<br/>".join(partes_simples[:-1]).strip()
+                    else:
+                        # Se tudo é riscado ou não há separação, não faz nada
+                        pass
 
-            disp["texto_principal_alterada"] = texto_sem_nota
-
-            # Monta o novo conteúdo de texto_pos_tabela_alterada
-            nova_pos = nota_alteracao
-            if txt_pos_alt.strip():
-                # Se já existe conteúdo (ex: nova redação), adiciona quebra e depois o conteúdo
-                nova_pos += "<br/><br/>" + txt_pos_alt.strip()
-            disp["texto_pos_tabela_alterada"] = nova_pos
-
-        # Se não encontrou nota de alteração, mas o texto principal termina com nota e há nova redação em pos,
-        # pode ser que a IA já tenha separado corretamente, então não faz nada.
+        if nova_redacao:
+            disp["texto_principal_alterada"] = texto_antigo if texto_antigo else ""
+            if disp["texto_principal_alterada"] and not disp["texto_principal_alterada"].endswith("<br/><br/>"):
+                disp["texto_principal_alterada"] += "<br/><br/>"
+            # Move a nova redação para o campo pós-tabela, concatenando com algo já existente se necessário
+            if txt_pos_alt.strip() and txt_pos_alt.strip() != nova_redacao:
+                disp["texto_pos_tabela_alterada"] = nova_redacao + "<br/><br/>" + txt_pos_alt.strip()
+            else:
+                disp["texto_pos_tabela_alterada"] = nova_redacao
+        # Se não conseguiu separar, mantém como está (pode precisar de revisão manual)
     return consolidacao
 
 def resgatar_memoria():
@@ -957,6 +978,8 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
 
     grupos_validos = []
     consolidacoes_geradas, arquivos_nao_alterados = [], []
+    referencias_pendentes = []  # NOVO: para registrar referências não encontradas
+
     for grupo_id, itens in grupos.items():
         arquivo_base = next((a for a in itens if a['tipo'] == 'Base'), None)
         arquivos_alteradores = sorted([a for a in itens if a['tipo'] == 'Alteradora'], key=lambda x: x['data_oficial_iso'])
@@ -964,7 +987,13 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
         if not arquivo_base and not arquivos_alteradores: continue
         if not arquivo_base:
             base_reconstruida = None
+            ato_ref_tipo = None
+            ato_ref_numero = None
+            # Tenta localizar a base referenciada a partir da primeira alteradora que tiver a informação
             for alt in arquivos_alteradores:
+                if alt.get('ato_base_referenciado_tipo') and alt.get('ato_base_referenciado_numero'):
+                    ato_ref_tipo = alt['ato_base_referenciado_tipo']
+                    ato_ref_numero = alt['ato_base_referenciado_numero']
                 candidato = _localizar_base_no_banco(alt.get('ato_base_referenciado_tipo'), alt.get('ato_base_referenciado_numero'))
                 if candidato:
                     base_reconstruida = candidato
@@ -979,6 +1008,15 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
                 }
                 grupos_validos.append((arquivo_base, arquivos_alteradores))
             else:
+                # Não encontrada nem no banco: registra pendência
+                if not ato_ref_tipo or not ato_ref_numero:
+                    ato_ref_tipo = "Desconhecido"
+                    ato_ref_numero = "Desconhecido"
+                referencias_pendentes.append({
+                    "ato_referenciado_tipo": ato_ref_tipo,
+                    "ato_referenciado_numero": ato_ref_numero,
+                    "arquivos_alteradores": [a['nome_arquivo_upload'] for a in arquivos_alteradores],
+                })
                 arquivos_nao_alterados.extend([a['nome_arquivo_upload'] for a in arquivos_alteradores])
             continue
         grupos_validos.append((arquivo_base, arquivos_alteradores))
@@ -1010,7 +1048,11 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
                 if progresso:
                     progresso.progress(0.5 + 0.5 * (idx + 1) / total_grupos, text=f"Processando grupo {idx+1}/{total_grupos}...")
 
-    return {"consolidacoes_geradas": consolidacoes_geradas, "arquivos_nao_alterados": arquivos_nao_alterados}
+    return {
+        "consolidacoes_geradas": consolidacoes_geradas,
+        "arquivos_nao_alterados": arquivos_nao_alterados,
+        "referencias_pendentes": referencias_pendentes,  # NOVO campo
+    }
 
 def _consultar_estado_e_historico(nome_padrao):
     if not supabase or not nome_padrao:
@@ -1093,9 +1135,10 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
 # =====================================================================
 
 def gerar_html_dinamico(consolidacao_dict, tipo_versao):
-    comp = consolidacao_dict.get("cabecalho_complemento", "")
-    titulo_doc = f"VERSÃO {'ALTERADA' if tipo_versao=='alterada' else 'CONSOLIDADA'} - {comp}"
+    # ALTERADO: título apenas com a versão
+    titulo_doc = f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}"
     
+    # NOVO: CSS com rodapé fixo via @page
     html = f"""
     <!DOCTYPE html>
     <html>
@@ -1103,7 +1146,16 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
         <meta charset="utf-8">
         <title>{titulo_doc}</title>
         <style>
-            @page {{ size: A4; margin: 2.5cm 2cm; }}
+            @page {{
+                size: A4;
+                margin: 2.5cm 2cm;
+                @bottom-center {{
+                    content: "Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial.";
+                    font-size: 9pt;
+                    font-style: italic;
+                    color: #333;
+                }}
+            }}
             body {{ font-family: 'Times New Roman', Times, serif; font-size: 11pt; line-height: 1.5; text-align: justify; }}
             .topo {{ text-align: center; color: #444; font-size: 10pt; font-weight: bold; margin-bottom: 20px; text-transform: uppercase; }}
             .brasao {{ text-align: center; margin-bottom: 10px; }}
@@ -1223,8 +1275,9 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     doc = docx.Document()
     for section in doc.sections: section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Inches(1)
 
+    # ALTERADO: cabeçalho apenas com a versão
     ph = doc.add_paragraph(); ph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    rh = ph.add_run(f"VERSÃO {'ALTERADA' if tipo_versao=='alterada' else 'CONSOLIDADA'} - {consolidacao_dict.get('cabecalho_complemento', '')}")
+    rh = ph.add_run(f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}")
     rh.font.name, rh.font.size, rh.bold, rh.font.color.rgb = 'Times New Roman', Pt(10), True, RGBColor(68, 68, 68)
     
     po = doc.add_paragraph(); po.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -1286,6 +1339,15 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     pa = doc.add_paragraph(); pa.alignment = WD_ALIGN_PARAGRAPH.CENTER; pa.paragraph_format.space_before = Pt(36)
     ra = pa.add_run(f"{limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')}\n{limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')}")
     ra.font.name, ra.font.size, ra.bold = 'Times New Roman', Pt(11), True
+
+    # NOVO: parágrafo com nota de rodapé (para DOCX será no final, mas visível)
+    p_nota = doc.add_paragraph(); p_nota.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_nota.paragraph_format.space_before = Pt(30)
+    r_nota = p_nota.add_run("Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial.")
+    r_nota.font.name = 'Times New Roman'
+    r_nota.font.size = Pt(9)
+    r_nota.italic = True
+
     buffer = io.BytesIO(); doc.save(buffer); buffer.seek(0)
     return buffer.getvalue()
 
@@ -1375,7 +1437,16 @@ if st.session_state.dados_processados:
     st.markdown("---")
     dados = st.session_state.dados_processados
     dados_originais = st.session_state.dados_originais_ia
-    
+
+    # NOVO: Exibir referências pendentes
+    referencias_pendentes = dados.get("referencias_pendentes", [])
+    if referencias_pendentes:
+        st.warning("⚠️ Alguns arquivos fazem referência a normas que não foram encontradas no lote nem no banco de dados. Para processar essas alterações, envie também o(s) ato(s) original(is) correspondente(s).")
+        for ref in referencias_pendentes:
+            ato_ref = f"{ref.get('ato_referenciado_tipo', 'Desconhecido')} {ref.get('ato_referenciado_numero', 'Desconhecido')}"
+            arquivos = ", ".join(ref.get("arquivos_alteradores", []))
+            st.markdown(f"- **Referência:** {ato_ref}  \n  **Alteradora(s):** {arquivos}")
+
     for i, cons in enumerate(dados.get("consolidacoes_geradas", [])):
         nome_exibicao_base = cons['norma_base']['nome_padronizado']
         nomes_alteradoras = [alt['nome_padronizado'] for alt in cons.get('normas_alteradoras', [])]
