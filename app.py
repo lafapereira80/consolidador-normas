@@ -440,36 +440,38 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
    por um ato modificador, siga rigorosamente as regras abaixo:
 
    6.1. Estrutura geral na versão ALTERADA:
-   - O texto ANTIGO (riscado) e a nota "(Alterada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" ficam
-     SEMPRE no campo 'texto_principal_alterada'.
+   - O texto ANTIGO (riscado) fica no campo 'texto_principal_alterada', **sem a nota de alteração**.
+   - A nota "(Alterada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" DEVE ser colocada **no início do campo
+     'texto_pos_tabela_alterada'**, logo após a tabela, antes de qualquer nova redação.
    - A tabela ALTERADA (com as células taxadas quando houver mudança) fica no campo 'tabela_alterada'.
    - A NOVA REDAÇÃO completa (texto novo, se houver, e a nota "(Redação dada pelo Art. N da TIPO Nº
-     NÚMERO/ANO - SIGLA)") fica SEMPRE no campo 'texto_pos_tabela_alterada', independentemente de haver
-     texto antes ou depois da tabela no dispositivo original.
+     NÚMERO/ANO - SIGLA)") fica NO MESMO CAMPO 'texto_pos_tabela_alterada', logo após a nota de alteração,
+     separada por um espaço ou quebra de linha, conforme necessário.
+   - A ordem final no campo 'texto_pos_tabela_alterada' deve ser:
+     "(Alterada pelo Art. ...) <br/> X - texto novo... (Redação dada pelo Art. ...)"
+     ou, se não houver nova redação, apenas a nota de alteração.
 
    6.2. Casos específicos:
    a) Dispositivo com texto introdutório + tabela + texto final:
       - 'texto_principal_alterada': contém o texto antigo completo (introdução + referência à tabela +
-        texto final) riscado, com a nota de alteração.
+        texto final) riscado, SEM a nota de alteração.
       - 'tabela_alterada': a tabela completa, com células taxadas se alteradas.
-      - 'texto_pos_tabela_alterada': contém a NOVA redação do dispositivo inteiro (introdução nova, se
-        aplicável, descrição da tabela, texto final novo), seguida da nota "(Redação dada pelo...)".
+      - 'texto_pos_tabela_alterada': inicia com a nota "(Alterada pelo Art. ...)", seguida da NOVA redação
+        do dispositivo inteiro (introdução nova, se aplicável, descrição da tabela, texto final novo) e da
+        nota "(Redação dada pelo...)".
         Exemplo:
           texto_principal_alterada = "<strike><font color='red'>Art. 5º - O prazo para entrega é de 30 dias,
-          conforme tabela abaixo:</font></strike> (Alterada pelo Art. 2 da PORTARIA Nº 5/PGJ, de 10 de maio de 2025)"
+          conforme tabela abaixo:</font></strike>"
           tabela_alterada = [["Item", "Prazo"], ["Documento", "10 dias"], ["Relatório", "20 dias"]]
-          texto_pos_tabela_alterada = "Art. 5º - O prazo para entrega é de 60 dias, conforme tabela abaixo:
-          (Redação dada pelo Art. 2 da PORTARIA Nº 5/PGJ, de 10 de maio de 2025)"
+          texto_pos_tabela_alterada = "(Alterada pelo Art. 2 da PORTARIA Nº 5/PGJ, de 10 de maio de 2025)<br/>Art. 5º - O prazo para entrega é de 60 dias, conforme tabela abaixo: (Redação dada pelo Art. 2 da PORTARIA Nº 5/PGJ, de 10 de maio de 2025)"
 
    b) Dispositivo que contém APENAS a tabela (sem texto antes ou depois):
-      - 'texto_principal_alterada': conterá apenas a nota "(Alterada pelo...)" (sem texto riscado) e,
-        se o identificador do dispositivo (ex.: "Art. 7º") não for parte da tabela, deve ser incluído
-        riscado antes da nota.
+      - 'texto_principal_alterada': conterá apenas o identificador do dispositivo (ex.: "Art. 7º") riscado,
+        sem a nota de alteração.
       - 'tabela_alterada': a tabela completa, com alterações taxadas.
-      - 'texto_pos_tabela_alterada': conterá o identificador do dispositivo (se existir) + a nova
-        redação da tabela em forma de texto descritivo (caso a tabela tenha sido substituída por texto)
-        ou simplesmente a nota "(Redação dada pelo...)" se a tabela apenas foi modificada e não há
-        texto adicional.
+      - 'texto_pos_tabela_alterada': inicia com a nota "(Alterada pelo...)", seguida da nova redação da
+        tabela em forma de texto descritivo (caso a tabela tenha sido substituída por texto) ou apenas a
+        nota se a tabela foi apenas modificada e não há texto adicional.
         Importante: se a tabela foi substituída por texto, descreva-a em texto_pos_tabela_alterada;
         caso contrário, deixe apenas a nota.
 
@@ -783,7 +785,6 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_pagin
                 if bloco_linhas.strip(): html_text += bloco_linhas.strip() + "<br/>\n"
             html_text += "<br/>\n"
 
-        # Se for documento escaneado, converte páginas em imagens
         if caracteres_uteis < 30 * max(doc.page_count, 1):
             partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO. Leia o conteúdo visualmente, inclusive tabelas:"]
             for page_num, page in enumerate(doc):
@@ -845,9 +846,8 @@ def injetar_nota_remissiva(texto, nota):
         return f'<span style="color: red;">{n_fmt}</span>'
     return texto
 
+# Função de pós-processamento aprimorada para mover nota de alteração para após a tabela
 def corrigir_posicionamento_tabela(consolidacao: dict):
-    """Garante que, para dispositivos com tabela e que foram alterados, a nova redação
-    esteja no campo texto_pos_tabela_alterada e não em texto_principal_alterada."""
     if not isinstance(consolidacao, dict):
         return consolidacao
     dispositivos = consolidacao.get("dispositivos", [])
@@ -858,61 +858,40 @@ def corrigir_posicionamento_tabela(consolidacao: dict):
         txt_alt = disp.get("texto_principal_alterada") or ""
         txt_pos_alt = disp.get("texto_pos_tabela_alterada") or ""
 
-        # Se texto_pos_tabela_alterada já contém uma nota de redação completa, assume que está correto
-        if "redação dada pelo" in txt_pos_alt.lower() or "nova redação" in txt_pos_alt.lower():
+        # Se a nota de alteração já está no campo pos (início), ok
+        if txt_pos_alt.strip().lower().startswith("(alterada"):
             continue
 
-        nova_redacao = None
-        texto_antigo = txt_alt
+        # Tenta encontrar a nota de alteração no texto principal
+        # Padrão: "(Alterada pelo Art. ...)"
+        match_nota = re.search(r'(\(Alterada pelo [^)]+\))', txt_alt, flags=re.IGNORECASE)
+        if not match_nota:
+            # Tenta encontrar no início do texto (pode não ter parênteses?)
+            match_nota = re.search(r'(Alterada pelo [^.]+\.?)', txt_alt, flags=re.IGNORECASE)
 
-        # Caso 1: quebra dupla separando as linhas
-        partes = re.split(r'<br\s*/?>\s*<br\s*/?>', txt_alt, flags=re.IGNORECASE)
-        if len(partes) >= 2:
-            # Pega a última parte como possível nova redação
-            primeira = partes[0].strip()
-            segunda = partes[-1].strip()
-            if '<strike' not in segunda.lower() and '<font color="red"' not in segunda.lower() and '<s>' not in segunda.lower():
-                nova_redacao = segunda
-                texto_antigo = primeira
-            else:
-                # Procura da direita para a esquerda a primeira parte sem riscado
-                for idx in range(len(partes)-1, -1, -1):
-                    parte_limpa = partes[idx].strip()
-                    if '<strike' not in parte_limpa.lower() and '<font color="red"' not in parte_limpa.lower() and '<s>' not in parte_limpa.lower():
-                        nova_redacao = parte_limpa
-                        texto_antigo = "<br/><br/>".join(partes[:idx]).strip()
-                        break
-        else:
-            # Caso 2: sem quebra dupla, localizar pelo padrão "(Redação dada pelo"
-            match = re.search(r'(\(?\s*Redação dada pelo.*)', txt_alt, flags=re.IGNORECASE)
-            if match:
-                inicio_nova = match.start()
-                texto_antigo = txt_alt[:inicio_nova].strip()
-                nova_redacao = txt_alt[inicio_nova:].strip()
-            else:
-                # Caso 3: se não encontrou nota, mas o texto principal contém uma parte não riscada no final,
-                # e o campo pos está vazio, pode ser que a nova redação esteja no final sem nota.
-                # Nesse caso, tenta dividir na última quebra simples (<br/>) se houver e a última parte não for riscada.
-                partes_simples = re.split(r'<br\s*/?>', txt_alt, flags=re.IGNORECASE)
-                if len(partes_simples) > 1:
-                    ultima = partes_simples[-1].strip()
-                    if '<strike' not in ultima.lower() and '<font color="red"' not in ultima.lower() and '<s>' not in ultima.lower():
-                        nova_redacao = ultima
-                        texto_antigo = "<br/>".join(partes_simples[:-1]).strip()
-                    else:
-                        # Se tudo é riscado ou não há separação, não faz nada
-                        pass
+        if match_nota:
+            nota_alteracao = match_nota.group(0)
+            # Remove a nota do texto principal
+            texto_sem_nota = txt_alt[:match_nota.start()] + txt_alt[match_nota.end():]
+            # Limpa espaços extras e quebras duplas desnecessárias
+            texto_sem_nota = re.sub(r'\s*<br\s*/?>\s*<br\s*/?>\s*$', '', texto_sem_nota).strip()
+            # Se o texto sem nota terminar com quebra simples, remove uma quebra para não ficar dupla
+            texto_sem_nota = re.sub(r'<br\s*/?>\s*$', '', texto_sem_nota)
+            # Garante que o texto principal termine com quebra dupla se não estiver vazio
+            if texto_sem_nota and not texto_sem_nota.endswith("<br/><br/>"):
+                texto_sem_nota += "<br/><br/>"
 
-        if nova_redacao:
-            disp["texto_principal_alterada"] = texto_antigo if texto_antigo else ""
-            if disp["texto_principal_alterada"] and not disp["texto_principal_alterada"].endswith("<br/><br/>"):
-                disp["texto_principal_alterada"] += "<br/><br/>"
-            # Move a nova redação para o campo pós-tabela, concatenando com algo já existente se necessário
-            if txt_pos_alt.strip() and txt_pos_alt.strip() != nova_redacao:
-                disp["texto_pos_tabela_alterada"] = nova_redacao + "<br/><br/>" + txt_pos_alt.strip()
-            else:
-                disp["texto_pos_tabela_alterada"] = nova_redacao
-        # Se não conseguiu separar, mantém como está (pode precisar de revisão manual)
+            disp["texto_principal_alterada"] = texto_sem_nota
+
+            # Monta o novo conteúdo de texto_pos_tabela_alterada
+            nova_pos = nota_alteracao
+            if txt_pos_alt.strip():
+                # Se já existe conteúdo (ex: nova redação), adiciona quebra e depois o conteúdo
+                nova_pos += "<br/><br/>" + txt_pos_alt.strip()
+            disp["texto_pos_tabela_alterada"] = nova_pos
+
+        # Se não encontrou nota de alteração, mas o texto principal termina com nota e há nova redação em pos,
+        # pode ser que a IA já tenha separado corretamente, então não faz nada.
     return consolidacao
 
 def resgatar_memoria():
@@ -1359,7 +1338,6 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     if not api_key: st.error("⚠️ Insira sua chave da API nas configurações.")
     elif not arquivos_enviados: st.warning("⚠️ Envie os arquivos normativos primeiro.")
     else:
-        # Configurações de acordo com o modo selecionado
         if modo_processamento == "Rápido":
             thinking_level = "low"
             dpi_ocr = 1.2
@@ -1371,9 +1349,8 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
         else:  # Máxima Qualidade
             thinking_level = "high"
             dpi_ocr = 1.5
-            max_paginas_ocr = None  # sem limite
+            max_paginas_ocr = None
 
-        # Barra de progresso
         with st.spinner("⚡ Executando OCR Estrutural e Consulta ao Histórico de Aprendizado..."):
             progresso = st.progress(0.0, text="Iniciando análise...")
             try:
