@@ -777,8 +777,14 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_pagin
                         if not texto: continue
                         caracteres_uteis += len(texto.strip())
                         flags = s.get("flags", 0)
-                        if flags & 2**4: texto = f"<b>{texto}</b>"
-                        if flags & 2**1: texto = f"<i>{texto}</i>"
+                        font_name = s.get("font", "")
+                        # MELHORIA: detectar negrito/itálico também pelo nome da fonte
+                        is_bold = (flags & 2**4) or ('bold' in font_name.lower() or 'negrito' in font_name.lower() or 'black' in font_name.lower())
+                        is_italic = (flags & 2**1) or ('italic' in font_name.lower() or 'itálico' in font_name.lower())
+                        if is_bold:
+                            texto = f"<b>{texto}</b>"
+                        if is_italic:
+                            texto = f"<i>{texto}</i>"
                         linha_span += texto
                     if linha_span.strip(): bloco_linhas += linha_span + " "
                 if bloco_linhas.strip(): html_text += bloco_linhas.strip() + "<br/>\n"
@@ -902,6 +908,42 @@ def corrigir_posicionamento_tabela(consolidacao: dict):
                 disp["texto_pos_tabela_alterada"] = nova_redacao
     return consolidacao
 
+def reforcar_negrito_em_consolidacao(cons: dict, textos_extraidos: dict) -> dict:
+    """Aplica negrito em termos que estavam em negrito no texto original e podem ter perdido a formatação."""
+    if not textos_extraidos:
+        return cons
+    termos_negrito = set()
+    for nome_arquivo, partes in textos_extraidos.items():
+        for parte in partes:
+            if isinstance(parte, str):
+                # Captura o conteúdo dentro de <b>...</b>
+                for m in re.finditer(r'<b>(.*?)</b>', parte, re.IGNORECASE | re.DOTALL):
+                    termo = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+                    if termo:
+                        termos_negrito.add(termo.lower())
+    if not termos_negrito:
+        return cons
+
+    def aplicar_negrito(texto: str) -> str:
+        if not texto:
+            return texto
+        for termo in termos_negrito:
+            termo_escape = re.escape(termo)
+            # Evita adicionar dentro de tags já existentes: procura o termo fora de <b> e não dentro de qualquer tag
+            pattern = re.compile(r'(?<!<)(' + termo_escape + r')(?![^<>]*</b>)', re.IGNORECASE)
+            texto = pattern.sub(r'<b>\1</b>', texto)
+        return texto
+
+    # Aplicar em campos de texto da consolidação
+    for campo in ["ementa", "preambulo", "titulo_portaria", "assinatura_nome", "assinatura_cargo"]:
+        if campo in cons:
+            cons[campo] = aplicar_negrito(cons[campo])
+    for disp in cons.get("dispositivos", []):
+        for campo in ["texto_principal_alterada", "texto_principal_consolidada", "texto_pos_tabela_alterada", "texto_pos_tabela_consolidada"]:
+            if campo in disp and disp[campo]:
+                disp[campo] = aplicar_negrito(disp[campo])
+    return cons
+
 def resgatar_memoria():
     memoria = ""
     if supabase:
@@ -917,16 +959,9 @@ def resgatar_memoria():
 # NOVA FUNÇÃO: Verificação heurística de referências externas
 # =====================================================================
 def verificar_referencias_externas(arquivos, textos_extraidos):
-    """
-    Varre o texto de todos os arquivos em busca de menções a atos normativos
-    que não estão presentes no lote nem no banco de dados.
-    Retorna lista de dicionários com: ato_referenciado_tipo, ato_referenciado_numero,
-    arquivos_que_mencionam.
-    """
     if not supabase:
         return []
 
-    # Padrões de citação normativa (simples, para evitar falsos positivos excessivos)
     padroes = {
         "PORTARIA": re.compile(r'PORTARIA\s*(?:N[ºo]\.?)?\s*(\d+[\/\-]?\w*)', re.IGNORECASE),
         "LEI": re.compile(r'LEI\s*(?:N[ºo]\.?)?\s*(\d+[\/\-]?\w*)', re.IGNORECASE),
@@ -937,7 +972,6 @@ def verificar_referencias_externas(arquivos, textos_extraidos):
     }
 
     referencias_pendentes = []
-    # Conjunto para rastrear combinações únicas tipo+número
     refs_vistas = set()
 
     for nome_arquivo, partes in textos_extraidos.items():
@@ -950,16 +984,13 @@ def verificar_referencias_externas(arquivos, textos_extraidos):
                     continue
                 refs_vistas.add(chave)
 
-                # Verifica se esse ato está em algum dos arquivos do lote (pelo conteúdo ou nome)
                 encontrado_no_lote = False
                 for arq in arquivos:
                     if arq.name == nome_arquivo:
-                        continue  # não considerar o próprio arquivo
-                    # verificação simples pelo nome do arquivo
+                        continue
                     if tipo.lower() in arq.name.lower() and numero.lower() in arq.name.lower():
                         encontrado_no_lote = True
                         break
-                    # verificação no conteúdo extraído
                     arq_texto = "\n".join([p if isinstance(p, str) else "" for p in textos_extraidos.get(arq.name, [])])
                     if tipo.lower() in arq_texto.lower() and numero.lower() in arq_texto.lower():
                         encontrado_no_lote = True
@@ -967,7 +998,6 @@ def verificar_referencias_externas(arquivos, textos_extraidos):
                 if encontrado_no_lote:
                     continue
 
-                # Verifica no banco de dados
                 encontrado_no_banco = False
                 try:
                     query = supabase.table("portarias_base").select("id").or_(f"numero_documento.ilike.%{numero}%,nome_padronizado.ilike.%{numero}%").execute()
@@ -982,11 +1012,7 @@ def verificar_referencias_externas(arquivos, textos_extraidos):
                         "ato_referenciado_numero": numero,
                         "arquivos_alteradores": [nome_arquivo],
                     })
-                else:
-                    # Se encontrado, não registra pendência
-                    pass
 
-    # Combina referências duplicadas (mesmo tipo+numero) unindo arquivos
     combinadas = {}
     for ref in referencias_pendentes:
         chave = (ref["ato_referenciado_tipo"], ref["ato_referenciado_numero"])
@@ -1047,7 +1073,7 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
 
     grupos_validos = []
     consolidacoes_geradas, arquivos_nao_alterados = [], []
-    referencias_pendentes = []  # pendências detectadas durante a triagem
+    referencias_pendentes = []
 
     for grupo_id, itens in grupos.items():
         arquivo_base = next((a for a in itens if a['tipo'] == 'Base'), None)
@@ -1102,6 +1128,8 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
                 try:
                     resultado, mensagens = fut.result()
                     resultado = corrigir_posicionamento_tabela(resultado)
+                    # NOVO: Reforçar negrito perdido
+                    resultado = reforcar_negrito_em_consolidacao(resultado, textos_extraidos)
                     consolidacoes_geradas.append(resultado)
                     for tipo_msg, texto_msg in mensagens:
                         if tipo_msg == "info": st.info(texto_msg)
@@ -1114,9 +1142,8 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
                 if progresso:
                     progresso.progress(0.5 + 0.5 * (idx + 1) / total_grupos, text=f"Processando grupo {idx+1}/{total_grupos}...")
 
-    # NOVA ETAPA: Verificação heurística de referências externas em todos os textos
+    # Verificação heurística de referências externas
     refs_heuristicas = verificar_referencias_externas(arquivos, textos_extraidos)
-    # Combina com as pendências da triagem, evitando duplicatas
     chaves_existentes = {(ref["ato_referenciado_tipo"], ref["ato_referenciado_numero"]) for ref in referencias_pendentes}
     for ref in refs_heuristicas:
         chave = (ref["ato_referenciado_tipo"], ref["ato_referenciado_numero"])
@@ -1124,7 +1151,6 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
             referencias_pendentes.append(ref)
             chaves_existentes.add(chave)
         else:
-            # Mescla arquivos
             for existente in referencias_pendentes:
                 if (existente["ato_referenciado_tipo"], existente["ato_referenciado_numero"]) == chave:
                     existente["arquivos_alteradores"].extend(ref["arquivos_alteradores"])
@@ -1517,7 +1543,6 @@ if st.session_state.dados_processados:
     dados = st.session_state.dados_processados
     dados_originais = st.session_state.dados_originais_ia
 
-    # Exibir referências pendentes (se houver) em um quadro resumo
     referencias_pendentes = dados.get("referencias_pendentes", [])
     if referencias_pendentes:
         st.warning("⚠️ Alguns arquivos fazem referência a normas que não foram encontradas no lote nem no banco de dados.")
