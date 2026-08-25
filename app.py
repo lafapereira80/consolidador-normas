@@ -19,7 +19,6 @@ from google.genai import types
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional
 
-# Importação para Supabase, Word, Leitura de PDF e Editor Web
 from supabase import create_client, Client
 import docx
 from docx.shared import Inches, Pt, RGBColor
@@ -788,15 +787,18 @@ def injetar_nota_remissiva(texto, nota):
     return texto
 
 # AJUSTE TABELA: Função de pós-processamento para corrigir posicionamento de nova redação
-def corrigir_posicionamento_tabela(consolidacao: Consolidacao):
+def corrigir_posicionamento_tabela(consolidacao: dict):
     """Garante que, para dispositivos com tabela e que foram alterados, a nova redação
     esteja no campo texto_pos_tabela_alterada e não em texto_principal_alterada."""
-    for disp in consolidacao.dispositivos:
-        if not disp.is_tabela:
+    if not isinstance(consolidacao, dict):
+        return consolidacao
+    dispositivos = consolidacao.get("dispositivos", [])
+    for disp in dispositivos:
+        if not disp.get("is_tabela"):
             continue
 
-        txt_alt = disp.texto_principal_alterada or ""
-        txt_pos_alt = disp.texto_pos_tabela_alterada or ""
+        txt_alt = disp.get("texto_principal_alterada") or ""
+        txt_pos_alt = disp.get("texto_pos_tabela_alterada") or ""
 
         # Se já existe texto_pos_tabela_alterada, não faz nada (confia na IA)
         if txt_pos_alt.strip():
@@ -806,23 +808,15 @@ def corrigir_posicionamento_tabela(consolidacao: Consolidacao):
         # e a segunda linha não está riscada, move-a para texto_pos_tabela_alterada
         partes = re.split(r'<br\s*/?>\s*<br\s*/?>', txt_alt, flags=re.IGNORECASE)
         if len(partes) >= 2:
-            # Considera a primeira parte como linha antiga (riscada) e a segunda como nova
             primeira = partes[0].strip()
             segunda = partes[1].strip()
-            # Verifica se a segunda parte não contém <strike> ou <font color="red">
+            # Verifica se a segunda parte não contém tags de riscado
             if '<strike' not in segunda.lower() and '<font color="red"' not in segunda.lower() and '<s>' not in segunda.lower():
-                # Move a segunda parte para texto_pos_tabela_alterada
-                disp.texto_principal_alterada = primeira
-                disp.texto_pos_tabela_alterada = segunda
-                # Remove possíveis quebras extras no final da primeira
-                disp.texto_principal_alterada = disp.texto_principal_alterada.rstrip() + "<br/><br/>" if not disp.texto_principal_alterada.endswith("<br/><br/>") else disp.texto_principal_alterada
-                # Tenta extrair a nota de redação para injetar posteriormente (opcional)
-                # Se a segunda parte já contém a nota, ok.
-            else:
-                # Caso contrário, a segunda parte também é riscada? Isso não deveria ocorrer.
-                pass
-        # Também trata o caso onde a nova redação está no mesmo campo sem separação dupla,
-        # mas isso é mais raro; deixamos para revisão manual via editor.
+                disp["texto_principal_alterada"] = primeira
+                disp["texto_pos_tabela_alterada"] = segunda
+                # Garantir quebra dupla no final da primeira, se necessário
+                if not disp["texto_principal_alterada"].endswith("<br/><br/>"):
+                    disp["texto_principal_alterada"] += "<br/><br/>"
     return consolidacao
 
 def resgatar_memoria():
