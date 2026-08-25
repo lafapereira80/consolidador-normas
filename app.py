@@ -858,24 +858,20 @@ def corrigir_posicionamento_tabela(consolidacao: dict):
         txt_alt = disp.get("texto_principal_alterada") or ""
         txt_pos_alt = disp.get("texto_pos_tabela_alterada") or ""
 
-        # Se texto_pos_tabela_alterada já contém uma nota de redação completa, assume que está correto
         if "redação dada pelo" in txt_pos_alt.lower() or "nova redação" in txt_pos_alt.lower():
             continue
 
         nova_redacao = None
         texto_antigo = txt_alt
 
-        # Caso 1: quebra dupla separando as linhas
         partes = re.split(r'<br\s*/?>\s*<br\s*/?>', txt_alt, flags=re.IGNORECASE)
         if len(partes) >= 2:
-            # Pega a última parte como possível nova redação
             primeira = partes[0].strip()
             segunda = partes[-1].strip()
             if '<strike' not in segunda.lower() and '<font color="red"' not in segunda.lower() and '<s>' not in segunda.lower():
                 nova_redacao = segunda
                 texto_antigo = primeira
             else:
-                # Procura da direita para a esquerda a primeira parte sem riscado
                 for idx in range(len(partes)-1, -1, -1):
                     parte_limpa = partes[idx].strip()
                     if '<strike' not in parte_limpa.lower() and '<font color="red"' not in parte_limpa.lower() and '<s>' not in parte_limpa.lower():
@@ -883,36 +879,27 @@ def corrigir_posicionamento_tabela(consolidacao: dict):
                         texto_antigo = "<br/><br/>".join(partes[:idx]).strip()
                         break
         else:
-            # Caso 2: sem quebra dupla, localizar pelo padrão "(Redação dada pelo"
             match = re.search(r'(\(?\s*Redação dada pelo.*)', txt_alt, flags=re.IGNORECASE)
             if match:
                 inicio_nova = match.start()
                 texto_antigo = txt_alt[:inicio_nova].strip()
                 nova_redacao = txt_alt[inicio_nova:].strip()
             else:
-                # Caso 3: se não encontrou nota, mas o texto principal contém uma parte não riscada no final,
-                # e o campo pos está vazio, pode ser que a nova redação esteja no final sem nota.
-                # Nesse caso, tenta dividir na última quebra simples (<br/>) se houver e a última parte não for riscada.
                 partes_simples = re.split(r'<br\s*/?>', txt_alt, flags=re.IGNORECASE)
                 if len(partes_simples) > 1:
                     ultima = partes_simples[-1].strip()
                     if '<strike' not in ultima.lower() and '<font color="red"' not in ultima.lower() and '<s>' not in ultima.lower():
                         nova_redacao = ultima
                         texto_antigo = "<br/>".join(partes_simples[:-1]).strip()
-                    else:
-                        # Se tudo é riscado ou não há separação, não faz nada
-                        pass
 
         if nova_redacao:
             disp["texto_principal_alterada"] = texto_antigo if texto_antigo else ""
             if disp["texto_principal_alterada"] and not disp["texto_principal_alterada"].endswith("<br/><br/>"):
                 disp["texto_principal_alterada"] += "<br/><br/>"
-            # Move a nova redação para o campo pós-tabela, concatenando com algo já existente se necessário
             if txt_pos_alt.strip() and txt_pos_alt.strip() != nova_redacao:
                 disp["texto_pos_tabela_alterada"] = nova_redacao + "<br/><br/>" + txt_pos_alt.strip()
             else:
                 disp["texto_pos_tabela_alterada"] = nova_redacao
-        # Se não conseguiu separar, mantém como está (pode precisar de revisão manual)
     return consolidacao
 
 def resgatar_memoria():
@@ -927,9 +914,91 @@ def resgatar_memoria():
     return memoria
 
 # =====================================================================
-# EDITOR ÚNICO POR TAGS — serializa/parseia o documento inteiro (versão
-# ALTERADA) como um único texto marcado, e deriva a versão CONSOLIDADA
-# programaticamente a partir dele (nunca editada separadamente).
+# NOVA FUNÇÃO: Verificação heurística de referências externas
+# =====================================================================
+def verificar_referencias_externas(arquivos, textos_extraidos):
+    """
+    Varre o texto de todos os arquivos em busca de menções a atos normativos
+    que não estão presentes no lote nem no banco de dados.
+    Retorna lista de dicionários com: ato_referenciado_tipo, ato_referenciado_numero,
+    arquivos_que_mencionam.
+    """
+    if not supabase:
+        return []
+
+    # Padrões de citação normativa (simples, para evitar falsos positivos excessivos)
+    padroes = {
+        "PORTARIA": re.compile(r'PORTARIA\s*(?:N[ºo]\.?)?\s*(\d+[\/\-]?\w*)', re.IGNORECASE),
+        "LEI": re.compile(r'LEI\s*(?:N[ºo]\.?)?\s*(\d+[\/\-]?\w*)', re.IGNORECASE),
+        "DECRETO": re.compile(r'DECRETO\s*(?:N[ºo]\.?)?\s*(\d+[\/\-]?\w*)', re.IGNORECASE),
+        "RESOLUÇÃO": re.compile(r'RESOLU[ÇC][ÃA]O\s*(?:N[ºo]\.?)?\s*(\d+[\/\-]?\w*)', re.IGNORECASE),
+        "INSTRUÇÃO NORMATIVA": re.compile(r'INSTRU[ÇC][ÃA]O\s+NORMATIVA\s*(?:N[ºo]\.?)?\s*(\d+[\/\-]?\w*)', re.IGNORECASE),
+        "ENUNCIADO": re.compile(r'ENUNCIADO\s*(?:N[ºo]\.?)?\s*(\d+[\/\-]?\w*)', re.IGNORECASE),
+    }
+
+    referencias_pendentes = []
+    # Conjunto para rastrear combinações únicas tipo+número
+    refs_vistas = set()
+
+    for nome_arquivo, partes in textos_extraidos.items():
+        texto_completo = "\n".join([p if isinstance(p, str) else "" for p in partes])
+        for tipo, padrao in padroes.items():
+            for match in padrao.finditer(texto_completo):
+                numero = match.group(1)
+                chave = (tipo, numero)
+                if chave in refs_vistas:
+                    continue
+                refs_vistas.add(chave)
+
+                # Verifica se esse ato está em algum dos arquivos do lote (pelo conteúdo ou nome)
+                encontrado_no_lote = False
+                for arq in arquivos:
+                    if arq.name == nome_arquivo:
+                        continue  # não considerar o próprio arquivo
+                    # verificação simples pelo nome do arquivo
+                    if tipo.lower() in arq.name.lower() and numero.lower() in arq.name.lower():
+                        encontrado_no_lote = True
+                        break
+                    # verificação no conteúdo extraído
+                    arq_texto = "\n".join([p if isinstance(p, str) else "" for p in textos_extraidos.get(arq.name, [])])
+                    if tipo.lower() in arq_texto.lower() and numero.lower() in arq_texto.lower():
+                        encontrado_no_lote = True
+                        break
+                if encontrado_no_lote:
+                    continue
+
+                # Verifica no banco de dados
+                encontrado_no_banco = False
+                try:
+                    query = supabase.table("portarias_base").select("id").or_(f"numero_documento.ilike.%{numero}%,nome_padronizado.ilike.%{numero}%").execute()
+                    if query.data:
+                        encontrado_no_banco = True
+                except:
+                    pass
+
+                if not encontrado_no_banco and not encontrado_no_lote:
+                    referencias_pendentes.append({
+                        "ato_referenciado_tipo": tipo,
+                        "ato_referenciado_numero": numero,
+                        "arquivos_alteradores": [nome_arquivo],
+                    })
+                else:
+                    # Se encontrado, não registra pendência
+                    pass
+
+    # Combina referências duplicadas (mesmo tipo+numero) unindo arquivos
+    combinadas = {}
+    for ref in referencias_pendentes:
+        chave = (ref["ato_referenciado_tipo"], ref["ato_referenciado_numero"])
+        if chave not in combinadas:
+            combinadas[chave] = ref
+        else:
+            combinadas[chave]["arquivos_alteradores"].extend(ref["arquivos_alteradores"])
+            combinadas[chave]["arquivos_alteradores"] = list(set(combinadas[chave]["arquivos_alteradores"]))
+    return list(combinadas.values())
+
+# =====================================================================
+# EDITOR ÚNICO POR TAGS
 # =====================================================================
 
 def _localizar_base_no_banco(tipo_ref, numero_ref):
@@ -978,7 +1047,7 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
 
     grupos_validos = []
     consolidacoes_geradas, arquivos_nao_alterados = [], []
-    referencias_pendentes = []  # NOVO: para registrar referências não encontradas
+    referencias_pendentes = []  # pendências detectadas durante a triagem
 
     for grupo_id, itens in grupos.items():
         arquivo_base = next((a for a in itens if a['tipo'] == 'Base'), None)
@@ -989,7 +1058,6 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
             base_reconstruida = None
             ato_ref_tipo = None
             ato_ref_numero = None
-            # Tenta localizar a base referenciada a partir da primeira alteradora que tiver a informação
             for alt in arquivos_alteradores:
                 if alt.get('ato_base_referenciado_tipo') and alt.get('ato_base_referenciado_numero'):
                     ato_ref_tipo = alt['ato_base_referenciado_tipo']
@@ -1008,7 +1076,6 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
                 }
                 grupos_validos.append((arquivo_base, arquivos_alteradores))
             else:
-                # Não encontrada nem no banco: registra pendência
                 if not ato_ref_tipo or not ato_ref_numero:
                     ato_ref_tipo = "Desconhecido"
                     ato_ref_numero = "Desconhecido"
@@ -1034,7 +1101,6 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
                 arquivo_base, arquivos_alteradores = futuros[fut]
                 try:
                     resultado, mensagens = fut.result()
-                    # AJUSTE TABELA: pós-processamento para corrigir posicionamento
                     resultado = corrigir_posicionamento_tabela(resultado)
                     consolidacoes_geradas.append(resultado)
                     for tipo_msg, texto_msg in mensagens:
@@ -1048,10 +1114,27 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
                 if progresso:
                     progresso.progress(0.5 + 0.5 * (idx + 1) / total_grupos, text=f"Processando grupo {idx+1}/{total_grupos}...")
 
+    # NOVA ETAPA: Verificação heurística de referências externas em todos os textos
+    refs_heuristicas = verificar_referencias_externas(arquivos, textos_extraidos)
+    # Combina com as pendências da triagem, evitando duplicatas
+    chaves_existentes = {(ref["ato_referenciado_tipo"], ref["ato_referenciado_numero"]) for ref in referencias_pendentes}
+    for ref in refs_heuristicas:
+        chave = (ref["ato_referenciado_tipo"], ref["ato_referenciado_numero"])
+        if chave not in chaves_existentes:
+            referencias_pendentes.append(ref)
+            chaves_existentes.add(chave)
+        else:
+            # Mescla arquivos
+            for existente in referencias_pendentes:
+                if (existente["ato_referenciado_tipo"], existente["ato_referenciado_numero"]) == chave:
+                    existente["arquivos_alteradores"].extend(ref["arquivos_alteradores"])
+                    existente["arquivos_alteradores"] = list(set(existente["arquivos_alteradores"]))
+                    break
+
     return {
         "consolidacoes_geradas": consolidacoes_geradas,
         "arquivos_nao_alterados": arquivos_nao_alterados,
-        "referencias_pendentes": referencias_pendentes,  # NOVO campo
+        "referencias_pendentes": referencias_pendentes,
     }
 
 def _consultar_estado_e_historico(nome_padrao):
@@ -1135,10 +1218,8 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
 # =====================================================================
 
 def gerar_html_dinamico(consolidacao_dict, tipo_versao):
-    # ALTERADO: título apenas com a versão
     titulo_doc = f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}"
     
-    # NOVO: CSS com rodapé fixo via @page
     html = f"""
     <!DOCTYPE html>
     <html>
@@ -1275,7 +1356,6 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     doc = docx.Document()
     for section in doc.sections: section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Inches(1)
 
-    # ALTERADO: cabeçalho apenas com a versão
     ph = doc.add_paragraph(); ph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     rh = ph.add_run(f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}")
     rh.font.name, rh.font.size, rh.bold, rh.font.color.rgb = 'Times New Roman', Pt(10), True, RGBColor(68, 68, 68)
@@ -1340,7 +1420,6 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     ra = pa.add_run(f"{limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')}\n{limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')}")
     ra.font.name, ra.font.size, ra.bold = 'Times New Roman', Pt(11), True
 
-    # NOVO: parágrafo com nota de rodapé (para DOCX será no final, mas visível)
     p_nota = doc.add_paragraph(); p_nota.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p_nota.paragraph_format.space_before = Pt(30)
     r_nota = p_nota.add_run("Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial.")
@@ -1408,7 +1487,7 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
             thinking_level = "medium"
             dpi_ocr = 1.5
             max_paginas_ocr = 20
-        else:  # Máxima Qualidade
+        else:
             thinking_level = "high"
             dpi_ocr = 1.5
             max_paginas_ocr = None
@@ -1438,14 +1517,19 @@ if st.session_state.dados_processados:
     dados = st.session_state.dados_processados
     dados_originais = st.session_state.dados_originais_ia
 
-    # NOVO: Exibir referências pendentes
+    # Exibir referências pendentes (se houver) em um quadro resumo
     referencias_pendentes = dados.get("referencias_pendentes", [])
     if referencias_pendentes:
-        st.warning("⚠️ Alguns arquivos fazem referência a normas que não foram encontradas no lote nem no banco de dados. Para processar essas alterações, envie também o(s) ato(s) original(is) correspondente(s).")
+        st.warning("⚠️ Alguns arquivos fazem referência a normas que não foram encontradas no lote nem no banco de dados.")
+        st.markdown("### 📋 Quadro Resumo de Referências Pendentes")
+        df_refs = []
         for ref in referencias_pendentes:
-            ato_ref = f"{ref.get('ato_referenciado_tipo', 'Desconhecido')} {ref.get('ato_referenciado_numero', 'Desconhecido')}"
-            arquivos = ", ".join(ref.get("arquivos_alteradores", []))
-            st.markdown(f"- **Referência:** {ato_ref}  \n  **Alteradora(s):** {arquivos}")
+            df_refs.append({
+                "Tipo": ref.get("ato_referenciado_tipo", "Desconhecido"),
+                "Número": ref.get("ato_referenciado_numero", "Desconhecido"),
+                "Arquivos que mencionam": ", ".join(ref.get("arquivos_alteradores", []))
+            })
+        st.table(df_refs)
 
     for i, cons in enumerate(dados.get("consolidacoes_geradas", [])):
         nome_exibicao_base = cons['norma_base']['nome_padronizado']
