@@ -224,6 +224,16 @@ with col_logout:
 st.markdown("---")
 
 provedor_escolhido = st.selectbox("🧠 Motor de IA (Hub Multi-IA)", list(PROVEDORES_IA.keys()), key="provedor_ia_select")
+
+# --- NOVO: Seletor de Modo de Processamento ---
+modo_processamento = st.radio(
+    "⚡ Modo de Processamento",
+    ["Equilibrado", "Rápido", "Máxima Qualidade"],
+    index=0,
+    horizontal=True,
+    help="Rápido: menor tempo, pode perder detalhes. Máxima Qualidade: mais preciso, porém mais lento."
+)
+
 cfg_provedor = PROVEDORES_IA[provedor_escolhido]
 api_key = obter_chave_provedor(provedor_escolhido)
 if not api_key:
@@ -683,7 +693,12 @@ def converter_para_iso(data_str):
     try: return datetime.strptime(data_str, "%d/%m/%Y").strftime("%Y-%m-%d")
     except: return None
 
-def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
+# AJUSTE: extração com cache e parâmetros de otimização
+@st.cache_data(show_spinner=False, max_entries=20)
+def extrair_conteudo_cache(file_bytes, nome_arquivo, dpi_ocr=1.5, max_paginas_ocr=None):
+    return extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr, max_paginas_ocr)
+
+def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_paginas_ocr=None):
     if nome_arquivo.lower().endswith(".docx"): return [f"ARQUIVO DOCX: {nome_arquivo}"]
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -728,10 +743,14 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
                 if bloco_linhas.strip(): html_text += bloco_linhas.strip() + "<br/>\n"
             html_text += "<br/>\n"
 
+        # Se for documento escaneado, converte páginas em imagens
         if caracteres_uteis < 30 * max(doc.page_count, 1):
             partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO. Leia o conteúdo visualmente, inclusive tabelas:"]
-            for page in doc:
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+            for page_num, page in enumerate(doc):
+                if max_paginas_ocr is not None and page_num >= max_paginas_ocr:
+                    partes.append(f"[Nota: apenas as primeiras {max_paginas_ocr} páginas foram convertidas em imagem por limite do modo de processamento.]")
+                    break
+                pix = page.get_pixmap(matrix=fitz.Matrix(dpi_ocr, dpi_ocr))
                 partes.append({"tipo": "imagem", "mime": "image/jpeg", "dados": pix.tobytes("jpg", jpg_quality=78)})
             return partes
 
@@ -786,7 +805,6 @@ def injetar_nota_remissiva(texto, nota):
         return f'<span style="color: red;">{n_fmt}</span>'
     return texto
 
-# AJUSTE TABELA: Função de pós-processamento melhorada
 def corrigir_posicionamento_tabela(consolidacao: dict):
     """Garante que, para dispositivos com tabela e que foram alterados, a nova redação
     esteja no campo texto_pos_tabela_alterada e não em texto_principal_alterada."""
@@ -805,29 +823,23 @@ def corrigir_posicionamento_tabela(consolidacao: dict):
             continue
 
         # Tenta separar a linha 2 (nova redação) do texto principal
-        # 1. Se houver quebra dupla, divide
         partes = re.split(r'<br\s*/?>\s*<br\s*/?>', txt_alt, flags=re.IGNORECASE)
         nova_redacao = None
+        texto_antigo = txt_alt
         if len(partes) >= 2:
-            # Pega a última parte como nova redação (pode haver mais de duas partes)
             primeira = partes[0].strip()
             segunda = partes[-1].strip()  # usa a última
-            # Verifica se a segunda não é riscada
             if '<strike' not in segunda.lower() and '<font color="red"' not in segunda.lower() and '<s>' not in segunda.lower():
                 nova_redacao = segunda
                 texto_antigo = primeira
             else:
-                # Se a última também é riscada, talvez a nova redação esteja antes?
-                # Procura a primeira parte sem riscado a partir do final
                 for parte in reversed(partes):
                     parte_limpa = parte.strip()
                     if '<strike' not in parte_limpa.lower() and '<font color="red"' not in parte_limpa.lower() and '<s>' not in parte_limpa.lower():
                         nova_redacao = parte_limpa
-                        # Junta as partes anteriores como texto antigo
                         texto_antigo = "<br/><br/>".join(partes[:partes.index(parte)]).strip()
                         break
         else:
-            # Se não há quebra dupla, tenta localizar a nota "Redação dada pelo" e dividir nesse ponto
             match = re.search(r'(\(?\s*Redação dada pelo.*)', txt_alt, flags=re.IGNORECASE)
             if match:
                 inicio_nova = match.start()
@@ -835,19 +847,12 @@ def corrigir_posicionamento_tabela(consolidacao: dict):
                 nova_redacao = txt_alt[inicio_nova:].strip()
 
         if nova_redacao:
-            # Garante que a nota de redação esteja presente
             disp["texto_principal_alterada"] = texto_antigo if texto_antigo else ""
-            # Se o texto antigo não terminar com quebra dupla, adiciona para separar visualmente
             if disp["texto_principal_alterada"] and not disp["texto_principal_alterada"].endswith("<br/><br/>"):
                 disp["texto_principal_alterada"] += "<br/><br/>"
-            # Move a nova redação para o campo pós-tabela
             disp["texto_pos_tabela_alterada"] = nova_redacao
-            # Se já existia algo em texto_pos_tabela_alterada (mas não era a nota completa), concatena
             if txt_pos_alt.strip() and txt_pos_alt.strip() != nova_redacao:
                 disp["texto_pos_tabela_alterada"] = nova_redacao + "<br/><br/>" + txt_pos_alt.strip()
-        else:
-            # Se não conseguiu separar, mantém como está e registra aviso (opcional)
-            pass
     return consolidacao
 
 def resgatar_memoria():
@@ -888,17 +893,24 @@ def _localizar_base_no_banco(tipo_ref, numero_ref):
     except Exception:
         return None
 
-def analisar_lote_arquivos(arquivos, key, provedor):
+def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi_ocr=1.5, max_paginas_ocr=None, progresso=None):
     memoria_aprendida = resgatar_memoria()
 
     textos_extraidos = {}
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(arquivos)))) as ex:
-        futuros = {submit_com_contexto(ex, extrair_conteudo_multimodal, arq.getvalue(), arq.name): arq.name for arq in arquivos}
-        for fut in as_completed(futuros):
+    # Usando cache e workers reduzidos conforme modo
+    max_workers_extração = 2 if thinking_level == "low" else 4  # pensando rápido
+    with ThreadPoolExecutor(max_workers=min(max_workers_extração, max(1, len(arquivos)))) as ex:
+        futuros = {submit_com_contexto(ex, extrair_conteudo_cache, arq.getvalue(), arq.name, dpi_ocr, max_paginas_ocr): arq.name for arq in arquivos}
+        total_arquivos = len(arquivos)
+        for idx, fut in enumerate(as_completed(futuros)):
             textos_extraidos[futuros[fut]] = fut.result()
+            if progresso:
+                progresso.progress((idx + 1) / (total_arquivos * 2), text=f"Extraindo conteúdo de {futuros[fut]}...")
 
     contents_triagem = [f"Analise os documentos. Agrupe cada ato original com seus derivativos presentes neste lote. Se uma Alteradora citar um ato original que NÃO está entre os arquivos deste lote, preencha ato_base_referenciado_tipo/numero com o que ela declara alterar/revogar, para localização posterior no banco de dados. ARQUIVOS: {', '.join(textos_extraidos.keys())}"]
     for partes in textos_extraidos.values(): contents_triagem.extend(partes)
+    if progresso:
+        progresso.progress(0.5, text="Classificando documentos...")
     resp_triagem = executar_com_fallback(key, contents_triagem, TriagemDocumentos, provedor, thinking_level="low")
     triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
 
@@ -934,13 +946,15 @@ def analisar_lote_arquivos(arquivos, key, provedor):
         grupos_validos.append((arquivo_base, arquivos_alteradores))
 
     if grupos_validos:
-        with ThreadPoolExecutor(max_workers=min(4, len(grupos_validos))) as ex:
+        max_workers_processamento = 1 if thinking_level == "low" else 2
+        with ThreadPoolExecutor(max_workers=min(max_workers_processamento, len(grupos_validos))) as ex:
             futuros = {}
             for arquivo_base, arquivos_alteradores in grupos_validos:
                 st.toast(f"⚙️ Processando: {arquivo_base.get('nome_padronizado_identificado')}...", icon="⏳")
-                fut = submit_com_contexto(ex, _processar_cascata_grupo, key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida)
+                fut = submit_com_contexto(ex, _processar_cascata_grupo, key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida, thinking_level)
                 futuros[fut] = (arquivo_base, arquivos_alteradores)
-            for fut in as_completed(futuros):
+            total_grupos = len(grupos_validos)
+            for idx, fut in enumerate(as_completed(futuros)):
                 arquivo_base, arquivos_alteradores = futuros[fut]
                 try:
                     resultado, mensagens = fut.result()
@@ -955,6 +969,8 @@ def analisar_lote_arquivos(arquivos, key, provedor):
                     if arquivo_base.get('nome_arquivo_upload'):
                         arquivos_nao_alterados.append(arquivo_base['nome_arquivo_upload'])
                     arquivos_nao_alterados.extend([a['nome_arquivo_upload'] for a in arquivos_alteradores])
+                if progresso:
+                    progresso.progress(0.5 + 0.5 * (idx + 1) / total_grupos, text=f"Processando grupo {idx+1}/{total_grupos}...")
 
     return {"consolidacoes_geradas": consolidacoes_geradas, "arquivos_nao_alterados": arquivos_nao_alterados}
 
@@ -973,7 +989,7 @@ def _consultar_estado_e_historico(nome_padrao):
     except Exception:
         return None, []
 
-def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida):
+def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida, thinking_level="medium"):
     nome_padrao = arquivo_base.get('nome_padronizado_identificado', '')
     reconstruida = bool(arquivo_base.get('_reconstruida_do_banco'))
     estado_json_atual, ja_processadas = _consultar_estado_e_historico(nome_padrao)
@@ -1004,7 +1020,7 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
         if estado_json_atual:
             return json.loads(estado_json_atual), mensagens
         conteudo_loop = ["Texto Base:"] + textos_extraidos[arquivo_base['nome_arquivo_upload']]
-        resp_loop = executar_com_fallback(key, conteudo_loop + ["Estruture o documento separando a ementa do preâmbulo e aplicando rigorosamente o mapeamento de dispositivos, incluindo tabelas quando houver." + memoria_aprendida], Consolidacao, provedor)
+        resp_loop = executar_com_fallback(key, conteudo_loop + ["Estruture o documento separando a ementa do preâmbulo e aplicando rigorosamente o mapeamento de dispositivos, incluindo tabelas quando houver." + memoria_aprendida], Consolidacao, provedor, thinking_level)
         return json.loads(resp_loop.text), mensagens
 
     resp_loop = None
@@ -1029,7 +1045,7 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
-        resp_loop = executar_com_fallback(key, conteudo_loop, Consolidacao, provedor)
+        resp_loop = executar_com_fallback(key, conteudo_loop, Consolidacao, provedor, thinking_level)
         estado_json_atual = resp_loop.text
     return json.loads(resp_loop.text), mensagens
 
@@ -1283,13 +1299,40 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     if not api_key: st.error("⚠️ Insira sua chave da API nas configurações.")
     elif not arquivos_enviados: st.warning("⚠️ Envie os arquivos normativos primeiro.")
     else:
+        # Configurações de acordo com o modo selecionado
+        if modo_processamento == "Rápido":
+            thinking_level = "low"
+            dpi_ocr = 1.2
+            max_paginas_ocr = 10
+        elif modo_processamento == "Equilibrado":
+            thinking_level = "medium"
+            dpi_ocr = 1.5
+            max_paginas_ocr = 20
+        else:  # Máxima Qualidade
+            thinking_level = "high"
+            dpi_ocr = 1.5
+            max_paginas_ocr = None  # sem limite
+
+        # Barra de progresso
         with st.spinner("⚡ Executando OCR Estrutural e Consulta ao Histórico de Aprendizado..."):
+            progresso = st.progress(0.0, text="Iniciando análise...")
             try:
-                st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip(), provedor_escolhido)
+                st.session_state.dados_processados = analisar_lote_arquivos(
+                    arquivos_enviados,
+                    api_key.strip(),
+                    provedor_escolhido,
+                    thinking_level=thinking_level,
+                    dpi_ocr=dpi_ocr,
+                    max_paginas_ocr=max_paginas_ocr,
+                    progresso=progresso
+                )
                 st.session_state.dados_originais_ia = copy.deepcopy(st.session_state.dados_processados)
+                progresso.progress(1.0, text="Análise concluída!")
                 st.success("✨ Processamento concluído!")
             except Exception as e:
                 st.error(f"❌ Ocorreu um erro: {str(e)}")
+            finally:
+                progresso.empty()
 
 if st.session_state.dados_processados:
     st.markdown("---")
