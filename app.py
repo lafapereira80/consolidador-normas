@@ -224,7 +224,6 @@ with col_logout:
 st.markdown("---")
 
 provedor_escolhido = st.selectbox("🧠 Motor de IA (Hub Multi-IA)", list(PROVEDORES_IA.keys()), key="provedor_ia_select")
-
 cfg_provedor = PROVEDORES_IA[provedor_escolhido]
 api_key = obter_chave_provedor(provedor_escolhido)
 if not api_key:
@@ -402,7 +401,21 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
         relatórios de atividade ao(à) instruendo(a), conforme modelo anexo; (Redação dada pelo Art. 8 da
         PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026).
 
-      Para dispositivos com tabela, siga as regras do item 6.
+      ⚠️ IMPORTANTE PARA DISPOSITIVOS COM TABELA: Se o dispositivo contém uma tabela (is_tabela=True) e foi
+      alterado, a Linha 1 (texto antigo riscado + nota "Alterada pelo...") DEVE ser colocada no campo
+      'texto_principal_alterada'. A Linha 2 (nova redação completa do dispositivo, incluindo qualquer texto
+      fora da tabela e a nota "Redação dada pelo...") DEVE ser colocada NO CAMPO 'texto_pos_tabela_alterada',
+      NUNCA em 'texto_principal_alterada'. Ou seja, na versão ALTERADA, a nova redação deve aparecer DEPOIS
+      da tabela, não antes. Exemplo:
+        texto_principal_alterada = "<strike><font color='red'>X - texto antigo...</font></strike> (Alterada pelo Art. 8 da PORTARIA Nº 1...)"
+        tabela_alterada = [["célula1", "célula2"], ...]  (tabela possivelmente taxada)
+        texto_pos_tabela_alterada = "X - texto novo... (Redação dada pelo Art. 8 da PORTARIA Nº 1...)"
+      NÃO coloque a Linha 2 em 'texto_principal_alterada' se houver tabela.
+
+      Na versão CONSOLIDADA (`texto_principal_consolidada`) do MESMO dispositivo, mostre SOMENTE a Linha 2
+      (a nova redação), nunca a antiga, nunca riscada. Se houver tabela, o texto consolidado deve ficar em
+      'texto_principal_consolidada' e a tabela logo após; a nota de redação pode estar no próprio texto ou
+      em 'texto_pos_tabela_consolidada' (preferencialmente no texto principal, sem duplicação).
 
    b) DISPOSITIVO REVOGADO — na versão ALTERADA, UMA ÚNICA LINHA (NÃO repita/acrescente uma segunda linha):
       identificador + texto INTEGRAL riscado em vermelho, seguido IMEDIATAMENTE da nota
@@ -425,62 +438,6 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
 5. GENERALIDADE: as regras acima valem para qualquer espécie normativa (Lei, Decreto, Resolução, Portaria,
    Enunciado, Instrução Normativa etc.) e para qualquer tipo de dispositivo (Artigo, Parágrafo, Parágrafo
    Único, Inciso, Alínea, Item).
-
-6. REGRAS ESPECÍFICAS PARA DISPOSITIVOS COM TABELA (is_tabela=True)
-   Quando um dispositivo normativo contiver uma tabela (campo is_tabela=True) e for objeto de alteração
-   por um ato modificador, siga rigorosamente as regras abaixo:
-
-   6.1. Estrutura geral na versão ALTERADA:
-   - O texto ANTIGO (riscado) fica no campo 'texto_principal_alterada', **sem a nota de alteração**.
-   - A nota "(Alterada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" DEVE ser colocada **no início do campo
-     'texto_pos_tabela_alterada'**, logo após a tabela, antes de qualquer nova redação.
-   - A tabela ALTERADA (com as células taxadas quando houver mudança) fica no campo 'tabela_alterada'.
-   - A NOVA REDAÇÃO completa (texto novo, se houver, e a nota "(Redação dada pelo Art. N da TIPO Nº
-     NÚMERO/ANO - SIGLA)") fica NO MESMO CAMPO 'texto_pos_tabela_alterada', logo após a nota de alteração,
-     separada por um espaço ou quebra de linha, conforme necessário.
-   - A ordem final no campo 'texto_pos_tabela_alterada' deve ser:
-     "(Alterada pelo Art. ...) <br/> X - texto novo... (Redação dada pelo Art. ...)"
-     ou, se não houver nova redação, apenas a nota de alteração.
-
-   6.2. Casos específicos:
-   a) Dispositivo com texto introdutório + tabela + texto final:
-      - 'texto_principal_alterada': contém o texto antigo completo (introdução + referência à tabela +
-        texto final) riscado, SEM a nota de alteração.
-      - 'tabela_alterada': a tabela completa, com células taxadas se alteradas.
-      - 'texto_pos_tabela_alterada': inicia com a nota "(Alterada pelo Art. ...)", seguida da NOVA redação
-        do dispositivo inteiro (introdução nova, se aplicável, descrição da tabela, texto final novo) e da
-        nota "(Redação dada pelo...)".
-        Exemplo:
-          texto_principal_alterada = "<strike><font color='red'>Art. 5º - O prazo para entrega é de 30 dias,
-          conforme tabela abaixo:</font></strike>"
-          tabela_alterada = [["Item", "Prazo"], ["Documento", "10 dias"], ["Relatório", "20 dias"]]
-          texto_pos_tabela_alterada = "(Alterada pelo Art. 2 da PORTARIA Nº 5/PGJ, de 10 de maio de 2025)<br/>Art. 5º - O prazo para entrega é de 60 dias, conforme tabela abaixo: (Redação dada pelo Art. 2 da PORTARIA Nº 5/PGJ, de 10 de maio de 2025)"
-
-   b) Dispositivo que contém APENAS a tabela (sem texto antes ou depois):
-      - 'texto_principal_alterada': conterá apenas o identificador do dispositivo (ex.: "Art. 7º") riscado,
-        sem a nota de alteração.
-      - 'tabela_alterada': a tabela completa, com alterações taxadas.
-      - 'texto_pos_tabela_alterada': inicia com a nota "(Alterada pelo...)", seguida da nova redação da
-        tabela em forma de texto descritivo (caso a tabela tenha sido substituída por texto) ou apenas a
-        nota se a tabela foi apenas modificada e não há texto adicional.
-        Importante: se a tabela foi substituída por texto, descreva-a em texto_pos_tabela_alterada;
-        caso contrário, deixe apenas a nota.
-
-   c) Alteração que NÃO afeta a tabela, mas afeta o texto ao redor:
-      - Nesse caso, o campo 'is_tabela' deve ser False se a tabela em si não faz parte da alteração.
-        Ou seja, se a tabela permanece intacta e apenas o texto muda, trate como um dispositivo normal
-        (is_tabela=False) e coloque a Linha 2 em 'texto_principal_alterada' normalmente.
-
-   6.3. Versão CONSOLIDADA:
-   - 'texto_principal_consolidada': deve conter a versão vigente do dispositivo (sem riscados).
-     Se houver texto antes da tabela, ele deve estar aqui; se não, apenas o identificador.
-   - 'tabela_consolidada': a tabela na versão vigente (sem taxações).
-   - 'texto_pos_tabela_consolidada': se existir texto após a tabela na versão vigente, ele deve ser
-     colocado aqui. Caso contrário, deixe vazio.
-   - A nota "(Redação dada pelo...)" pode aparecer em 'texto_principal_consolidada' ou em
-     'texto_pos_tabela_consolidada', conforme a posição natural do texto novo, mas nunca duplicada.
-
-   6.4. A nota de redação deve sempre aparecer **fora** da tabela, nunca dentro de uma célula.
 """
 
 # ----------------- SCHEMA JSON PARA PROVEDORES SEM STRUCTURED OUTPUT NATIVO -----------------
@@ -726,12 +683,7 @@ def converter_para_iso(data_str):
     try: return datetime.strptime(data_str, "%d/%m/%Y").strftime("%Y-%m-%d")
     except: return None
 
-# AJUSTE: extração com cache e parâmetros otimizados (sempre máxima qualidade)
-@st.cache_data(show_spinner=False, max_entries=20)
-def extrair_conteudo_cache(file_bytes, nome_arquivo, dpi_ocr=1.5, max_paginas_ocr=None):
-    return extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr, max_paginas_ocr)
-
-def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_paginas_ocr=None):
+def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
     if nome_arquivo.lower().endswith(".docx"): return [f"ARQUIVO DOCX: {nome_arquivo}"]
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -751,7 +703,7 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_pagin
                     html_text += "[TABELA]\n"
                     for linha in linhas:
                         html_text += " | ".join((str(c).strip() if c is not None else "") for c in linha) + "\n"
-                    html_text += "[/TABELA]\n"
+                    html_text += "[/TABELA]\n<br/>\n"
             except Exception:
                 pass
 
@@ -769,28 +721,22 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_pagin
                         if not texto: continue
                         caracteres_uteis += len(texto.strip())
                         flags = s.get("flags", 0)
-                        # Usar apenas flags oficiais para negrito/itálico
-                        if flags & 2**4:
-                            texto = f"<b>{texto}</b>"
-                        if flags & 2**1:
-                            texto = f"<i>{texto}</i>"
+                        if flags & 2**4: texto = f"<b>{texto}</b>"
+                        if flags & 2**1: texto = f"<i>{texto}</i>"
                         linha_span += texto
-                    if linha_span.strip():
-                        bloco_linhas += linha_span.strip() + " "
-                if bloco_linhas.strip():
-                    html_text += bloco_linhas.strip() + "<br/>\n"
+                    if linha_span.strip(): bloco_linhas += linha_span + " "
+                if bloco_linhas.strip(): html_text += bloco_linhas.strip() + "<br/>\n"
             html_text += "<br/>\n"
 
         if caracteres_uteis < 30 * max(doc.page_count, 1):
             partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO. Leia o conteúdo visualmente, inclusive tabelas:"]
             for page in doc:
-                pix = page.get_pixmap(matrix=fitz.Matrix(dpi_ocr, dpi_ocr))
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
                 partes.append({"tipo": "imagem", "mime": "image/jpeg", "dados": pix.tobytes("jpg", jpg_quality=78)})
             return partes
 
         return [html_text]
-    except Exception as e:
-        return [f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"]
+    except Exception as e: return [f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"]
 
 # ----------------- ESTRUTURAS PYDANTIC -----------------
 class ArquivoClassificado(BaseModel):
@@ -840,6 +786,7 @@ def injetar_nota_remissiva(texto, nota):
         return f'<span style="color: red;">{n_fmt}</span>'
     return texto
 
+# AJUSTE TABELA: Função de pós-processamento melhorada
 def corrigir_posicionamento_tabela(consolidacao: dict):
     """Garante que, para dispositivos com tabela e que foram alterados, a nova redação
     esteja no campo texto_pos_tabela_alterada e não em texto_principal_alterada."""
@@ -853,82 +800,55 @@ def corrigir_posicionamento_tabela(consolidacao: dict):
         txt_alt = disp.get("texto_principal_alterada") or ""
         txt_pos_alt = disp.get("texto_pos_tabela_alterada") or ""
 
+        # Se texto_pos_tabela_alterada já contém uma nota de redação completa, assume que está correto
         if "redação dada pelo" in txt_pos_alt.lower() or "nova redação" in txt_pos_alt.lower():
             continue
 
-        nova_redacao = None
-        texto_antigo = txt_alt
-
+        # Tenta separar a linha 2 (nova redação) do texto principal
+        # 1. Se houver quebra dupla, divide
         partes = re.split(r'<br\s*/?>\s*<br\s*/?>', txt_alt, flags=re.IGNORECASE)
+        nova_redacao = None
         if len(partes) >= 2:
+            # Pega a última parte como nova redação (pode haver mais de duas partes)
             primeira = partes[0].strip()
-            segunda = partes[-1].strip()
+            segunda = partes[-1].strip()  # usa a última
+            # Verifica se a segunda não é riscada
             if '<strike' not in segunda.lower() and '<font color="red"' not in segunda.lower() and '<s>' not in segunda.lower():
                 nova_redacao = segunda
                 texto_antigo = primeira
             else:
-                for idx in range(len(partes)-1, -1, -1):
-                    parte_limpa = partes[idx].strip()
+                # Se a última também é riscada, talvez a nova redação esteja antes?
+                # Procura a primeira parte sem riscado a partir do final
+                for parte in reversed(partes):
+                    parte_limpa = parte.strip()
                     if '<strike' not in parte_limpa.lower() and '<font color="red"' not in parte_limpa.lower() and '<s>' not in parte_limpa.lower():
                         nova_redacao = parte_limpa
-                        texto_antigo = "<br/><br/>".join(partes[:idx]).strip()
+                        # Junta as partes anteriores como texto antigo
+                        texto_antigo = "<br/><br/>".join(partes[:partes.index(parte)]).strip()
                         break
         else:
+            # Se não há quebra dupla, tenta localizar a nota "Redação dada pelo" e dividir nesse ponto
             match = re.search(r'(\(?\s*Redação dada pelo.*)', txt_alt, flags=re.IGNORECASE)
             if match:
                 inicio_nova = match.start()
                 texto_antigo = txt_alt[:inicio_nova].strip()
                 nova_redacao = txt_alt[inicio_nova:].strip()
-            else:
-                partes_simples = re.split(r'<br\s*/?>', txt_alt, flags=re.IGNORECASE)
-                if len(partes_simples) > 1:
-                    ultima = partes_simples[-1].strip()
-                    if '<strike' not in ultima.lower() and '<font color="red"' not in ultima.lower() and '<s>' not in ultima.lower():
-                        nova_redacao = ultima
-                        texto_antigo = "<br/>".join(partes_simples[:-1]).strip()
 
         if nova_redacao:
+            # Garante que a nota de redação esteja presente
             disp["texto_principal_alterada"] = texto_antigo if texto_antigo else ""
+            # Se o texto antigo não terminar com quebra dupla, adiciona para separar visualmente
             if disp["texto_principal_alterada"] and not disp["texto_principal_alterada"].endswith("<br/><br/>"):
                 disp["texto_principal_alterada"] += "<br/><br/>"
+            # Move a nova redação para o campo pós-tabela
+            disp["texto_pos_tabela_alterada"] = nova_redacao
+            # Se já existia algo em texto_pos_tabela_alterada (mas não era a nota completa), concatena
             if txt_pos_alt.strip() and txt_pos_alt.strip() != nova_redacao:
                 disp["texto_pos_tabela_alterada"] = nova_redacao + "<br/><br/>" + txt_pos_alt.strip()
-            else:
-                disp["texto_pos_tabela_alterada"] = nova_redacao
+        else:
+            # Se não conseguiu separar, mantém como está e registra aviso (opcional)
+            pass
     return consolidacao
-
-def reforcar_negrito_em_consolidacao(cons: dict, textos_extraidos: dict) -> dict:
-    """Aplica negrito em termos que estavam em negrito no texto original e podem ter perdido a formatação."""
-    if not textos_extraidos:
-        return cons
-    termos_negrito = set()
-    for nome_arquivo, partes in textos_extraidos.items():
-        for parte in partes:
-            if isinstance(parte, str):
-                for m in re.finditer(r'<b>(.*?)</b>', parte, re.IGNORECASE | re.DOTALL):
-                    termo = re.sub(r'<[^>]+>', '', m.group(1)).strip()
-                    if termo:
-                        termos_negrito.add(termo.lower())
-    if not termos_negrito:
-        return cons
-
-    def aplicar_negrito(texto: str) -> str:
-        if not texto:
-            return texto
-        for termo in termos_negrito:
-            termo_escape = re.escape(termo)
-            pattern = re.compile(r'(?<!<)(' + termo_escape + r')(?![^<>]*</b>)', re.IGNORECASE)
-            texto = pattern.sub(r'<b>\1</b>', texto)
-        return texto
-
-    for campo in ["ementa", "preambulo", "titulo_portaria", "assinatura_nome", "assinatura_cargo"]:
-        if campo in cons:
-            cons[campo] = aplicar_negrito(cons[campo])
-    for disp in cons.get("dispositivos", []):
-        for campo in ["texto_principal_alterada", "texto_principal_consolidada", "texto_pos_tabela_alterada", "texto_pos_tabela_consolidada"]:
-            if campo in disp and disp[campo]:
-                disp[campo] = aplicar_negrito(disp[campo])
-    return cons
 
 def resgatar_memoria():
     memoria = ""
@@ -941,70 +861,11 @@ def resgatar_memoria():
         except: pass
     return memoria
 
-def verificar_referencias_externas(arquivos, textos_extraidos):
-    if not supabase:
-        return []
-
-    padroes = {
-        "PORTARIA": re.compile(r'PORTARIA\s*(?:N[ºo]\.?)?\s*(\d+[\/\-]?\w*)', re.IGNORECASE),
-        "LEI": re.compile(r'LEI\s*(?:N[ºo]\.?)?\s*(\d+[\/\-]?\w*)', re.IGNORECASE),
-        "DECRETO": re.compile(r'DECRETO\s*(?:N[ºo]\.?)?\s*(\d+[\/\-]?\w*)', re.IGNORECASE),
-        "RESOLUÇÃO": re.compile(r'RESOLU[ÇC][ÃA]O\s*(?:N[ºo]\.?)?\s*(\d+[\/\-]?\w*)', re.IGNORECASE),
-        "INSTRUÇÃO NORMATIVA": re.compile(r'INSTRU[ÇC][ÃA]O\s+NORMATIVA\s*(?:N[ºo]\.?)?\s*(\d+[\/\-]?\w*)', re.IGNORECASE),
-        "ENUNCIADO": re.compile(r'ENUNCIADO\s*(?:N[ºo]\.?)?\s*(\d+[\/\-]?\w*)', re.IGNORECASE),
-    }
-
-    referencias_pendentes = []
-    refs_vistas = set()
-
-    for nome_arquivo, partes in textos_extraidos.items():
-        texto_completo = "\n".join([p if isinstance(p, str) else "" for p in partes])
-        for tipo, padrao in padroes.items():
-            for match in padrao.finditer(texto_completo):
-                numero = match.group(1)
-                chave = (tipo, numero)
-                if chave in refs_vistas:
-                    continue
-                refs_vistas.add(chave)
-
-                encontrado_no_lote = False
-                for arq in arquivos:
-                    if arq.name == nome_arquivo:
-                        continue
-                    if tipo.lower() in arq.name.lower() and numero.lower() in arq.name.lower():
-                        encontrado_no_lote = True
-                        break
-                    arq_texto = "\n".join([p if isinstance(p, str) else "" for p in textos_extraidos.get(arq.name, [])])
-                    if tipo.lower() in arq_texto.lower() and numero.lower() in arq_texto.lower():
-                        encontrado_no_lote = True
-                        break
-                if encontrado_no_lote:
-                    continue
-
-                encontrado_no_banco = False
-                try:
-                    query = supabase.table("portarias_base").select("id").or_(f"numero_documento.ilike.%{numero}%,nome_padronizado.ilike.%{numero}%").execute()
-                    if query.data:
-                        encontrado_no_banco = True
-                except:
-                    pass
-
-                if not encontrado_no_banco and not encontrado_no_lote:
-                    referencias_pendentes.append({
-                        "ato_referenciado_tipo": tipo,
-                        "ato_referenciado_numero": numero,
-                        "arquivos_alteradores": [nome_arquivo],
-                    })
-
-    combinadas = {}
-    for ref in referencias_pendentes:
-        chave = (ref["ato_referenciado_tipo"], ref["ato_referenciado_numero"])
-        if chave not in combinadas:
-            combinadas[chave] = ref
-        else:
-            combinadas[chave]["arquivos_alteradores"].extend(ref["arquivos_alteradores"])
-            combinadas[chave]["arquivos_alteradores"] = list(set(combinadas[chave]["arquivos_alteradores"]))
-    return list(combinadas.values())
+# =====================================================================
+# EDITOR ÚNICO POR TAGS — serializa/parseia o documento inteiro (versão
+# ALTERADA) como um único texto marcado, e deriva a versão CONSOLIDADA
+# programaticamente a partir dele (nunca editada separadamente).
+# =====================================================================
 
 def _localizar_base_no_banco(tipo_ref, numero_ref):
     if not supabase or not numero_ref or not str(numero_ref).strip():
@@ -1027,22 +888,17 @@ def _localizar_base_no_banco(tipo_ref, numero_ref):
     except Exception:
         return None
 
-def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="high", dpi_ocr=1.5, max_paginas_ocr=None, progresso=None):
+def analisar_lote_arquivos(arquivos, key, provedor):
     memoria_aprendida = resgatar_memoria()
 
     textos_extraidos = {}
-    with ThreadPoolExecutor(max_workers=min(4, max(1, len(arquivos)))) as ex:
-        futuros = {submit_com_contexto(ex, extrair_conteudo_cache, arq.getvalue(), arq.name, dpi_ocr, max_paginas_ocr): arq.name for arq in arquivos}
-        total_arquivos = len(arquivos)
-        for idx, fut in enumerate(as_completed(futuros)):
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(arquivos)))) as ex:
+        futuros = {submit_com_contexto(ex, extrair_conteudo_multimodal, arq.getvalue(), arq.name): arq.name for arq in arquivos}
+        for fut in as_completed(futuros):
             textos_extraidos[futuros[fut]] = fut.result()
-            if progresso:
-                progresso.progress((idx + 1) / (total_arquivos * 2), text=f"Extraindo conteúdo de {futuros[fut]}...")
 
     contents_triagem = [f"Analise os documentos. Agrupe cada ato original com seus derivativos presentes neste lote. Se uma Alteradora citar um ato original que NÃO está entre os arquivos deste lote, preencha ato_base_referenciado_tipo/numero com o que ela declara alterar/revogar, para localização posterior no banco de dados. ARQUIVOS: {', '.join(textos_extraidos.keys())}"]
     for partes in textos_extraidos.values(): contents_triagem.extend(partes)
-    if progresso:
-        progresso.progress(0.5, text="Classificando documentos...")
     resp_triagem = executar_com_fallback(key, contents_triagem, TriagemDocumentos, provedor, thinking_level="low")
     triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
 
@@ -1051,8 +907,6 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="high", dpi_o
 
     grupos_validos = []
     consolidacoes_geradas, arquivos_nao_alterados = [], []
-    referencias_pendentes = []
-
     for grupo_id, itens in grupos.items():
         arquivo_base = next((a for a in itens if a['tipo'] == 'Base'), None)
         arquivos_alteradores = sorted([a for a in itens if a['tipo'] == 'Alteradora'], key=lambda x: x['data_oficial_iso'])
@@ -1060,12 +914,7 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="high", dpi_o
         if not arquivo_base and not arquivos_alteradores: continue
         if not arquivo_base:
             base_reconstruida = None
-            ato_ref_tipo = None
-            ato_ref_numero = None
             for alt in arquivos_alteradores:
-                if alt.get('ato_base_referenciado_tipo') and alt.get('ato_base_referenciado_numero'):
-                    ato_ref_tipo = alt['ato_base_referenciado_tipo']
-                    ato_ref_numero = alt['ato_base_referenciado_numero']
                 candidato = _localizar_base_no_banco(alt.get('ato_base_referenciado_tipo'), alt.get('ato_base_referenciado_numero'))
                 if candidato:
                     base_reconstruida = candidato
@@ -1080,32 +929,23 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="high", dpi_o
                 }
                 grupos_validos.append((arquivo_base, arquivos_alteradores))
             else:
-                if not ato_ref_tipo or not ato_ref_numero:
-                    ato_ref_tipo = "Desconhecido"
-                    ato_ref_numero = "Desconhecido"
-                referencias_pendentes.append({
-                    "ato_referenciado_tipo": ato_ref_tipo,
-                    "ato_referenciado_numero": ato_ref_numero,
-                    "arquivos_alteradores": [a['nome_arquivo_upload'] for a in arquivos_alteradores],
-                })
                 arquivos_nao_alterados.extend([a['nome_arquivo_upload'] for a in arquivos_alteradores])
             continue
         grupos_validos.append((arquivo_base, arquivos_alteradores))
 
     if grupos_validos:
-        with ThreadPoolExecutor(max_workers=min(2, len(grupos_validos))) as ex:
+        with ThreadPoolExecutor(max_workers=min(4, len(grupos_validos))) as ex:
             futuros = {}
             for arquivo_base, arquivos_alteradores in grupos_validos:
                 st.toast(f"⚙️ Processando: {arquivo_base.get('nome_padronizado_identificado')}...", icon="⏳")
-                fut = submit_com_contexto(ex, _processar_cascata_grupo, key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida, thinking_level)
+                fut = submit_com_contexto(ex, _processar_cascata_grupo, key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida)
                 futuros[fut] = (arquivo_base, arquivos_alteradores)
-            total_grupos = len(grupos_validos)
-            for idx, fut in enumerate(as_completed(futuros)):
+            for fut in as_completed(futuros):
                 arquivo_base, arquivos_alteradores = futuros[fut]
                 try:
                     resultado, mensagens = fut.result()
+                    # AJUSTE TABELA: pós-processamento para corrigir posicionamento
                     resultado = corrigir_posicionamento_tabela(resultado)
-                    resultado = reforcar_negrito_em_consolidacao(resultado, textos_extraidos)
                     consolidacoes_geradas.append(resultado)
                     for tipo_msg, texto_msg in mensagens:
                         if tipo_msg == "info": st.info(texto_msg)
@@ -1115,28 +955,8 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="high", dpi_o
                     if arquivo_base.get('nome_arquivo_upload'):
                         arquivos_nao_alterados.append(arquivo_base['nome_arquivo_upload'])
                     arquivos_nao_alterados.extend([a['nome_arquivo_upload'] for a in arquivos_alteradores])
-                if progresso:
-                    progresso.progress(0.5 + 0.5 * (idx + 1) / total_grupos, text=f"Processando grupo {idx+1}/{total_grupos}...")
 
-    refs_heuristicas = verificar_referencias_externas(arquivos, textos_extraidos)
-    chaves_existentes = {(ref["ato_referenciado_tipo"], ref["ato_referenciado_numero"]) for ref in referencias_pendentes}
-    for ref in refs_heuristicas:
-        chave = (ref["ato_referenciado_tipo"], ref["ato_referenciado_numero"])
-        if chave not in chaves_existentes:
-            referencias_pendentes.append(ref)
-            chaves_existentes.add(chave)
-        else:
-            for existente in referencias_pendentes:
-                if (existente["ato_referenciado_tipo"], existente["ato_referenciado_numero"]) == chave:
-                    existente["arquivos_alteradores"].extend(ref["arquivos_alteradores"])
-                    existente["arquivos_alteradores"] = list(set(existente["arquivos_alteradores"]))
-                    break
-
-    return {
-        "consolidacoes_geradas": consolidacoes_geradas,
-        "arquivos_nao_alterados": arquivos_nao_alterados,
-        "referencias_pendentes": referencias_pendentes,
-    }
+    return {"consolidacoes_geradas": consolidacoes_geradas, "arquivos_nao_alterados": arquivos_nao_alterados}
 
 def _consultar_estado_e_historico(nome_padrao):
     if not supabase or not nome_padrao:
@@ -1153,7 +973,7 @@ def _consultar_estado_e_historico(nome_padrao):
     except Exception:
         return None, []
 
-def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida, thinking_level="high"):
+def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida):
     nome_padrao = arquivo_base.get('nome_padronizado_identificado', '')
     reconstruida = bool(arquivo_base.get('_reconstruida_do_banco'))
     estado_json_atual, ja_processadas = _consultar_estado_e_historico(nome_padrao)
@@ -1184,7 +1004,7 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
         if estado_json_atual:
             return json.loads(estado_json_atual), mensagens
         conteudo_loop = ["Texto Base:"] + textos_extraidos[arquivo_base['nome_arquivo_upload']]
-        resp_loop = executar_com_fallback(key, conteudo_loop + ["Estruture o documento separando a ementa do preâmbulo e aplicando rigorosamente o mapeamento de dispositivos, incluindo tabelas quando houver." + memoria_aprendida], Consolidacao, provedor, thinking_level)
+        resp_loop = executar_com_fallback(key, conteudo_loop + ["Estruture o documento separando a ementa do preâmbulo e aplicando rigorosamente o mapeamento de dispositivos, incluindo tabelas quando houver." + memoria_aprendida], Consolidacao, provedor)
         return json.loads(resp_loop.text), mensagens
 
     resp_loop = None
@@ -1202,15 +1022,14 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
         Aplique o ato alterador/revogador cruzando detalhadamente com o ato base (seja Lei, Decreto,
         Resolução, Enunciado, Portaria ou qualquer outra espécie normativa).
         Obrigatório: siga EXATAMENTE o formato de citação e a estrutura de parágrafos definidos nas regras
-        do sistema (item 4 e item 6 para tabelas) — "(Alterada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" na
-        linha riscada, "(Redação dada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" na linha nova, ou
-        "(Revogado pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" para revogação (sem repetir linha). Preserve
-        <b>/<i> e tabelas ([TABELA]...[/TABELA]) com fidelidade absoluta, redesenhando a tabela inteira
-        quando alterada.
+        do sistema (item 4) — "(Alterada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" na linha riscada,
+        "(Redação dada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" na linha nova, ou "(Revogado pelo Art. N
+        da TIPO Nº NÚMERO/ANO - SIGLA)" para revogação (sem repetir linha). Preserve <b>/<i> e tabelas
+        ([TABELA]...[/TABELA]) com fidelidade absoluta, redesenhando a tabela inteira quando alterada.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
-        resp_loop = executar_com_fallback(key, conteudo_loop, Consolidacao, provedor, thinking_level)
+        resp_loop = executar_com_fallback(key, conteudo_loop, Consolidacao, provedor)
         estado_json_atual = resp_loop.text
     return json.loads(resp_loop.text), mensagens
 
@@ -1219,7 +1038,8 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
 # =====================================================================
 
 def gerar_html_dinamico(consolidacao_dict, tipo_versao):
-    titulo_doc = f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}"
+    comp = consolidacao_dict.get("cabecalho_complemento", "")
+    titulo_doc = f"VERSÃO {'ALTERADA' if tipo_versao=='alterada' else 'CONSOLIDADA'} - {comp}"
     
     html = f"""
     <!DOCTYPE html>
@@ -1228,16 +1048,7 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
         <meta charset="utf-8">
         <title>{titulo_doc}</title>
         <style>
-            @page {{
-                size: A4;
-                margin: 2.5cm 2cm;
-                @bottom-center {{
-                    content: "Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial.";
-                    font-size: 9pt;
-                    font-style: italic;
-                    color: #333;
-                }}
-            }}
+            @page {{ size: A4; margin: 2.5cm 2cm; }}
             body {{ font-family: 'Times New Roman', Times, serif; font-size: 11pt; line-height: 1.5; text-align: justify; }}
             .topo {{ text-align: center; color: #444; font-size: 10pt; font-weight: bold; margin-bottom: 20px; text-transform: uppercase; }}
             .brasao {{ text-align: center; margin-bottom: 10px; }}
@@ -1358,7 +1169,7 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     for section in doc.sections: section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Inches(1)
 
     ph = doc.add_paragraph(); ph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    rh = ph.add_run(f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}")
+    rh = ph.add_run(f"VERSÃO {'ALTERADA' if tipo_versao=='alterada' else 'CONSOLIDADA'} - {consolidacao_dict.get('cabecalho_complemento', '')}")
     rh.font.name, rh.font.size, rh.bold, rh.font.color.rgb = 'Times New Roman', Pt(10), True, RGBColor(68, 68, 68)
     
     po = doc.add_paragraph(); po.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -1420,14 +1231,6 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     pa = doc.add_paragraph(); pa.alignment = WD_ALIGN_PARAGRAPH.CENTER; pa.paragraph_format.space_before = Pt(36)
     ra = pa.add_run(f"{limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')}\n{limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')}")
     ra.font.name, ra.font.size, ra.bold = 'Times New Roman', Pt(11), True
-
-    p_nota = doc.add_paragraph(); p_nota.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p_nota.paragraph_format.space_before = Pt(30)
-    r_nota = p_nota.add_run("Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial.")
-    r_nota.font.name = 'Times New Roman'
-    r_nota.font.size = Pt(9)
-    r_nota.italic = True
-
     buffer = io.BytesIO(); doc.save(buffer); buffer.seek(0)
     return buffer.getvalue()
 
@@ -1481,43 +1284,18 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
     elif not arquivos_enviados: st.warning("⚠️ Envie os arquivos normativos primeiro.")
     else:
         with st.spinner("⚡ Executando OCR Estrutural e Consulta ao Histórico de Aprendizado..."):
-            progresso = st.progress(0.0, text="Iniciando análise...")
             try:
-                st.session_state.dados_processados = analisar_lote_arquivos(
-                    arquivos_enviados,
-                    api_key.strip(),
-                    provedor_escolhido,
-                    thinking_level="high",
-                    dpi_ocr=1.5,
-                    max_paginas_ocr=None,
-                    progresso=progresso
-                )
+                st.session_state.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip(), provedor_escolhido)
                 st.session_state.dados_originais_ia = copy.deepcopy(st.session_state.dados_processados)
-                progresso.progress(1.0, text="Análise concluída!")
                 st.success("✨ Processamento concluído!")
             except Exception as e:
                 st.error(f"❌ Ocorreu um erro: {str(e)}")
-            finally:
-                progresso.empty()
 
 if st.session_state.dados_processados:
     st.markdown("---")
     dados = st.session_state.dados_processados
     dados_originais = st.session_state.dados_originais_ia
-
-    referencias_pendentes = dados.get("referencias_pendentes", [])
-    if referencias_pendentes:
-        st.warning("⚠️ Alguns arquivos fazem referência a normas que não foram encontradas no lote nem no banco de dados.")
-        st.markdown("### 📋 Quadro Resumo de Referências Pendentes")
-        df_refs = []
-        for ref in referencias_pendentes:
-            df_refs.append({
-                "Tipo": ref.get("ato_referenciado_tipo", "Desconhecido"),
-                "Número": ref.get("ato_referenciado_numero", "Desconhecido"),
-                "Arquivos que mencionam": ", ".join(ref.get("arquivos_alteradores", []))
-            })
-        st.table(df_refs)
-
+    
     for i, cons in enumerate(dados.get("consolidacoes_geradas", [])):
         nome_exibicao_base = cons['norma_base']['nome_padronizado']
         nomes_alteradoras = [alt['nome_padronizado'] for alt in cons.get('normas_alteradoras', [])]
