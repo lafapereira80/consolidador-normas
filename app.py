@@ -495,6 +495,20 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
    conteúdo que aparecer após a assinatura, incluindo qualquer anexo (ex.: "ANEXO I", "ANEXO II") e suas
    respectivas tabelas. NÃO pare a leitura na assinatura. Se houver anexos, eles devem ser considerados
    como dispositivos (com tipo "Anexo") e suas tabelas incluídas normalmente.
+
+8. REVOGAÇÃO INTEGRAL:
+   Quando um ato alterador REVOGA integralmente outro ato, TODOS os dispositivos do ato revogado
+   (artigos, parágrafos, incisos, anexos, tabelas) devem ser integralmente taxados na versão ALTERADA:
+   - Cada dispositivo deve ter seu texto antigo inteiro riscado em vermelho com a nota
+     "(Revogado pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>);".
+   - Se o dispositivo contém tabela (is_tabela=True), a tabela deve ser integralmente taxada
+     (todas as células com <strike><font color="red">) no campo 'tabela_alterada', e o texto antes/depois
+     deve ser taxado normalmente no campo 'texto_principal_alterada'.
+   - Na versão CONSOLIDADA, cada dispositivo deve conter APENAS a nota de revogação
+     (ex.: "Art. X - (Revogado pelo Art. ...)"), sem reproduzir o texto revogado e sem tabela.
+   - Se o ato revogado possui ANEXOS, cada anexo também deve ser tratado como dispositivo revogado,
+     com todo o seu conteúdo taxado na versão alterada, e na consolidada apenas a nota de revogação.
+   - NÃO omita nenhum dispositivo, anexo ou tabela nesse processo.
 """
 
 # ----------------- SCHEMA JSON PARA PROVEDORES SEM STRUCTURED OUTPUT NATIVO -----------------
@@ -1134,6 +1148,8 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
         "(Revogado pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" para revogação (sem repetir linha). Preserve
         <b>/<i> e tabelas ([TABELA]...[/TABELA]) com fidelidade absoluta, redesenhando a tabela inteira
         quando alterada.
+        Se o ato for de revogação integral, aplique a taxação completa em todos os dispositivos, anexos e tabelas,
+        conforme item 8.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
