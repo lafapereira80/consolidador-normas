@@ -754,6 +754,11 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_pagin
         for page_num, page in enumerate(doc):
             html_text += f"=== PÁGINA {page_num + 1} ===\n"
 
+            # Detectar títulos de anexo e adicionar marcador
+            page_text = page.get_text()
+            if re.search(r'ANEXO\s+[IVXLC]+', page_text, re.IGNORECASE):
+                html_text += "[ANEXO]\n"
+
             tabelas_bbox = []
             try:
                 tab_finder = page.find_tables()
@@ -789,9 +794,6 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_pagin
                     if linha_span.strip(): bloco_linhas += linha_span + " "
                 if bloco_linhas.strip(): html_text += bloco_linhas.strip() + "<br/>\n"
             html_text += "<br/>\n"
-
-        # Adiciona nota para a IA de que o conteúdo pode continuar após a assinatura
-        html_text += "\n[NOTA: Considere TODO o conteúdo acima, incluindo anexos e tabelas que possam aparecer após a assinatura.]"
 
         if caracteres_uteis < 30 * max(doc.page_count, 1):
             partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO. Leia o conteúdo visualmente, inclusive tabelas:"]
