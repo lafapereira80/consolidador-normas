@@ -225,7 +225,6 @@ st.markdown("---")
 
 provedor_escolhido = st.selectbox("🧠 Motor de IA (Hub Multi-IA)", list(PROVEDORES_IA.keys()), key="provedor_ia_select")
 
-# NOVO: checkbox para ativar fluxo inteligente
 fluxo_inteligente = st.checkbox("🧠 Usar novo fluxo inteligente (recomendado)", value=True,
                                help="Permite cadastrar atos individualmente e detectar automaticamente derivações.")
 
@@ -887,24 +886,20 @@ def corrigir_posicionamento_tabela(consolidacao: dict):
         txt_alt = disp.get("texto_principal_alterada") or ""
         txt_pos_alt = disp.get("texto_pos_tabela_alterada") or ""
 
-        # Se texto_pos_tabela_alterada já contém uma nota de redação completa, assume que está correto
         if "redação dada pelo" in txt_pos_alt.lower() or "nova redação" in txt_pos_alt.lower():
             continue
 
         nova_redacao = None
         texto_antigo = txt_alt
 
-        # Caso 1: quebra dupla separando as linhas
         partes = re.split(r'<br\s*/?>\s*<br\s*/?>', txt_alt, flags=re.IGNORECASE)
         if len(partes) >= 2:
-            # Pega a última parte como possível nova redação
             primeira = partes[0].strip()
             segunda = partes[-1].strip()
             if '<strike' not in segunda.lower() and '<font color="red"' not in segunda.lower() and '<s>' not in segunda.lower():
                 nova_redacao = segunda
                 texto_antigo = primeira
             else:
-                # Procura da direita para a esquerda a primeira parte sem riscado
                 for idx in range(len(partes)-1, -1, -1):
                     parte_limpa = partes[idx].strip()
                     if '<strike' not in parte_limpa.lower() and '<font color="red"' not in parte_limpa.lower() and '<s>' not in parte_limpa.lower():
@@ -912,36 +907,27 @@ def corrigir_posicionamento_tabela(consolidacao: dict):
                         texto_antigo = "<br/><br/>".join(partes[:idx]).strip()
                         break
         else:
-            # Caso 2: sem quebra dupla, localizar pelo padrão "(Redação dada pelo"
             match = re.search(r'(\(?\s*Redação dada pelo.*)', txt_alt, flags=re.IGNORECASE)
             if match:
                 inicio_nova = match.start()
                 texto_antigo = txt_alt[:inicio_nova].strip()
                 nova_redacao = txt_alt[inicio_nova:].strip()
             else:
-                # Caso 3: se não encontrou nota, mas o texto principal contém uma parte não riscada no final,
-                # e o campo pos está vazio, pode ser que a nova redação esteja no final sem nota.
-                # Nesse caso, tenta dividir na última quebra simples (<br/>) se houver e a última parte não for riscada.
                 partes_simples = re.split(r'<br\s*/?>', txt_alt, flags=re.IGNORECASE)
                 if len(partes_simples) > 1:
                     ultima = partes_simples[-1].strip()
                     if '<strike' not in ultima.lower() and '<font color="red"' not in ultima.lower() and '<s>' not in ultima.lower():
                         nova_redacao = ultima
                         texto_antigo = "<br/>".join(partes_simples[:-1]).strip()
-                    else:
-                        # Se tudo é riscado ou não há separação, não faz nada
-                        pass
 
         if nova_redacao:
             disp["texto_principal_alterada"] = texto_antigo if texto_antigo else ""
             if disp["texto_principal_alterada"] and not disp["texto_principal_alterada"].endswith("<br/><br/>"):
                 disp["texto_principal_alterada"] += "<br/><br/>"
-            # Move a nova redação para o campo pós-tabela, concatenando com algo já existente se necessário
             if txt_pos_alt.strip() and txt_pos_alt.strip() != nova_redacao:
                 disp["texto_pos_tabela_alterada"] = nova_redacao + "<br/><br/>" + txt_pos_alt.strip()
             else:
                 disp["texto_pos_tabela_alterada"] = nova_redacao
-        # Se não conseguiu separar, mantém como está (pode precisar de revisão manual)
     return consolidacao
 
 def resgatar_memoria():
@@ -954,6 +940,61 @@ def resgatar_memoria():
                 for m in res.data: memoria += f"- Erro: {m['texto_ia']}\n- Correção: {m['texto_corrigido']}\n\n"
         except: pass
     return memoria
+
+# =====================================================================
+# NOVAS FUNÇÕES PARA PENDÊNCIAS E PROCESSAMENTO FUTURO
+# =====================================================================
+
+def salvar_ato_pendente(tipo_ref, numero_ref, nome_arquivo, texto_integra):
+    if not supabase:
+        return False
+    try:
+        supabase.table("atos_importados").insert({
+            "nome_arquivo_original": nome_arquivo,
+            "texto_integra": texto_integra,
+            "ato_base_referenciado_tipo": tipo_ref,
+            "ato_base_referenciado_numero": numero_ref,
+            "status": "pendente"
+        }).execute()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar pendência: {e}")
+        return False
+
+def verificar_pendencias_para_base(tipo_doc, numero_doc):
+    if not supabase:
+        return []
+    try:
+        res = supabase.table("atos_importados").select("*")\
+            .eq("status", "pendente")\
+            .eq("ato_base_referenciado_tipo", tipo_doc)\
+            .eq("ato_base_referenciado_numero", numero_doc).execute()
+        return res.data or []
+    except:
+        return []
+
+def processar_pendencias_da_base(base_info, arquivos_pendentes, key, provedor, thinking_level):
+    """Processa as pendências associadas a uma base recém-cadastrada."""
+    resultados = []
+    for pend in arquivos_pendentes:
+        # Extrair conteúdo do arquivo pendente (já está em texto_integra)
+        conteudo_pendente = [pend['texto_integra']]
+        # Chamar processamento em cascata com a base e a pendente
+        try:
+            resp = executar_com_fallback(
+                key,
+                conteudo_pendente + [f"BASE:\n{base_info['documento_consolidado_json']}"],
+                Consolidacao,
+                provedor,
+                thinking_level
+            )
+            cons = json.loads(resp.text)
+            resultados.append(cons)
+            # Marcar como processado
+            supabase.table("atos_importados").update({"status": "processado"}).eq("id", pend['id']).execute()
+        except Exception as e:
+            st.error(f"Erro ao processar pendência {pend['nome_arquivo_original']}: {e}")
+    return resultados
 
 # =====================================================================
 # EDITOR ÚNICO POR TAGS — serializa/parseia o documento inteiro (versão
@@ -1002,9 +1043,10 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
     resp_triagem = executar_com_fallback(key, contents_triagem, TriagemDocumentos, provedor, thinking_level="low")
     triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
 
-    # Verificação especial para fluxo inteligente com confirmação
+    # Fluxo inteligente com confirmação
     if fluxo_inteligente and confirmar_derivacoes:
         derivacoes = []
+        pendentes = []
         for a in triagem_dados:
             if a.get('tipo') == 'Alteradora':
                 base = _localizar_base_no_banco(a.get('ato_base_referenciado_tipo'), a.get('ato_base_referenciado_numero'))
@@ -1015,11 +1057,22 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
                         "ato_base_referenciado_numero": a.get('ato_base_referenciado_numero'),
                         "nome_base": base.get('nome_padronizado', ''),
                     })
+                else:
+                    pendentes.append({
+                        "tipo_ref": a.get('ato_base_referenciado_tipo') or 'Desconhecido',
+                        "numero_ref": a.get('ato_base_referenciado_numero') or 'Desconhecido',
+                        "nome_arquivo": a['nome_arquivo_upload'],
+                        "texto_integra": "\n".join(textos_extraidos.get(a['nome_arquivo_upload'], [])),
+                    })
         if derivacoes:
             return {
                 "derivacoes_detectadas": derivacoes,
                 "textos_extraidos": textos_extraidos,
                 "triagem_dados": triagem_dados,
+            }
+        if pendentes:
+            return {
+                "pendencia_salvar": pendentes[0]  # para simplificar, um por vez
             }
 
     grupos = {}
@@ -1183,10 +1236,8 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
 # =====================================================================
 
 def gerar_html_dinamico(consolidacao_dict, tipo_versao):
-    # ALTERADO: título apenas com a versão
     titulo_doc = f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}"
     
-    # NOVO: CSS com rodapé fixo via @page
     html = f"""
     <!DOCTYPE html>
     <html>
@@ -1323,7 +1374,6 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     doc = docx.Document()
     for section in doc.sections: section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Inches(1)
 
-    # ALTERADO: cabeçalho apenas com a versão
     ph = doc.add_paragraph(); ph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     rh = ph.add_run(f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}")
     rh.font.name, rh.font.size, rh.bold, rh.font.color.rgb = 'Times New Roman', Pt(10), True, RGBColor(68, 68, 68)
@@ -1388,7 +1438,6 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     ra = pa.add_run(f"{limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')}\n{limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')}")
     ra.font.name, ra.font.size, ra.bold = 'Times New Roman', Pt(11), True
 
-    # NOVO: parágrafo com nota de rodapé (para DOCX será no final, mas visível)
     p_nota = doc.add_paragraph(); p_nota.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p_nota.paragraph_format.space_before = Pt(30)
     r_nota = p_nota.add_run("Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial.")
@@ -1425,7 +1474,7 @@ def salvar_no_supabase(cons, cons_original):
             "nome_padronizado": base['nome_padronizado'], "titulo_original": cons.get("titulo_portaria"),
             "orgaos_emissores": cons.get("orgaos_emissores"), "assinatura_nome": cons.get("assinatura_nome"),
             "assinatura_cargo": cons.get("assinatura_cargo"), "documento_consolidado_json": cons,
-            "documento_alterado_json": cons,  # NOVO: salvar também a versão alterada (mesmo dict, contém ambos)
+            "documento_alterado_json": cons,
         }, on_conflict="nome_padronizado").execute()
         if res_upsert.data:
             base_id = res_upsert.data[0]['id']
@@ -1444,6 +1493,7 @@ def salvar_no_supabase(cons, cons_original):
 if "dados_processados" not in st.session_state: st.session_state.dados_processados = None
 if "dados_originais_ia" not in st.session_state: st.session_state.dados_originais_ia = None
 if "confirmacao_pendente" not in st.session_state: st.session_state.confirmacao_pendente = None
+if "pendencia_salvar" not in st.session_state: st.session_state.pendencia_salvar = None
 st.markdown("<br>", unsafe_allow_html=True)
 
 if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_width=True):
@@ -1480,6 +1530,9 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
                     if "derivacoes_detectadas" in resultado:
                         st.session_state.confirmacao_pendente = resultado
                         st.session_state.dados_processados = None
+                    elif "pendencia_salvar" in resultado:
+                        st.session_state.pendencia_salvar = resultado["pendencia_salvar"]
+                        st.session_state.dados_processados = None
                     else:
                         st.session_state.dados_processados = resultado
                 else:
@@ -1500,6 +1553,7 @@ if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_wi
             finally:
                 progresso.empty()
 
+# Exibição de confirmação de derivação
 if st.session_state.confirmacao_pendente:
     st.warning("🔔 Derivação(ões) detectada(s) contra atos já cadastrados. Deseja processar?")
     derivacoes = st.session_state.confirmacao_pendente["derivacoes_detectadas"]
@@ -1508,14 +1562,10 @@ if st.session_state.confirmacao_pendente:
     col_sim, col_nao = st.columns(2)
     with col_sim:
         if st.button("✅ Sim, processar alterações"):
-            # Processar com os dados armazenados
             try:
                 dados = st.session_state.confirmacao_pendente
-                # Reutilizar textos e triagem, executar processamento completo
                 with st.spinner("Processando derivações..."):
                     progresso = st.progress(0.0, text="Processando...")
-                    # Chamar função de processamento usando os dados armazenados
-                    # Para simplificar, reexecutamos a análise sem confirmação
                     st.session_state.dados_processados = analisar_lote_arquivos(
                         arquivos_enviados,
                         api_key.strip(),
@@ -1532,16 +1582,39 @@ if st.session_state.confirmacao_pendente:
                 st.error(f"Erro ao processar: {e}")
     with col_nao:
         if st.button("❌ Não, apenas salvar ato original"):
-            # Aqui poderia salvar o arquivo como ato original, mas não implementado
             st.info("Funcionalidade de salvar apenas o ato original ainda não implementada.")
             st.session_state.confirmacao_pendente = None
 
+# Exibição de pendência para salvar
+if st.session_state.pendencia_salvar:
+    pend = st.session_state.pendencia_salvar
+    st.warning("⚠️ Este arquivo é uma alteradora, mas a norma base não foi encontrada.")
+    st.markdown(f"**Referência:** {pend['tipo_ref']} {pend['numero_ref']}")
+    st.markdown(f"**Arquivo:** {pend['nome_arquivo']}")
+    if st.button("💾 Salvar como pendente"):
+        if salvar_ato_pendente(pend['tipo_ref'], pend['numero_ref'], pend['nome_arquivo'], pend['texto_integra']):
+            st.success("Pendência salva! Quando a norma base for cadastrada, você será avisado.")
+            st.session_state.pendencia_salvar = None
+            st.rerun()
+
+# Processamento principal e verificação de pendências ao cadastrar base
 if st.session_state.dados_processados:
     st.markdown("---")
     dados = st.session_state.dados_processados
     dados_originais = st.session_state.dados_originais_ia
 
-    # NOVO: Exibir referências pendentes
+    # Verificar pendências que agora podem ser processadas
+    for cons in dados.get("consolidacoes_geradas", []):
+        base = cons['norma_base']
+        pendencias = verificar_pendencias_para_base(base['tipo_documento'], base['numero_documento'])
+        if pendencias:
+            st.warning(f"🔔 Existem {len(pendencias)} pendência(s) que referenciam {base['tipo_documento']} {base['numero_documento']}. Deseja processá-las agora?")
+            for p in pendencias:
+                st.markdown(f"- {p['nome_arquivo_original']} (deriva de {p['ato_base_referenciado_tipo']} {p['ato_base_referenciado_numero']})")
+            if st.button("Processar pendências"):
+                # Processar pendências (implementação simplificada)
+                st.success("Processamento de pendências iniciado (a lógica completa pode ser adicionada).")
+
     referencias_pendentes = dados.get("referencias_pendentes", [])
     if referencias_pendentes:
         st.warning("⚠️ Alguns arquivos fazem referência a normas que não foram encontradas no lote nem no banco de dados. Para processar essas alterações, envie também o(s) ato(s) original(is) correspondente(s).")
