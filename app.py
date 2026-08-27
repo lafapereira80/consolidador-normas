@@ -309,6 +309,8 @@ class QuillParser(HTMLParser):
 
 def ia_para_editor(texto):
     if not texto: return ""
+    # Corrigido: substitui quebras de linha reais por <br/>
+    texto = re.sub(r'(\r\n|\r|\n)', '<br/>', texto)
     texto = texto.replace("<br/>", "</p><p>").replace("<br>", "</p><p>")
     if not texto.startswith("<p>"): texto = f"<p>{texto}</p>"
     texto = re.sub(r'<(strike|del)\b[^>]*>', '<s>', texto, flags=re.IGNORECASE)
@@ -346,11 +348,148 @@ def editor_para_pdf(texto):
         return texto_limpo
 
 # =====================================================================
-# INSTRUÇÃO DA IA
+# INSTRUÇÃO DA IA (mantida completa)
 # =====================================================================
 
 SYSTEM_INSTRUCTION_LEGISTECNICA = """
-... (mantida a mesma instrução anterior, omitida para brevidade)
+Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasileiro, apto a trabalhar com
+QUALQUER espécie normativa: Leis, Decretos, Resoluções, Portarias, Enunciados, Instruções Normativas etc.
+Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatórias:
+
+1. FIDELIDADE ABSOLUTA: transcreva com exatidão o conteúdo de cada dispositivo, preservando formatação (<b>, <i>, quebras <br/>).
+2. SEPARAÇÃO ESTRUTURAL OBRIGATÓRIA:
+   - 'ementa': Resumo descritivo do objeto da norma.
+   - 'preambulo': Autoridade expedidora e os Considerandos.
+3. TABELAS: quando o dispositivo contiver uma tabela (identificada por marcadores [TABELA]...[/TABELA] no
+   texto de origem), transcreva TODAS as linhas e colunas com fidelidade absoluta em 'tabela_alterada' e
+   'tabela_consolidada' (uma lista de listas, uma sublista por linha, mantendo a ordem exata de colunas).
+   NUNCA descreva a tabela em prosa, NUNCA a omita, e NUNCA resuma seu conteúdo — reproduza célula a célula,
+   mesmo que a tabela seja grande. Se um ato alterador modifica um conteúdo e dentro desse conteúdo existe
+   uma tabela (acrescenta, remove ou muda linhas/colunas) ela deve ser taxada, com  <strike><font color="red"> Célula </font></strike>, 'tabela_alterada' deve conter a tabela NOVA e COMPLETA (com todas as
+   linhas, alteradas ou não), e o campo 'texto_pos_tabela_alterada' deve trazer a nota
+   "(Nova redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)" logo abaixo da tabela.
+   'tabela_consolidada' sempre reflete a versão vigente (mais recente) da tabela, a nova redação no caso de alterada deve vir após a tabela ou texto, verifique o que vem por último e após isso que deve vir a nova redação.
+4. CRITÉRIO RIGOROSO DE ALTERAÇÃO E REVOGAÇÃO — formato EXATO e obrigatório (siga rigorosamente a
+   pontuação, os parênteses e a ordem abaixo; NUNCA misture os dois casos):
+
+   a) DISPOSITIVO ALTERADO (nova redação) — na versão ALTERADA (`texto_principal_alterada`), escreva em
+      DUAS LINHAS separadas por quebra de parágrafo dupla `<br/><br/>` (nunca concatenadas na mesma linha):
+
+      Linha 1 — identificador + texto ANTIGO INTEGRAL riscado em vermelho, seguido IMEDIATAMENTE (fora do
+      risco, na mesma linha) da nota "(Alterada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)":
+        <strike><font color="red">X - texto antigo integral, incluindo tabelas ...</font></strike> (Alterada pelo Art. 8 da
+        PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026) ou o texto continua.
+      <br/><br/>
+      Linha 2 — repita o MESMO identificador + a NOVA redação vigente por extenso, sem riscar, seguida da
+      nota "(Redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>).":
+        X - texto novo integral... (Redação dada pelo Art. 8 da PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026).
+
+      Exemplo completo (copie exatamente este padrão, adaptando o conteúdo):
+        <strike><font color="red">X - apresentar ao final do período de instrutoria "Relatório das
+        Atividades desenvolvidas durante o processo de Instrutoria", conforme modelo padrão.</font></strike>
+        (Alterada pelo Art. 8 da PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026)<br/><br/>X - apresentar trimestralmente
+        relatórios de atividade ao(à) instruendo(a), conforme modelo anexo; (Redação dada pelo Art. 8 da
+        PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026).
+
+      Para dispositivos com tabela, siga as regras do item 6.
+
+   b) DISPOSITIVO REVOGADO — na versão ALTERADA, UMA ÚNICA LINHA (NÃO repita/acrescente uma segunda linha):
+      identificador + texto INTEGRAL riscado em vermelho, seguido IMEDIATAMENTE da nota
+      "(Revogado pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>);":
+        <strike><font color="red">X - apresentar ao final do período de instrutoria "Relatório das
+        Atividades desenvolvidas durante o processo de Instrutoria", conforme modelo padrão.</font></strike>
+        (Revogado pelo Art. 8 da PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026);
+
+      Na versão CONSOLIDADA do mesmo dispositivo, mostre APENAS o identificador + a nota de revogação,
+      sem repetir o texto revogado:
+        X - (Revogado pelo Art. 8 da PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026).
+
+   c) As notas "(Alterada pelo ...)", "(Redação dada pelo ...)" e "(Revogado pelo ...)" vão SEMPRE
+      embutidas diretamente no texto de 'texto_principal_alterada'/'texto_principal_consolidada' (não em
+      campo separado), citando o ARTIGO ESPECÍFICO do ato alterador que promoveu a mudança — nunca cite
+      só o ato inteiro sem o artigo. Preencha também 'nota_remissiva' com o mesmo trecho da citação (sem
+      parênteses), só para fins de indexação/auditoria — mas isso é redundante ao texto, não substitui.
+   d) NUNCA deixe de taxar o dispositivo correto, e NUNCA junte texto antigo e novo na mesma linha sem a
+      quebra de parágrafo dupla `<br/><br/>` entre eles, exceto no caso de revogação (que é uma única linha).
+5. GENERALIDADE: as regras acima valem para qualquer espécie normativa (Lei, Decreto, Resolução, Portaria,
+   Enunciado, Instrução Normativa etc.) e para qualquer tipo de dispositivo (Artigo, Parágrafo, Parágrafo
+   Único, Inciso, Alínea, Item).
+
+6. REGRAS ESPECÍFICAS PARA DISPOSITIVOS COM TABELA (is_tabela=True)
+   Quando um dispositivo normativo contiver uma tabela (campo is_tabela=True) e for objeto de alteração
+   por um ato modificador, siga rigorosamente as regras abaixo:
+
+   6.1. Estrutura geral na versão ALTERADA:
+   - O texto ANTIGO (riscado) fica no campo 'texto_principal_alterada', **sem a nota de alteração**.
+   - A nota "(Alterada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" DEVE ser colocada **no início do campo
+     'texto_pos_tabela_alterada'**, logo após a tabela, antes de qualquer nova redação.
+   - A tabela ALTERADA (com as células taxadas quando houver mudança) fica no campo 'tabela_alterada'.
+   - A NOVA REDAÇÃO completa (texto novo, se houver, e a nota "(Redação dada pelo Art. N da TIPO Nº
+     NÚMERO/ANO - SIGLA)") fica NO MESMO CAMPO 'texto_pos_tabela_alterada', logo após a nota de alteração,
+     separada por um espaço ou quebra de linha, conforme necessário.
+   - A ordem final no campo 'texto_pos_tabela_alterada' deve ser:
+     "(Alterada pelo Art. ...) <br/> X - texto novo... (Redação dada pelo Art. ...)"
+     ou, se não houver nova redação, apenas a nota de alteração.
+
+   6.2. Casos específicos:
+   a) Dispositivo com texto introdutório + tabela + texto final:
+      - 'texto_principal_alterada': contém o texto antigo completo (introdução + referência à tabela +
+        texto final) riscado, SEM a nota de alteração.
+      - 'tabela_alterada': a tabela completa, com células taxadas se alteradas.
+      - 'texto_pos_tabela_alterada': inicia com a nota "(Alterada pelo Art. ...)", seguida da NOVA redação
+        do dispositivo inteiro (introdução nova, se aplicável, descrição da tabela, texto final novo) e da
+        nota "(Redação dada pelo...)".
+        Exemplo:
+          texto_principal_alterada = "<strike><font color='red'>Art. 5º - O prazo para entrega é de 30 dias,
+          conforme tabela abaixo:</font></strike>"
+          tabela_alterada = [["Item", "Prazo"], ["Documento", "10 dias"], ["Relatório", "20 dias"]]
+          texto_pos_tabela_alterada = "(Alterada pelo Art. 2 da PORTARIA Nº 5/PGJ, de 10 de maio de 2025)<br/>Art. 5º - O prazo para entrega é de 60 dias, conforme tabela abaixo: (Redação dada pelo Art. 2 da PORTARIA Nº 5/PGJ, de 10 de maio de 2025)"
+
+   b) Dispositivo que contém APENAS a tabela (sem texto antes ou depois):
+      - 'texto_principal_alterada': conterá apenas o identificador do dispositivo (ex.: "Art. 7º") riscado,
+        sem a nota de alteração.
+      - 'tabela_alterada': a tabela completa, com alterações taxadas.
+      - 'texto_pos_tabela_alterada': inicia com a nota "(Alterada pelo...)", seguida da nova redação da
+        tabela em forma de texto descritivo (caso a tabela tenha sido substituída por texto) ou apenas a
+        nota se a tabela foi apenas modificada e não há texto adicional.
+        Importante: se a tabela foi substituída por texto, descreva-a em texto_pos_tabela_alterada;
+        caso contrário, deixe apenas a nota.
+
+   c) Alteração que NÃO afeta a tabela, mas afeta o texto ao redor:
+      - Nesse caso, o campo 'is_tabela' deve ser False se a tabela em si não faz parte da alteração.
+        Ou seja, se a tabela permanece intacta e apenas o texto muda, trate como um dispositivo normal
+        (is_tabela=False) e coloque a Linha 2 em 'texto_principal_alterada' normalmente.
+
+   6.3. Versão CONSOLIDADA:
+   - 'texto_principal_consolidada': deve conter a versão vigente do dispositivo (sem riscados).
+     Se houver texto antes da tabela, ele deve estar aqui; se não, apenas o identificador.
+   - 'tabela_consolidada': a tabela na versão vigente (sem taxações).
+   - 'texto_pos_tabela_consolidada': se existir texto após a tabela na versão vigente, ele deve ser
+     colocado aqui. Caso contrário, deixe vazio.
+   - A nota "(Redação dada pelo...)" pode aparecer em 'texto_principal_consolidada' ou em
+     'texto_pos_tabela_consolidada', conforme a posição natural do texto novo, mas nunca duplicada.
+
+   6.4. A nota de redação deve sempre aparecer **fora** da tabela, nunca dentro de uma célula.
+
+7. ANEXOS E CONTEÚDO PÓS-ASSINATURA:
+   O documento pode conter ANEXOS e tabelas APÓS a assinatura. É OBRIGATÓRIO ler e transcrever TODO o
+   conteúdo que aparecer após a assinatura, incluindo qualquer anexo (ex.: "ANEXO I", "ANEXO II") e suas
+   respectivas tabelas. NÃO pare a leitura na assinatura. Se houver anexos, eles devem ser considerados
+   como dispositivos (com tipo "Anexo") e suas tabelas incluídas normalmente.
+
+8. REVOGAÇÃO INTEGRAL:
+   Quando um ato alterador REVOGA integralmente outro ato, TODOS os dispositivos do ato revogado
+   (artigos, parágrafos, incisos, anexos, tabelas) devem ser integralmente taxados na versão ALTERADA:
+   - Cada dispositivo deve ter seu texto antigo inteiro riscado em vermelho com a nota
+     "(Revogado pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>);".
+   - Se o dispositivo contém tabela (is_tabela=True), a tabela deve ser integralmente taxada
+     (todas as células com <strike><font color="red">) no campo 'tabela_alterada', e o texto antes/depois
+     deve ser taxado normalmente no campo 'texto_principal_alterada'.
+   - Na versão CONSOLIDADA, cada dispositivo deve conter APENAS a nota de revogação
+     (ex.: "Art. X - (Revogado pelo Art. ...)"), sem reproduzir o texto revogado e sem tabela.
+   - Se o ato revogado possui ANEXOS, cada anexo também deve ser tratado como dispositivo revogado,
+     com todo o seu conteúdo taxado na versão alterada, e na consolidada apenas a nota de revogação.
+   - NÃO omita nenhum dispositivo, anexo ou tabela nesse processo.
 """
 
 # =====================================================================
@@ -1331,7 +1470,6 @@ if fluxo_inteligente and len(arquivos_enviados) == 1:
             try:
                 conteudo = extrair_conteudo_multimodal(arquivo.getvalue(), arquivo.name)
                 texto_integra = "\n".join([c if isinstance(c, str) else "" for c in conteudo])
-                # Usa a IA para estruturar em Consolidacao
                 resp = executar_com_fallback(api_key.strip(), [texto_integra], Consolidacao, provedor_escolhido, thinking_level="medium")
                 estrutura = json.loads(resp.text)
                 st.session_state.arquivo_unico_estrutura = estrutura
@@ -1342,7 +1480,6 @@ if fluxo_inteligente and len(arquivos_enviados) == 1:
 
     if st.session_state.arquivo_unico_estrutura:
         estrutura = st.session_state.arquivo_unico_estrutura
-        # Edição dos campos básicos
         estrutura['titulo_portaria'] = st.text_input("Título do Ato", estrutura.get('titulo_portaria', ''), key="titulo_original")
         estrutura['orgaos_emissores'] = st.text_input("Órgãos Emissores", estrutura.get('orgaos_emissores', ''), key="orgaos_original")
         estrutura['ementa'] = editor_para_pdf(editor_rico(ia_para_editor(estrutura.get('ementa', '')), key="ementa_original"))
@@ -1354,7 +1491,7 @@ if fluxo_inteligente and len(arquivos_enviados) == 1:
         for idx, disp in enumerate(estrutura.get('dispositivos', [])):
             st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {idx+1}**")
             disp['texto_principal_alterada'] = editor_para_pdf(editor_rico(ia_para_editor(disp.get('texto_principal_alterada', '')), key=f"texto_original_{idx}"))
-            disp['texto_principal_consolidada'] = disp['texto_principal_alterada']  # Para simplificar, tratamos igual
+            disp['texto_principal_consolidada'] = disp['texto_principal_alterada']
             if disp.get('is_tabela'):
                 st.markdown("*Tabela*")
                 disp['tabela_alterada'] = st.data_editor(disp.get('tabela_alterada') or [[""]], key=f"tabela_original_{idx}", num_rows="dynamic")
@@ -1366,9 +1503,7 @@ if fluxo_inteligente and len(arquivos_enviados) == 1:
         col1, col2 = st.columns(2)
         with col1:
             if st.button("💾 Salvar Ato Original", key="btn_salvar_unico"):
-                # Atualiza a estrutura com os campos editados
                 st.session_state.arquivo_unico_estrutura = estrutura
-                # Salva no banco
                 id_salvo = salvar_ato_integral(
                     arquivo.name,
                     json.dumps(estrutura, ensure_ascii=False),
@@ -1380,7 +1515,6 @@ if fluxo_inteligente and len(arquivos_enviados) == 1:
         with col2:
             if st.button("🔍 Analisar com atos cadastrados", key="btn_analisar_unico", disabled=(st.session_state.arquivo_unico_id is None)):
                 with st.spinner("Analisando derivações..."):
-                    # Classifica o ato
                     classif, _, erro = classificar_arquivo_unico(arquivo, api_key.strip(), provedor_escolhido, thinking_level="medium")
                     if erro:
                         st.error(f"Erro na classificação: {erro}")
@@ -1407,11 +1541,9 @@ if fluxo_inteligente and len(arquivos_enviados) == 1:
                                 }
                                 st.session_state.confirmacao_pendente = None
                         else:
-                            # É um ato base: salva em portarias_base
                             with st.spinner("Salvando ato base..."):
                                 salvar_no_supabase(estrutura, None)
                                 st.success("Ato base salvo no banco de dados.")
-                                # Verifica pendências
                                 pend = verificar_pendencias_para_base(estrutura['norma_base']['tipo_documento'], estrutura['norma_base']['numero_documento'])
                                 if pend:
                                     st.warning(f"🔔 Existem {len(pend)} pendência(s) que referenciam este ato. Processe-as se necessário.")
