@@ -274,7 +274,7 @@ def editor_para_pdf(texto):
     except Exception: return re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto, flags=re.IGNORECASE)
 
 # =====================================================================
-# SCHEMAS PYDANTIC
+# SCHEMAS PYDANTIC E PROMPTS
 # =====================================================================
 class ArquivoClassificado(BaseModel):
     nome_arquivo_upload: str
@@ -514,6 +514,38 @@ def consolidar_documentos(ato_alterador, base_id_db, api_key, provedor, thinking
     resultado = corrigir_posicionamento_tabela(resultado)
     return resultado
 
+def gerar_html_dinamico(consolidacao_dict, tipo_versao):
+    titulo_doc = f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}"
+    html = f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{titulo_doc}</title><style>@page {{ size: A4; margin: 2.5cm 2cm; @bottom-center {{ content: 'Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Diário Oficial.'; font-size: 9pt; font-style: italic; color: #333; }} }} body {{ font-family: 'Times New Roman', serif; font-size: 11pt; line-height: 1.5; text-align: justify; }} .topo, .titulo, .orgaos, .capitulo, .assinatura {{ text-align: center; font-weight: bold; }} .ementa {{ margin-left: 45%; }} .dispositivo {{ text-indent: 40px; }} table {{ width: 100%; border-collapse: collapse; }} td, th {{ border: 1px solid black; padding: 6px; }} strike, font[color='red'] {{ color: red !important; text-decoration: line-through; }} </style></head><body>"
+    html += f"<div class='orgaos'>{consolidacao_dict.get('orgaos_emissores','')}</div><div class='titulo'>{consolidacao_dict.get('titulo_portaria','')}</div><div class='ementa'>{consolidacao_dict.get('ementa','')}</div><div class='preambulo'>{consolidacao_dict.get('preambulo','')}</div>"
+    for d in consolidacao_dict.get('dispositivos', []):
+        t_prin = d.get(f'texto_principal_{tipo_versao}', '')
+        if t_prin: html += f"<div class='dispositivo'>{t_prin}</div>"
+        if d.get('is_tabela') and d.get(f'tabela_{tipo_versao}'):
+            html += "<table>"
+            for linha in d.get(f'tabela_{tipo_versao}'): html += "<tr>" + "".join([f"<td>{cel}</td>" for cel in linha]) + "</tr>"
+            html += "</table>"
+            t_pos = d.get(f'texto_pos_tabela_{tipo_versao}', '')
+            if t_pos: html += f"<div class='dispositivo'>{t_pos}</div>"
+    html += f"<div class='assinatura'>{consolidacao_dict.get('assinatura_nome','')}<br>{consolidacao_dict.get('assinatura_cargo','')}</div></body></html>"
+    return html
+
+def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
+    if not HAS_WEASYPRINT: raise Exception("WeasyPrint indisponível")
+    html_str = gerar_html_dinamico(consolidacao_dict, tipo_versao)
+    buffer = io.BytesIO()
+    WeasyHTML(string=html_str).write_pdf(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
+    doc = docx.Document()
+    doc.add_paragraph(consolidacao_dict.get('titulo_portaria', '')).alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for d in consolidacao_dict.get('dispositivos', []):
+        doc.add_paragraph(re.sub(r'<[^>]+>', '', d.get(f'texto_principal_{tipo_versao}', ''))).alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    b = io.BytesIO(); doc.save(b); b.seek(0)
+    return b.getvalue()
+
 # =====================================================================
 # UI E FLUXO PRINCIPAL
 # =====================================================================
@@ -701,6 +733,13 @@ if st.session_state.atos_estruturados:
             elif fase == 'consolidacao':
                 ato['titulo_portaria'] = st.text_input("Título do Ato Normativo", ato.get('titulo_portaria', ''), key=f"t_cons_{i}")
                 
+                st.markdown("**Ementa**")
+                ato['ementa'] = editor_para_pdf(editor_rico(ia_para_editor(ato.get('ementa', '')), f"q_ementa_cons_{i}"))
+                
+                st.markdown("**Preâmbulo e Considerandos**")
+                ato['preambulo'] = editor_para_pdf(editor_rico(ia_para_editor(ato.get('preambulo', '')), f"q_preambulo_cons_{i}"))
+                
+                st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos)")
                 for j, disp in enumerate(ato.get("dispositivos", [])):
                     st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
                     c_alt, c_cons = st.columns(2)
@@ -734,6 +773,8 @@ if st.session_state.atos_estruturados:
                             pos_cons = st.text_area("Texto após a tabela (Consolidada)", value=disp.get('texto_pos_tabela_consolidada') or "", key=f"pos_cons_{i}_{j}")
                             disp['texto_pos_tabela_consolidada'] = pos_cons
 
+                st.markdown("### 📥 Opções de Banco e Exportação")
+                
                 if st.button("💾 Confirmar e Salvar Versões no Banco", key=f"btn_salvar_versoes_{i}", type="primary"):
                     if supabase:
                         try:
@@ -776,6 +817,22 @@ if st.session_state.atos_estruturados:
                             st.rerun()
                         except Exception as e:
                             st.error(f"Erro ao salvar versões no histórico: {e}")
+
+                c_html, c_pdf, c_docx = st.columns(3)
+                arq_base = nome_base_ou_alt.replace(' ', '_').replace('/', '-')
+                
+                try:
+                    c_html.download_button("🌐 Baixar HTML (Alt)", gerar_html_dinamico(ato, "alterada"), f"{arq_base}_Alt.html", "text/html", key=f"ha_cons_{i}")
+                    c_html.download_button("🌐 Baixar HTML (Cons)", gerar_html_dinamico(ato, "consolidada"), f"{arq_base}_Cons.html", "text/html", key=f"hc_cons_{i}")
+                except: pass
+                try:
+                    c_pdf.download_button("📄 Baixar PDF (Alt)", gerar_pdf_dinamico(ato, "alterada"), f"{arq_base}_Alt.pdf", "application/pdf", key=f"pa_cons_{i}")
+                    c_pdf.download_button("📄 Baixar PDF (Cons)", gerar_pdf_dinamico(ato, "consolidada"), f"{arq_base}_Cons.pdf", "application/pdf", key=f"pc_cons_{i}")
+                except: pass
+                try:
+                    c_docx.download_button("📝 Baixar DOCX (Alt)", gerar_docx_dinamico(ato, "alterada"), f"{arq_base}_Alt.docx", "application/vnd.openxmlformats", key=f"da_cons_{i}")
+                    c_docx.download_button("📝 Baixar DOCX (Cons)", gerar_docx_dinamico(ato, "consolidada"), f"{arq_base}_Cons.docx", "application/vnd.openxmlformats", key=f"dc_cons_{i}")
+                except: pass
 
             elif fase == 'concluido':
                 if tipo_ato == "Base":
