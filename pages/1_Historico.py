@@ -135,6 +135,35 @@ else:
             else:
                 st.info("Nenhuma portaria alteradora vinculada a esta norma base.")
 
+# =====================================================================
+# NOVA SEÇÃO: DERIVAÇÕES PENDENTES
+# =====================================================================
+st.markdown("---")
+st.markdown("### 📋 Derivações Pendentes")
+st.caption("Atos que foram importados como derivados, mas cuja norma base ainda não foi cadastrada ou processada. Quando a base for cadastrada e a análise executada, esses registros serão automaticamente vinculados e sairão da lista de pendências.")
+
+try:
+    res_pend = supabase.table("atos_importados").select("*").eq("status", "pendente").order("criado_em", desc=True).execute()
+    pendencias = res_pend.data if res_pend.data else []
+    if not pendencias:
+        st.info("Nenhuma derivação pendente no momento.")
+    else:
+        st.caption(f"Exibindo {len(pendencias)} pendência(s).")
+        for p in pendencias:
+            with st.expander(f"🕒 Pendência: {p.get('nome_arquivo_original', 'N/A')} - Referência: {p.get('ato_base_referenciado_tipo', 'N/A')} {p.get('ato_base_referenciado_numero', 'N/A')}"):
+                st.markdown(f"**Arquivo original:** {p.get('nome_arquivo_original', 'N/A')}")
+                st.markdown(f"**Referência de base:** {p.get('ato_base_referenciado_tipo', 'N/A')} {p.get('ato_base_referenciado_numero', 'N/A')}")
+                st.markdown(f"**Status:** {p.get('status', 'pendente')}")
+                if st.button("🗑️ Remover pendência", key=f"del_pend_{p['id']}"):
+                    try:
+                        supabase.table("atos_importados").delete().eq("id", p['id']).execute()
+                        st.success("Pendência removida com sucesso!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao remover pendência: {e}")
+except Exception as e:
+    st.warning(f"Não foi possível carregar as derivações pendentes: {e}")
+
 st.markdown("---")
 st.markdown("### 🧠 Aprendizado da IA (correções registradas)")
 st.caption("Toda vez que você edita e salva um documento, a diferença entre o que a IA gerou e o que você corrigiu é guardada aqui e usada como referência nas próximas consolidações.")
