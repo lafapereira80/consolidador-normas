@@ -490,7 +490,7 @@ def ler_arquivos_iniciais(arquivos, api_key, provedor, thinking_level, dpi_ocr, 
         ato_json = json.loads(resp.text)
         ato_json['_upload_name'] = f.name
         ato_json['_triagem'] = triagem_dict.get(f.name, {"tipo": "Base", "nome_padronizado_identificado": f.name})
-        ato_json['_is_consolidado'] = False
+        ato_json['fase'] = 'leitura'
         atos_iniciais.append(ato_json)
         
     return atos_iniciais
@@ -528,7 +528,7 @@ if arquivos_enviados and current_lote_id != st.session_state.lote_processado_id:
 
 if arquivos_enviados and not st.session_state.atos_estruturados:
     if st.button("1. Ler e Estruturar Documento(s)", type="primary"):
-        with st.spinner("Lendo PDFs e Estruturando (Etapa 1/2)..."):
+        with st.spinner("Lendo PDFs e Estruturando..."):
             dpi = 1.2 if modo_processamento == "Rápido" else 1.5
             max_p = 10 if modo_processamento == "Rápido" else (20 if modo_processamento == "Equilibrado" else None)
             tl = "low" if modo_processamento == "Rápido" else ("medium" if modo_processamento == "Equilibrado" else "high")
@@ -547,25 +547,25 @@ if st.session_state.atos_estruturados:
     st.markdown("### 📝 Análise e Consolidação")
     
     for i, ato in enumerate(st.session_state.atos_estruturados):
-        is_consol = ato.get('_is_consolidado', False)
+        fase = ato.get('fase', 'leitura')
         triagem = ato.get('_triagem', {})
         tipo_ato = triagem.get('tipo', 'Base')
         nome_base_ou_alt = triagem.get('nome_padronizado_identificado', ato.get('_upload_name', 'Documento'))
 
-        with st.expander(f"{'✅ CONSOLIDADO' if is_consol else '📄 LEITURA INICIAL'} → **{ato.get('_upload_name')}** ({tipo_ato})", expanded=True):
+        mostrar_expander = fase not in ['concluido', 'pendente']
+        
+        with st.expander(f"Fase: {fase.upper()} → **{ato.get('_upload_name')}** ({tipo_ato})", expanded=mostrar_expander):
             
-            ato['titulo_portaria'] = st.text_input("Título do Ato Normativo", ato.get('titulo_portaria', ''), key=f"t_{i}")
-            
-            st.markdown("**Ementa**")
-            ato['ementa'] = editor_para_pdf(editor_rico(ia_para_editor(ato.get('ementa', '')), f"q_ementa_{i}"))
-            
-            st.markdown("**Preâmbulo e Considerandos**")
-            ato['preambulo'] = editor_para_pdf(editor_rico(ia_para_editor(ato.get('preambulo', '')), f"q_preambulo_{i}"))
-            
-            st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos)")
-            
-            if not is_consol:
-                # ETAPA 1: VISUALIZAÇÃO ÚNICA PARA CONFERÊNCIA
+            if fase == 'leitura':
+                ato['titulo_portaria'] = st.text_input("Título do Ato Normativo", ato.get('titulo_portaria', ''), key=f"t_{i}")
+                
+                st.markdown("**Ementa**")
+                ato['ementa'] = editor_para_pdf(editor_rico(ia_para_editor(ato.get('ementa', '')), f"q_ementa_{i}"))
+                
+                st.markdown("**Preâmbulo e Considerandos**")
+                ato['preambulo'] = editor_para_pdf(editor_rico(ia_para_editor(ato.get('preambulo', '')), f"q_preambulo_{i}"))
+                
+                st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos)")
                 for j, disp in enumerate(ato.get("dispositivos", [])):
                     st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
                     val_orig = ia_para_editor(disp.get('texto_principal_consolidada', ''))
@@ -576,45 +576,41 @@ if st.session_state.atos_estruturados:
                         disp['texto_pos_tabela_consolidada'] = st.text_area("Pós-tabela", value=disp.get('texto_pos_tabela_consolidada', ''), key=f"tpc_orig_{i}_{j}")
                 
                 st.markdown("---")
-                
-                # AÇÕES ETAPA 1 DEPENDENDO DO TIPO DO ATO
-                if tipo_ato == "Alteradora":
-                    ref_t = triagem.get('ato_base_referenciado_tipo', 'Desconhecido')
-                    ref_n = triagem.get('ato_base_referenciado_numero', 'Desconhecido')
-                    st.info(f"🔗 O sistema identificou que este ato deriva da norma: **{ref_t} {ref_n}**")
-                    
-                    if supabase:
-                        bases_db = []
-                        if ref_n and ref_n.strip() and ref_n != 'Desconhecido':
-                            numero_limpo = str(ref_n).strip()
-                            res_db = supabase.table("portarias_base").select("id, nome_padronizado, data_assinatura").ilike("numero_documento", f"%{numero_limpo}%").execute()
-                            bases_db = res_db.data or []
-                            if not bases_db:
-                                res_db2 = supabase.table("portarias_base").select("id, nome_padronizado, data_assinatura").ilike("nome_padronizado", f"%{numero_limpo}%").execute()
-                                bases_db = res_db2.data or []
-                        
-                        if bases_db:
-                            opcoes = {b['id']: f"{b['nome_padronizado']} (Data: {b.get('data_assinatura', 'S/D')})" for b in bases_db}
-                            sel_base = st.selectbox("Selecione o Ato Base no Banco para vincular e consolidar:", options=list(opcoes.keys()), format_func=lambda x: opcoes[x], key=f"sel_base_{i}")
-                            
-                            if st.button("🔍 Analisar e Consolidar com o Ato Base Selecionado", key=f"btn_consol_{i}", type="primary"):
-                                with st.spinner("Buscando histórico no banco e aplicando Efeito Cascata..."):
-                                    tl = "low" if modo_processamento == "Rápido" else ("medium" if modo_processamento == "Equilibrado" else "high")
-                                    try:
-                                        novo_ato = consolidar_documentos(ato, sel_base, api_key, provedor_escolhido, tl)
-                                        novo_ato['_is_consolidado'] = True
-                                        novo_ato['_triagem'] = triagem
-                                        novo_ato['_id_base_vinculada'] = sel_base
-                                        novo_ato['_upload_name'] = ato.get('_upload_name')
-                                        
-                                        st.session_state.atos_estruturados[i] = novo_ato
-                                        st.success("Análise concluída com sucesso!")
-                                        st.rerun()
-                                    except Exception as e:
-                                        st.error(f"Erro na análise de consolidação: {e}")
+                if st.button("💾 Salvar e Verificar Relações no Banco", key=f"btn_check_{i}", type="primary"):
+                    if not supabase:
+                        st.error("Sem conexão com o Banco de Dados.")
+                    else:
+                        if tipo_ato == "Base":
+                            dados_db = {
+                                "tipo_documento": ato.get('norma_base', {}).get('tipo_documento', 'Norma'),
+                                "numero_documento": ato.get('norma_base', {}).get('numero_documento', 'S/N'),
+                                "orgao_emissor": ato.get('norma_base', {}).get('orgao_emissor', ''),
+                                "data_assinatura": converter_para_iso(ato.get('norma_base', {}).get('data_assinatura')),
+                                "nome_padronizado": nome_base_ou_alt,
+                                "titulo_original": ato.get("titulo_portaria"),
+                                "documento_consolidado_json": ato
+                            }
+                            try:
+                                supabase.table("portarias_base").upsert(dados_db, on_conflict="nome_padronizado").execute()
+                                ato['fase'] = 'concluido'
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erro ao salvar Base: {e}")
                         else:
-                            st.warning(f"⚠️ O Ato base relacionado ({ref_t} {ref_n}) não foi encontrado no banco de dados. Este documento ficará pendente de verificação.")
-                            if st.button("📥 Salvar nas Pendências", key=f"btn_pend_{i}", type="secondary"):
+                            # Tipo Alteradora - Busca candidatos
+                            ref_n = str(triagem.get('ato_base_referenciado_numero', '')).strip()
+                            ref_t = triagem.get('ato_base_referenciado_tipo', 'Desconhecido')
+                            bases_db = []
+                            if ref_n and ref_n != 'Desconhecido':
+                                bases_db = supabase.table("portarias_base").select("id, nome_padronizado, data_assinatura").ilike("numero_documento", f"%{ref_n}%").execute().data or []
+                                if not bases_db:
+                                    bases_db = supabase.table("portarias_base").select("id, nome_padronizado, data_assinatura").ilike("nome_padronizado", f"%{ref_n}%").execute().data or []
+                            
+                            if bases_db:
+                                ato['candidatos_base'] = bases_db
+                                ato['fase'] = 'vincular'
+                                st.rerun()
+                            else:
                                 try:
                                     supabase.table("atos_importados").insert({
                                         "nome_arquivo_original": ato.get('_upload_name', ''),
@@ -628,38 +624,37 @@ if st.session_state.atos_estruturados:
                                         "status": "pendente",
                                         "estrutura_json": ato
                                     }).execute()
-                                    st.success("Ato enviado para as pendências com sucesso! Você poderá consolidá-lo depois pelo Histórico.")
-                                    st.session_state.atos_estruturados.pop(i)
+                                    ato['fase'] = 'pendente'
                                     st.rerun()
                                 except Exception as e:
-                                    st.error(f"Erro ao salvar na tabela de pendências: {e}")
-                    else:
-                        st.error("Sem conexão com o Banco de Dados.")
-                
-                else:  # Se for Base
-                    if st.button("💾 Salvar este Ato Base no Banco de Dados", key=f"btn_salv_base_{i}", type="primary"):
-                        if supabase:
-                            dados_db = {
-                                "tipo_documento": ato.get('norma_base', {}).get('tipo_documento', 'Norma'),
-                                "numero_documento": ato.get('norma_base', {}).get('numero_documento', 'S/N'),
-                                "orgao_emissor": ato.get('norma_base', {}).get('orgao_emissor', ''),
-                                "data_assinatura": converter_para_iso(ato.get('norma_base', {}).get('data_assinatura')),
-                                "nome_padronizado": nome_base_ou_alt,
-                                "titulo_original": ato.get("titulo_portaria"),
-                                "documento_consolidado_json": ato
-                            }
-                            try:
-                                supabase.table("portarias_base").upsert(dados_db, on_conflict="nome_padronizado").execute()
-                                st.success(f"O Ato Base '{nome_base_ou_alt}' foi cadastrado no banco com sucesso e já está disponível para receber derivações!")
-                                ato['_is_consolidado'] = True 
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Erro ao salvar: {e}")
-                        else:
-                            st.error("Sem conexão com o DB.")
+                                    st.error(f"Erro ao salvar pendência: {e}")
 
-            else:
-                # ETAPA 2: VISUALIZAÇÃO DE DUAS COLUNAS APÓS CONSOLIDAÇÃO (OU BASE SALVA)
+            elif fase == 'vincular':
+                ref_t = triagem.get('ato_base_referenciado_tipo', 'Desconhecido')
+                ref_n = triagem.get('ato_base_referenciado_numero', 'Desconhecido')
+                st.info(f"🔗 O sistema identificou que este ato deriva da norma: **{ref_t} {ref_n}** e localizou correspondências no banco.")
+                
+                candidatos = ato.get('candidatos_base', [])
+                opcoes = {b['id']: f"{b['nome_padronizado']} (Data: {b.get('data_assinatura', 'S/D')})" for b in candidatos}
+                sel_base = st.selectbox("Selecione o Ato Base correto para vincular e consolidar:", options=list(opcoes.keys()), format_func=lambda x: opcoes[x], key=f"sel_base_{i}")
+                
+                if st.button("🔍 Gerar Versões Alterada e Consolidada", key=f"btn_consol_{i}", type="primary"):
+                    with st.spinner("Buscando histórico no banco e aplicando Efeito Cascata..."):
+                        tl = "low" if modo_processamento == "Rápido" else ("medium" if modo_processamento == "Equilibrado" else "high")
+                        try:
+                            novo_ato = consolidar_documentos(ato, sel_base, api_key, provedor_escolhido, tl)
+                            novo_ato['_triagem'] = triagem
+                            novo_ato['_id_base_vinculada'] = sel_base
+                            novo_ato['_upload_name'] = ato.get('_upload_name')
+                            novo_ato['fase'] = 'consolidacao'
+                            st.session_state.atos_estruturados[i] = novo_ato
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro na análise de consolidação: {e}")
+
+            elif fase == 'consolidacao':
+                ato['titulo_portaria'] = st.text_input("Título do Ato Normativo", ato.get('titulo_portaria', ''), key=f"t_cons_{i}")
+                
                 for j, disp in enumerate(ato.get("dispositivos", [])):
                     st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
                     c_alt, c_cons = st.columns(2)
@@ -693,85 +688,47 @@ if st.session_state.atos_estruturados:
                             pos_cons = st.text_area("Texto após a tabela (Consolidada)", value=disp.get('texto_pos_tabela_consolidada') or "", key=f"pos_cons_{i}_{j}")
                             disp['texto_pos_tabela_consolidada'] = pos_cons
 
-                st.markdown("### 📥 Opções de Banco e Exportação")
+                if st.button("💾 Confirmar e Salvar Versões no Banco", key=f"btn_salvar_versoes_{i}", type="primary"):
+                    if supabase:
+                        try:
+                            supabase.table("portarias_base").update({"documento_consolidado_json": ato}).eq("id", ato['_id_base_vinculada']).execute()
+                            desc = f"Alteração processada via: {ato.get('_upload_name')}"
+                            alt_aplicadas = [a['nome_padronizado'] for a in ato.get('normas_alteradoras', [])]
+                            
+                            supabase.table("versoes_documentos").insert({
+                                "portaria_base_id": ato['_id_base_vinculada'],
+                                "tipo_versao": "alterada",
+                                "estado_json": ato,
+                                "alteradoras_aplicadas": alt_aplicadas,
+                                "descricao": desc
+                            }).execute()
+                            
+                            supabase.table("versoes_documentos").insert({
+                                "portaria_base_id": ato['_id_base_vinculada'],
+                                "tipo_versao": "consolidada",
+                                "estado_json": ato,
+                                "alteradoras_aplicadas": alt_aplicadas,
+                                "descricao": desc
+                            }).execute()
+                            
+                            ato['fase'] = 'concluido'
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao salvar versões no histórico: {e}")
+
+            elif fase == 'concluido':
+                if tipo_ato == "Base":
+                    st.success("✅ O Ato Base foi cadastrado com sucesso e está disponível para derivações.")
+                else:
+                    st.success("✅ Análise concluída! O banco de dados e as versões salvas foram atualizados.")
                 
-                if '_id_base_vinculada' in ato:
-                    if st.button("💾 Atualizar Ato Base e Salvar Histórico de Versões no Banco", key=f"btn_salvar_versoes_{i}", type="primary"):
-                        if supabase:
-                            try:
-                                supabase.table("portarias_base").update({"documento_consolidado_json": ato}).eq("id", ato['_id_base_vinculada']).execute()
-                                
-                                desc = f"Alteração processada via: {ato.get('_upload_name')}"
-                                alt_aplicadas = [a['nome_padronizado'] for a in ato.get('normas_alteradoras', [])]
-                                
-                                supabase.table("versoes_documentos").insert({
-                                    "portaria_base_id": ato['_id_base_vinculada'],
-                                    "tipo_versao": "alterada",
-                                    "estado_json": ato,
-                                    "alteradoras_aplicadas": alt_aplicadas,
-                                    "descricao": desc
-                                }).execute()
-                                
-                                supabase.table("versoes_documentos").insert({
-                                    "portaria_base_id": ato['_id_base_vinculada'],
-                                    "tipo_versao": "consolidada",
-                                    "estado_json": ato,
-                                    "alteradoras_aplicadas": alt_aplicadas,
-                                    "descricao": desc
-                                }).execute()
-                                
-                                st.success("Atualização feita com sucesso e as versões (Alterada e Consolidada) foram registradas no Histórico do banco!")
-                            except Exception as e:
-                                st.error(f"Erro ao salvar versões no histórico: {e}")
+            elif fase == 'pendente':
+                ref_t = triagem.get('ato_base_referenciado_tipo', 'Desconhecido')
+                ref_n = triagem.get('ato_base_referenciado_numero', 'Desconhecido')
+                st.warning(f"⚠️ O ato base relacionado ({ref_t} {ref_n}) não foi encontrado no banco de dados.")
+                st.success("✅ Este ato foi armazenado na tabela de Pendências. Você poderá consolidá-lo via Histórico quando o ato original for enviado.")
 
-                def gerar_html_dinamico(consolidacao_dict, tipo_versao):
-                    titulo_doc = f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}"
-                    html = f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{titulo_doc}</title><style>@page {{ size: A4; margin: 2.5cm 2cm; @bottom-center {{ content: 'Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Diário Oficial.'; font-size: 9pt; font-style: italic; color: #333; }} }} body {{ font-family: 'Times New Roman', serif; font-size: 11pt; line-height: 1.5; text-align: justify; }} .topo, .titulo, .orgaos, .capitulo, .assinatura {{ text-align: center; font-weight: bold; }} .ementa {{ margin-left: 45%; }} .dispositivo {{ text-indent: 40px; }} table {{ width: 100%; border-collapse: collapse; }} td, th {{ border: 1px solid black; padding: 6px; }} strike, font[color='red'] {{ color: red !important; text-decoration: line-through; }} </style></head><body>"
-                    html += f"<div class='orgaos'>{consolidacao_dict.get('orgaos_emissores','')}</div><div class='titulo'>{consolidacao_dict.get('titulo_portaria','')}</div><div class='ementa'>{consolidacao_dict.get('ementa','')}</div><div class='preambulo'>{consolidacao_dict.get('preambulo','')}</div>"
-                    for d in consolidacao_dict.get('dispositivos', []):
-                        t_prin = d.get(f'texto_principal_{tipo_versao}', '')
-                        if t_prin: html += f"<div class='dispositivo'>{t_prin}</div>"
-                        if d.get('is_tabela') and d.get(f'tabela_{tipo_versao}'):
-                            html += "<table>"
-                            for linha in d.get(f'tabela_{tipo_versao}'): html += "<tr>" + "".join([f"<td>{cel}</td>" for cel in linha]) + "</tr>"
-                            html += "</table>"
-                            t_pos = d.get(f'texto_pos_tabela_{tipo_versao}', '')
-                            if t_pos: html += f"<div class='dispositivo'>{t_pos}</div>"
-                    html += f"<div class='assinatura'>{consolidacao_dict.get('assinatura_nome','')}<br>{consolidacao_dict.get('assinatura_cargo','')}</div></body></html>"
-                    return html
-
-                def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
-                    if not HAS_WEASYPRINT: raise Exception("WeasyPrint indisponível")
-                    html_str = gerar_html_dinamico(consolidacao_dict, tipo_versao)
-                    buffer = io.BytesIO()
-                    WeasyHTML(string=html_str).write_pdf(buffer)
-                    buffer.seek(0)
-                    return buffer.getvalue()
-
-                def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
-                    doc = docx.Document()
-                    doc.add_paragraph(consolidacao_dict.get('titulo_portaria', '')).alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    for d in consolidacao_dict.get('dispositivos', []):
-                        doc.add_paragraph(re.sub(r'<[^>]+>', '', d.get(f'texto_principal_{tipo_versao}', ''))).alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                    b = io.BytesIO(); doc.save(b); b.seek(0)
-                    return b.getvalue()
-
-                c_html, c_pdf, c_docx = st.columns(3)
-                arq_base = nome_base_ou_alt.replace(' ', '_').replace('/', '-')
-                
-                try:
-                    c_html.download_button("🌐 Baixar HTML (Alt)", gerar_html_dinamico(ato, "alterada"), f"{arq_base}_Alt.html", "text/html", key=f"ha_{i}")
-                    c_html.download_button("🌐 Baixar HTML (Cons)", gerar_html_dinamico(ato, "consolidada"), f"{arq_base}_Cons.html", "text/html", key=f"hc_{i}")
-                except: pass
-                try:
-                    c_pdf.download_button("📄 Baixar PDF (Alt)", gerar_pdf_dinamico(ato, "alterada"), f"{arq_base}_Alt.pdf", "application/pdf", key=f"pa_{i}")
-                    c_pdf.download_button("📄 Baixar PDF (Cons)", gerar_pdf_dinamico(ato, "consolidada"), f"{arq_base}_Cons.pdf", "application/pdf", key=f"pc_{i}")
-                except: pass
-                try:
-                    c_docx.download_button("📝 Baixar DOCX (Alt)", gerar_docx_dinamico(ato, "alterada"), f"{arq_base}_Alt.docx", "application/vnd.openxmlformats", key=f"da_{i}")
-                    c_docx.download_button("📝 Baixar DOCX (Cons)", gerar_docx_dinamico(ato, "consolidada"), f"{arq_base}_Cons.docx", "application/vnd.openxmlformats", key=f"dc_{i}")
-                except: pass
-
-    if st.button("🔄 Nova Leitura de Documentos", type="secondary"): 
+    st.markdown("---")
+    if st.button("🔄 Limpar Tela e Fazer Novo Upload", type="secondary"): 
         st.session_state.atos_estruturados = []
         st.rerun()
