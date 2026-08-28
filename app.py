@@ -203,8 +203,7 @@ class QuillParser(HTMLParser):
         res = ""
         for tags in reversed(self.stack):
             for t in reversed(tags):
-                tag_name = t.split()[0]
-                res += f"</{tag_name}>"
+                res += f"</{t.split()[0]}>"
         return res
     def _open_all_tags(self):
         res = ""
@@ -275,7 +274,7 @@ def editor_para_pdf(texto):
     except Exception: return re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto, flags=re.IGNORECASE)
 
 # =====================================================================
-# SCHEMAS
+# SCHEMAS PYDANTIC
 # =====================================================================
 class ArquivoClassificado(BaseModel):
     nome_arquivo_upload: str
@@ -304,13 +303,10 @@ class Consolidacao(BaseModel):
     assinatura_nome: str; assinatura_cargo: str; dispositivos: List[Dispositivo]
 
 SYSTEM_INSTRUCTION_LEGISTECNICA = """
-Você é um Especialista Sênior em Técnica Legislativa do Poder Público.
+Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasileiro. Regras obrigatórias:
 1. FIDELIDADE ABSOLUTA: transcreva o conteúdo de cada dispositivo, preservando formatação (<b>, <i>, <br/>).
-2. SEPARAÇÃO OBRIGATÓRIA: 'ementa' (resumo) e 'preambulo' (autoridade/considerandos).
-3. CRITÉRIO RIGOROSO DE ALTERAÇÃO:
-   Na versão ALTERADA (`texto_principal_alterada`), todo dispositivo alterado/revogado DEVE aparecer com a tag exata: `<strike><font color="red">texto antigo alterado/revogado</font></strike>` seguido imediatamente pelo texto novo vigente. Em caso de revogação, apenas risque e indique a revogação.
-   Na versão CONSOLIDADA (`texto_principal_consolidada`), exiba apenas a NOVA redação vigente sem riscos, ou o identificador + "(Revogado)".
-4. ACÚMULO DE NOTAS REMISSIVAS (EFEITO CASCATA): Se o texto de origem (fornecido no prompt como estado atual) JÁ POSSUIR uma nota remissiva de alteração passada (ex: '(Redação dada pela PORTARIA X)'), VOCÊ NUNCA DEVE APAGÁ-LA. Mantenha a nota antiga e adicione a NOVA nota da nova alteradora logo em seguida. Exemplo: '(Redação dada pela PORTARIA X) (Redação dada pela PORTARIA Y)'. Mantenha a ordem cronológica da mais antiga para a mais nova. O mesmo vale para tabelas.
+2. CRITÉRIO RIGOROSO DE ALTERAÇÃO: Na versão ALTERADA (`texto_principal_alterada`), todo dispositivo alterado/revogado DEVE aparecer com a tag exata: `<strike><font color="red">texto antigo</font></strike>` seguido imediatamente pelo texto novo vigente. Na versão CONSOLIDADA (`texto_principal_consolidada`), exiba apenas a NOVA redação vigente sem riscos.
+3. ACÚMULO DE NOTAS (EFEITO CASCATA): Se o texto de origem JÁ POSSUIR uma nota remissiva (ex: '(Redação dada pela PORTARIA X)'), NUNCA APAGUE. Adicione a NOVA nota logo em seguida mantendo a ordem cronológica. O mesmo vale para tabelas.
 """
 
 def _prompt_schema_json(response_schema):
@@ -434,8 +430,92 @@ def converter_para_iso(data_str):
     try: return datetime.strptime(data_str, "%d/%m/%Y").strftime("%Y-%m-%d")
     except: return None
 
+def corrigir_posicionamento_tabela(consolidacao: dict):
+    if not isinstance(consolidacao, dict): return consolidacao
+    for disp in consolidacao.get("dispositivos", []):
+        if not disp.get("is_tabela"): continue
+        txt_alt, txt_pos_alt = disp.get("texto_principal_alterada") or "", disp.get("texto_pos_tabela_alterada") or ""
+        if "redação dada pelo" in txt_pos_alt.lower() or "nova redação" in txt_pos_alt.lower(): continue
+        partes = re.split(r'<br\s*/?>\s*<br\s*/?>', txt_alt, flags=re.IGNORECASE)
+        nova_redacao = None
+        if len(partes) >= 2:
+            if '<strike' not in partes[-1].lower() and '<s>' not in partes[-1].lower():
+                nova_redacao = partes[-1].strip()
+                texto_antigo = "<br/><br/>".join(partes[:-1]).strip()
+                disp["texto_principal_alterada"] = texto_antigo + "<br/><br/>"
+                disp["texto_pos_tabela_alterada"] = nova_redacao + ("<br/><br/>" + txt_pos_alt if txt_pos_alt else "")
+    return consolidacao
+
+def resgatar_memoria():
+    memoria = ""
+    if supabase:
+        try:
+            res = supabase.table("memoria_de_correcoes").select("*").order("id", desc=True).limit(5).execute()
+            if res.data:
+                memoria = "\n\n⚠️ HISTÓRICO DE CORREÇÕES (Não repita os erros da IA):\n"
+                for m in res.data: memoria += f"- Erro: {m['texto_ia']}\n- Correção: {m['texto_corrigido']}\n\n"
+        except: pass
+    return memoria
+
 # =====================================================================
-# UI DE FLUXO ETAPA POR ETAPA
+# LÓGICA DE DUAS ETAPAS (LEITURA INICIAL E CONSOLIDAÇÃO)
+# =====================================================================
+def ler_arquivos_iniciais(arquivos, api_key, provedor, thinking_level, dpi_ocr, max_paginas_ocr, progresso=None):
+    textos_extraidos = {}
+    max_workers = 2 if thinking_level == "low" else 4
+    with ThreadPoolExecutor(max_workers=min(max_workers, max(1, len(arquivos)))) as ex:
+        futuros = {submit_com_contexto(ex, extrair_conteudo_cache, arq.getvalue(), arq.name, dpi_ocr, max_paginas_ocr): arq.name for arq in arquivos}
+        for idx, fut in enumerate(as_completed(futuros)):
+            textos_extraidos[futuros[fut]] = fut.result()
+            if progresso: progresso.progress((idx + 1) / (len(arquivos) * 2), text=f"Extraindo conteúdo de {futuros[fut]}...")
+
+    prompt_triagem = ["Analise e identifique os documentos (Base ou Alteradora) e as referências cruzadas. ARQUIVOS:"]
+    for k, v in textos_extraidos.items(): prompt_triagem.extend(v if isinstance(v, list) else [v])
+    
+    if progresso: progresso.progress(0.5, text="Classificando documentos...")
+    resp_triagem = executar_com_fallback(api_key, prompt_triagem, TriagemDocumentos, provedor, "low")
+    triagem_dict = {a['nome_arquivo_upload']: a for a in json.loads(resp_triagem.text).get("arquivos", [])}
+
+    atos_iniciais = []
+    total = len(arquivos)
+    for idx, f in enumerate(arquivos):
+        if progresso: progresso.progress(0.5 + 0.5 * ((idx + 1) / total), text=f"Estruturando {f.name}...")
+        txt_partes = textos_extraidos[f.name]
+        prompt = ["DOCUMENTO LIDO:\n"] + (txt_partes if isinstance(txt_partes, list) else [txt_partes])
+        prompt.append("\n\nExtraia e estruture este ato normativo individualmente no formato JSON. "
+                      "ATENÇÃO: Como este é um processamento de LEITURA INICIAL (etapa 1), preencha APENAS o campo "
+                      "`texto_principal_consolidada` (e `tabela_consolidada` se houver) de cada dispositivo com o texto "
+                      "original lido. Deixe todos os campos referentes a 'alterada' VAZIOS. Não faça cruzamentos.")
+        resp = executar_com_fallback(api_key, prompt, Consolidacao, provedor, thinking_level)
+        ato_json = json.loads(resp.text)
+        ato_json['_upload_name'] = f.name
+        ato_json['_triagem'] = triagem_dict.get(f.name, {"tipo": "Base", "nome_padronizado_identificado": f.name})
+        ato_json['_is_consolidado'] = False
+        atos_iniciais.append(ato_json)
+        
+    return atos_iniciais
+
+def consolidar_documentos(ato_alterador, base_id_db, api_key, provedor, thinking_level):
+    base_data = supabase.table("portarias_base").select("documento_consolidado_json").eq("id", base_id_db).execute().data
+    if not base_data: raise Exception("Ato base não encontrado no banco.")
+    base_json = base_data[0]['documento_consolidado_json']
+    
+    memoria = resgatar_memoria()
+    prompt = [
+        f"ESTADO ATUAL DO BANCO (Ato Base Vigente e com alterações anteriores aplicadas):\n{json.dumps(base_json)}\n\n",
+        f"NOVO ATO ALTERADOR (Documento lido agora):\n{json.dumps(ato_alterador)}\n\n",
+        "Sua tarefa é cruzar os dados gerando o novo estado Consolidado final.\n"
+        "Siga a marcação <strike><font color='red'>... na versão Alterada e deixe o texto limpo na Consolidada.\n"
+        "NUNCA APAGUE as notas remissivas que já existem na Base; apenas acumule as novas notas no final da linha (Efeito Cascata).\n"
+        + memoria
+    ]
+    resp = executar_com_fallback(api_key, prompt, Consolidacao, provedor, thinking_level)
+    resultado = json.loads(resp.text)
+    resultado = corrigir_posicionamento_tabela(resultado)
+    return resultado
+
+# =====================================================================
+# UI E FLUXO PRINCIPAL
 # =====================================================================
 if "atos_estruturados" not in st.session_state: st.session_state.atos_estruturados = []
 if "lote_processado_id" not in st.session_state: st.session_state.lote_processado_id = None
@@ -448,182 +528,232 @@ if arquivos_enviados and current_lote_id != st.session_state.lote_processado_id:
 
 if arquivos_enviados and not st.session_state.atos_estruturados:
     if st.button("1. Ler e Estruturar Documento(s)", type="primary"):
-        with st.spinner("Lendo PDFs e Estruturando..."):
+        with st.spinner("Lendo PDFs e Estruturando (Etapa 1/2)..."):
             dpi = 1.2 if modo_processamento == "Rápido" else 1.5
             max_p = 10 if modo_processamento == "Rápido" else (20 if modo_processamento == "Equilibrado" else None)
             tl = "low" if modo_processamento == "Rápido" else ("medium" if modo_processamento == "Equilibrado" else "high")
+            prog = st.progress(0.0)
             
-            for f in arquivos_enviados:
-                txt_partes = extrair_conteudo_cache(f.getvalue(), f.name, dpi, max_p)
-                prompt = ["Estruture este documento individualmente em formato JSON (Ementa, Preambulo, Dispositivos). Não faça cruzamento de dados agora, apenas formate O QUE ESTÁ NESTE DOCUMENTO."] + txt_partes
-                try:
-                    resp = executar_com_fallback(api_key, prompt, Consolidacao, provedor_escolhido, tl)
-                    ato_json = json.loads(resp.text)
-                    ato_json["_upload_name"] = f.name
-                    st.session_state.atos_estruturados.append(ato_json)
-                except Exception as e:
-                    st.error(f"Erro ao processar {f.name}: {e}")
+            try:
+                st.session_state.atos_estruturados = ler_arquivos_iniciais(arquivos_enviados, api_key, provedor_escolhido, tl, dpi, max_p, prog)
+            except Exception as e:
+                st.error(f"Erro ao ler arquivos: {e}")
+            finally:
+                prog.empty()
         st.rerun()
 
 if st.session_state.atos_estruturados:
     st.markdown("---")
-    st.markdown("### 📝 Editor e Gestão de Atos Normativos")
+    st.markdown("### 📝 Análise e Consolidação")
     
     for i, ato in enumerate(st.session_state.atos_estruturados):
-        nome_base = ato['norma_base']['nome_padronizado'] if 'norma_base' in ato else "Documento Não Identificado"
-        
-        with st.expander(f"📄 {ato.get('_upload_name', 'Arquivo')} → **{nome_base}**", expanded=True):
-            c_top1, c_top2 = st.columns(2)
-            with c_top1:
-                if st.button("💾 Salvar Ato Inicial no Banco", key=f"btn_salvar_init_{i}"):
-                    if supabase:
-                        dados_db = {
-                            "tipo_documento": ato['norma_base']['tipo_documento'],
-                            "numero_documento": ato['norma_base']['numero_documento'],
-                            "orgao_emissor": ato['norma_base']['orgao_emissor'],
-                            "data_assinatura": converter_para_iso(ato['norma_base']['data_assinatura']),
-                            "nome_padronizado": nome_base,
-                            "titulo_original": ato.get("titulo_portaria"),
-                            "documento_consolidado_json": ato
-                        }
-                        try:
-                            supabase.table("portarias_base").upsert(dados_db, on_conflict="nome_padronizado").execute()
-                            st.success(f"{nome_base} salvo no banco como ato de referência!")
-                        except Exception as e:
-                            st.error(f"Erro ao salvar: {e}")
-                    else: st.error("Sem conexão com DB.")
-            with c_top2:
-                if st.button("🔍 Analisar e Consolidar com Banco", key=f"btn_analisar_{i}", type="primary"):
-                    with st.spinner("Buscando histórico e consolidando..."):
-                        # Busca o ato base principal (ou o próprio ato se ele já existe)
-                        tl = "low" if modo_processamento == "Rápido" else ("medium" if modo_processamento == "Equilibrado" else "high")
-                        try:
-                            res_db = supabase.table("portarias_base").select("*").eq("nome_padronizado", nome_base).execute()
-                            if not res_db.data and ato.get('normas_alteradoras'):
-                                # Tenta achar pela referência
-                                ref_nome = ato['normas_alteradoras'][0]['nome_padronizado']
-                                res_db = supabase.table("portarias_base").select("*").ilike("nome_padronizado", f"%{ref_nome}%").execute()
-                                
-                            if res_db.data:
-                                json_db = res_db.data[0].get("documento_consolidado_json")
-                                id_base_db = res_db.data[0].get("id")
-                                
-                                prompt = [
-                                    f"ESTADO ATUAL CONSOLIDADO DO BANCO (Base):\n{json.dumps(json_db)}\n\n",
-                                    f"NOVO ATO APLICADO AGORA ({ato.get('_upload_name')}):\n{json.dumps(ato)}\n\n",
-                                    "Cruze os dados. MANTENHA AS NOTAS REMISSIVAS ANTIGAS e adicione a NOVA nota nas partes alteradas. Gere a versão Consolidada final."
-                                ]
-                                resp = executar_com_fallback(api_key, prompt, Consolidacao, provedor_escolhido, tl)
-                                st.session_state.atos_estruturados[i] = json.loads(resp.text)
-                                st.session_state.atos_estruturados[i]['_id_base_vinculada'] = id_base_db
-                                st.session_state.atos_estruturados[i]['_upload_name'] = ato.get('_upload_name')
-                                st.success("Cascata aplicada com sucesso! Editor atualizado.")
-                                st.rerun()
-                            else:
-                                st.warning("Ato base não encontrado no banco para consolidar.")
-                        except Exception as e:
-                            st.error(f"Erro na análise: {e}")
+        is_consol = ato.get('_is_consolidado', False)
+        triagem = ato.get('_triagem', {})
+        tipo_ato = triagem.get('tipo', 'Base')
+        nome_base_ou_alt = triagem.get('nome_padronizado_identificado', ato.get('_upload_name', 'Documento'))
 
-            st.markdown("---")
-            # --- EDITOR ---
-            ato['titulo_portaria'] = st.text_input("Título do Ato", ato.get('titulo_portaria', ''), key=f"t_{i}")
-            ato['ementa'] = editor_para_pdf(editor_rico(ia_para_editor(ato.get('ementa', '')), f"em_{i}"))
-            ato['preambulo'] = editor_para_pdf(editor_rico(ia_para_editor(ato.get('preambulo', '')), f"pr_{i}"))
+        with st.expander(f"{'✅ CONSOLIDADO' if is_consol else '📄 LEITURA INICIAL'} → **{ato.get('_upload_name')}** ({tipo_ato})", expanded=True):
             
-            for j, disp in enumerate(ato.get("dispositivos", [])):
-                st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
-                ca, cc = st.columns(2)
-                with ca: disp['texto_principal_alterada'] = editor_para_pdf(editor_rico(ia_para_editor(disp.get('texto_principal_alterada', '')), f"ta_{i}_{j}"))
-                with cc: disp['texto_principal_consolidada'] = editor_para_pdf(editor_rico(ia_para_editor(disp.get('texto_principal_consolidada', '')), f"tc_{i}_{j}"))
+            ato['titulo_portaria'] = st.text_input("Título do Ato Normativo", ato.get('titulo_portaria', ''), key=f"t_{i}")
+            
+            st.markdown("**Ementa**")
+            ato['ementa'] = editor_para_pdf(editor_rico(ia_para_editor(ato.get('ementa', '')), f"q_ementa_{i}"))
+            
+            st.markdown("**Preâmbulo e Considerandos**")
+            ato['preambulo'] = editor_para_pdf(editor_rico(ia_para_editor(ato.get('preambulo', '')), f"q_preambulo_{i}"))
+            
+            st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos)")
+            
+            if not is_consol:
+                # ETAPA 1: VISUALIZAÇÃO ÚNICA PARA CONFERÊNCIA
+                for j, disp in enumerate(ato.get("dispositivos", [])):
+                    st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
+                    val_orig = ia_para_editor(disp.get('texto_principal_consolidada', ''))
+                    disp['texto_principal_consolidada'] = editor_para_pdf(editor_rico(val_orig, f"orig_{i}_{j}"))
+                    
+                    if disp.get('is_tabela'):
+                        disp['tabela_consolidada'] = st.data_editor(disp.get('tabela_consolidada') or [[""]], key=f"tbc_orig_{i}_{j}")
+                        disp['texto_pos_tabela_consolidada'] = st.text_area("Pós-tabela", value=disp.get('texto_pos_tabela_consolidada', ''), key=f"tpc_orig_{i}_{j}")
                 
-                disp['nota_remissiva'] = st.text_input("Nota Remissiva (Indexação)", value=disp.get('nota_remissiva', ''), key=f"nr_{i}_{j}")
-                
-                if disp.get('is_tabela'):
-                    ta, tc = st.columns(2)
-                    with ta:
-                        disp['tabela_alterada'] = st.data_editor(disp.get('tabela_alterada') or [[""]], key=f"tba_{i}_{j}")
-                        disp['texto_pos_tabela_alterada'] = st.text_area("Pós-tabela (Alt)", value=disp.get('texto_pos_tabela_alterada', ''), key=f"tpa_{i}_{j}")
-                    with tc:
-                        disp['tabela_consolidada'] = st.data_editor(disp.get('tabela_consolidada') or [[""]], key=f"tbc_{i}_{j}")
-                        disp['texto_pos_tabela_consolidada'] = st.text_area("Pós-tabela (Cons)", value=disp.get('texto_pos_tabela_consolidada', ''), key=f"tpc_{i}_{j}")
                 st.markdown("---")
-            
-            if '_id_base_vinculada' in ato:
-                if st.button("💾 Salvar Versões (Alterada/Consolidada) no Banco de Dados", key=f"btn_salvar_versoes_{i}", type="primary"):
+                
+                # AÇÕES ETAPA 1 DEPENDENDO DO TIPO DO ATO
+                if tipo_ato == "Alteradora":
+                    ref_t = triagem.get('ato_base_referenciado_tipo', 'Desconhecido')
+                    ref_n = triagem.get('ato_base_referenciado_numero', 'Desconhecido')
+                    st.info(f"🔗 O sistema identificou que este ato deriva da norma: **{ref_t} {ref_n}**")
+                    
                     if supabase:
-                        try:
-                            # Atualiza consolidado principal
-                            supabase.table("portarias_base").update({"documento_consolidado_json": ato}).eq("id", ato['_id_base_vinculada']).execute()
+                        bases_db = supabase.table("portarias_base").select("id, nome_padronizado, data_assinatura").execute().data
+                        if bases_db:
+                            opcoes = {b['id']: f"{b['nome_padronizado']} (Data: {b['data_assinatura']})" for b in bases_db}
+                            # Tenta pré-selecionar caso já ache correspondência
+                            idx_pre_select = 0
+                            for k, v in opcoes.items():
+                                if ref_n != 'Desconhecido' and ref_n in v:
+                                    idx_pre_select = list(opcoes.keys()).index(k)
+                                    break
                             
-                            # Registra na tabela versoes_documentos para histórico e rastreabilidade
-                            desc = f"Análise do arquivo {ato.get('_upload_name')}"
-                            alt_aplicadas = [a['nome_padronizado'] for a in ato.get('normas_alteradoras', [])]
+                            sel_base = st.selectbox("Selecione o Ato Base no Banco para vincular e consolidar:", options=list(opcoes.keys()), format_func=lambda x: opcoes[x], index=idx_pre_select, key=f"sel_base_{i}")
                             
-                            supabase.table("versoes_documentos").insert({
-                                "portaria_base_id": ato['_id_base_vinculada'],
-                                "tipo_versao": "alterada",
-                                "estado_json": ato,
-                                "alteradoras_aplicadas": alt_aplicadas,
-                                "descricao": desc
-                            }).execute()
-                            
-                            supabase.table("versoes_documentos").insert({
-                                "portaria_base_id": ato['_id_base_vinculada'],
-                                "tipo_versao": "consolidada",
-                                "estado_json": ato,
-                                "alteradoras_aplicadas": alt_aplicadas,
-                                "descricao": desc
-                            }).execute()
-                            
-                            st.success("Versões salvas no histórico do banco!")
-                        except Exception as e:
-                            st.error(f"Erro ao salvar versões: {e}")
+                            if st.button("🔍 Analisar e Consolidar com o Ato Base Selecionado", key=f"btn_consol_{i}", type="primary"):
+                                with st.spinner("Buscando histórico no banco e aplicando Efeito Cascata..."):
+                                    tl = "low" if modo_processamento == "Rápido" else ("medium" if modo_processamento == "Equilibrado" else "high")
+                                    try:
+                                        novo_ato = consolidar_documentos(ato, sel_base, api_key, provedor_escolhido, tl)
+                                        novo_ato['_is_consolidado'] = True
+                                        novo_ato['_triagem'] = triagem
+                                        novo_ato['_id_base_vinculada'] = sel_base
+                                        novo_ato['_upload_name'] = ato.get('_upload_name')
+                                        
+                                        st.session_state.atos_estruturados[i] = novo_ato
+                                        st.success("Análise concluída com sucesso!")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Erro na análise de consolidação: {e}")
+                        else:
+                            st.warning("Nenhum Ato Base cadastrado no banco de dados. Você deve salvar a norma original no banco primeiro antes de aplicar uma alteração nela.")
+                    else:
+                        st.error("Sem conexão com o Banco de Dados.")
+                
+                else:  # Se for Base
+                    if st.button("💾 Salvar este Ato Base no Banco de Dados", key=f"btn_salv_base_{i}", type="primary"):
+                        if supabase:
+                            dados_db = {
+                                "tipo_documento": ato.get('norma_base', {}).get('tipo_documento', 'Norma'),
+                                "numero_documento": ato.get('norma_base', {}).get('numero_documento', 'S/N'),
+                                "orgao_emissor": ato.get('norma_base', {}).get('orgao_emissor', ''),
+                                "data_assinatura": converter_para_iso(ato.get('norma_base', {}).get('data_assinatura')),
+                                "nome_padronizado": nome_base_ou_alt,
+                                "titulo_original": ato.get("titulo_portaria"),
+                                "documento_consolidado_json": ato
+                            }
+                            try:
+                                supabase.table("portarias_base").upsert(dados_db, on_conflict="nome_padronizado").execute()
+                                st.success(f"O Ato Base '{nome_base_ou_alt}' foi cadastrado no banco com sucesso e já está disponível para receber derivações!")
+                                ato['_is_consolidado'] = True # Marca como concluído só para mudar estado visual
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erro ao salvar: {e}")
+                        else:
+                            st.error("Sem conexão com o DB.")
 
-            # Exportadores (HTML/PDF/DOCX)
-            def gerar_html_dinamico(consolidacao_dict, tipo_versao):
-                html = f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>Versão {tipo_versao}</title><style>@page {{ size: A4; margin: 2.5cm 2cm; }} body {{ font-family: 'Times New Roman', serif; font-size: 11pt; line-height: 1.5; text-align: justify; }} .topo, .titulo, .orgaos, .capitulo, .assinatura {{ text-align: center; font-weight: bold; }} .ementa {{ margin-left: 45%; }} .dispositivo {{ text-indent: 40px; }} table {{ width: 100%; border-collapse: collapse; }} td, th {{ border: 1px solid black; padding: 6px; }} strike, font[color='red'] {{ color: red !important; text-decoration: line-through; }} </style></head><body>"
-                html += f"<div class='orgaos'>{consolidacao_dict.get('orgaos_emissores','')}</div><div class='titulo'>{consolidacao_dict.get('titulo_portaria','')}</div><div class='ementa'>{consolidacao_dict.get('ementa','')}</div><div class='preambulo'>{consolidacao_dict.get('preambulo','')}</div>"
-                for disp in consolidacao_dict.get('dispositivos', []):
-                    t_prin = disp.get(f'texto_principal_{tipo_versao}', '')
-                    if t_prin: html += f"<div class='dispositivo'>{t_prin}</div>"
-                    if disp.get('is_tabela') and disp.get(f'tabela_{tipo_versao}'):
-                        html += "<table>"
-                        for linha in disp.get(f'tabela_{tipo_versao}'):
-                            html += "<tr>" + "".join([f"<td>{cel}</td>" for cel in linha]) + "</tr>"
-                        html += "</table>"
-                        t_pos = disp.get(f'texto_pos_tabela_{tipo_versao}', '')
-                        if t_pos: html += f"<div class='dispositivo'>{t_pos}</div>"
-                html += f"<div class='assinatura'>{consolidacao_dict.get('assinatura_nome','')}<br>{consolidacao_dict.get('assinatura_cargo','')}</div></body></html>"
-                return html
+            else:
+                # ETAPA 2: VISUALIZAÇÃO DE DUAS COLUNAS APÓS CONSOLIDAÇÃO (OU BASE SALVA)
+                for j, disp in enumerate(ato.get("dispositivos", [])):
+                    st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
+                    c_alt, c_cons = st.columns(2)
+                    
+                    with c_alt:
+                        st.markdown("*Versão Alterada*")
+                        val_alt = ia_para_editor(disp.get('texto_principal_alterada', ''))
+                        alt_editada = editor_rico(value=val_alt, key=f"q_alt_{i}_{j}")
+                        if alt_editada is not None: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
+                        
+                    with c_cons:
+                        st.markdown("*Versão Consolidada*")
+                        val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
+                        cons_editada = editor_rico(value=val_cons, key=f"q_cons_{i}_{j}")
+                        if cons_editada is not None: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
+                    
+                    disp['nota_remissiva'] = st.text_input("Nota Remissiva (Indexação)", value=disp.get('nota_remissiva', ''), key=f"nota_{i}_{j}", label_visibility="collapsed")
+                    st.markdown("---")
 
-            def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
-                if not HAS_WEASYPRINT: raise Exception("WeasyPrint indisponível")
-                html_str = gerar_html_dinamico(consolidacao_dict, tipo_versao)
-                buffer = io.BytesIO()
-                WeasyHTML(string=html_str).write_pdf(buffer)
-                buffer.seek(0)
-                return buffer.getvalue()
+                    if disp.get('is_tabela'):
+                        st.markdown("*Tabela / Anexo — revise linha a linha*")
+                        t_alt, t_cons = st.columns(2)
+                        with t_alt:
+                            tab_alt_edit = st.data_editor(disp.get('tabela_alterada') or [[""]], key=f"tab_alt_{i}_{j}", num_rows="dynamic", use_container_width=True)
+                            disp['tabela_alterada'] = tab_alt_edit if isinstance(tab_alt_edit, list) else disp.get('tabela_alterada')
+                            pos_alt = st.text_area("Texto após a tabela (Alterada)", value=disp.get('texto_pos_tabela_alterada') or "", key=f"pos_alt_{i}_{j}")
+                            disp['texto_pos_tabela_alterada'] = pos_alt
+                        with t_cons:
+                            tab_cons_edit = st.data_editor(disp.get('tabela_consolidada') or [[""]], key=f"tab_cons_{i}_{j}", num_rows="dynamic", use_container_width=True)
+                            disp['tabela_consolidada'] = tab_cons_edit if isinstance(tab_cons_edit, list) else disp.get('tabela_consolidada')
+                            pos_cons = st.text_area("Texto após a tabela (Consolidada)", value=disp.get('texto_pos_tabela_consolidada') or "", key=f"pos_cons_{i}_{j}")
+                            disp['texto_pos_tabela_consolidada'] = pos_cons
 
-            def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
-                doc = docx.Document()
-                doc.add_paragraph(consolidacao_dict.get('titulo_portaria', '')).alignment = WD_ALIGN_PARAGRAPH.CENTER
-                for disp in consolidacao_dict.get('dispositivos', []):
-                    doc.add_paragraph(re.sub(r'<[^>]+>', '', disp.get(f'texto_principal_{tipo_versao}', ''))).alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                b = io.BytesIO(); doc.save(b); b.seek(0)
-                return b.getvalue()
+                st.markdown("### 📥 Opções de Banco e Exportação")
+                
+                # Se for alteradora, exibe botão de salvar os diffs (versoes)
+                if '_id_base_vinculada' in ato:
+                    if st.button("💾 Atualizar Ato Base e Salvar Histórico de Versões no Banco", key=f"btn_salvar_versoes_{i}", type="primary"):
+                        if supabase:
+                            try:
+                                supabase.table("portarias_base").update({"documento_consolidado_json": ato}).eq("id", ato['_id_base_vinculada']).execute()
+                                
+                                desc = f"Alteração processada via: {ato.get('_upload_name')}"
+                                alt_aplicadas = [a['nome_padronizado'] for a in ato.get('normas_alteradoras', [])]
+                                
+                                supabase.table("versoes_documentos").insert({
+                                    "portaria_base_id": ato['_id_base_vinculada'],
+                                    "tipo_versao": "alterada",
+                                    "estado_json": ato,
+                                    "alteradoras_aplicadas": alt_aplicadas,
+                                    "descricao": desc
+                                }).execute()
+                                
+                                supabase.table("versoes_documentos").insert({
+                                    "portaria_base_id": ato['_id_base_vinculada'],
+                                    "tipo_versao": "consolidada",
+                                    "estado_json": ato,
+                                    "alteradoras_aplicadas": alt_aplicadas,
+                                    "descricao": desc
+                                }).execute()
+                                
+                                st.success("Atualização feita com sucesso e as versões (Alterada e Consolidada) foram registradas no Histórico do banco!")
+                            except Exception as e:
+                                st.error(f"Erro ao salvar versões no histórico: {e}")
 
-            c_html, c_pdf, c_docx = st.columns(3)
-            arq_base = nome_base.replace(' ', '_').replace('/', '-')
-            
-            try:
-                c_html.download_button("🌐 Baixar HTML (Alt)", gerar_html_dinamico(ato, "alterada"), f"{arq_base}_Alt.html", "text/html", key=f"ha_{i}")
-                c_html.download_button("🌐 Baixar HTML (Cons)", gerar_html_dinamico(ato, "consolidada"), f"{arq_base}_Cons.html", "text/html", key=f"hc_{i}")
-            except: pass
-            try:
-                c_pdf.download_button("📄 Baixar PDF (Alt)", gerar_pdf_dinamico(ato, "alterada"), f"{arq_base}_Alt.pdf", "application/pdf", key=f"pa_{i}")
-                c_pdf.download_button("📄 Baixar PDF (Cons)", gerar_pdf_dinamico(ato, "consolidada"), f"{arq_base}_Cons.pdf", "application/pdf", key=f"pc_{i}")
-            except: pass
-            try:
-                c_docx.download_button("📝 Baixar DOCX (Alt)", gerar_docx_dinamico(ato, "alterada"), f"{arq_base}_Alt.docx", "application/vnd.openxmlformats", key=f"da_{i}")
-                c_docx.download_button("📝 Baixar DOCX (Cons)", gerar_docx_dinamico(ato, "consolidada"), f"{arq_base}_Cons.docx", "application/vnd.openxmlformats", key=f"dc_{i}")
-            except: pass
+                # Exportadores (HTML/PDF/DOCX)
+                def gerar_html_dinamico(consolidacao_dict, tipo_versao):
+                    titulo_doc = f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}"
+                    html = f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{titulo_doc}</title><style>@page {{ size: A4; margin: 2.5cm 2cm; @bottom-center {{ content: 'Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Diário Oficial.'; font-size: 9pt; font-style: italic; color: #333; }} }} body {{ font-family: 'Times New Roman', serif; font-size: 11pt; line-height: 1.5; text-align: justify; }} .topo, .titulo, .orgaos, .capitulo, .assinatura {{ text-align: center; font-weight: bold; }} .ementa {{ margin-left: 45%; }} .dispositivo {{ text-indent: 40px; }} table {{ width: 100%; border-collapse: collapse; }} td, th {{ border: 1px solid black; padding: 6px; }} strike, font[color='red'] {{ color: red !important; text-decoration: line-through; }} </style></head><body>"
+                    html += f"<div class='orgaos'>{consolidacao_dict.get('orgaos_emissores','')}</div><div class='titulo'>{consolidacao_dict.get('titulo_portaria','')}</div><div class='ementa'>{consolidacao_dict.get('ementa','')}</div><div class='preambulo'>{consolidacao_dict.get('preambulo','')}</div>"
+                    for d in consolidacao_dict.get('dispositivos', []):
+                        t_prin = d.get(f'texto_principal_{tipo_versao}', '')
+                        if t_prin: html += f"<div class='dispositivo'>{t_prin}</div>"
+                        if d.get('is_tabela') and d.get(f'tabela_{tipo_versao}'):
+                            html += "<table>"
+                            for linha in d.get(f'tabela_{tipo_versao}'): html += "<tr>" + "".join([f"<td>{cel}</td>" for cel in linha]) + "</tr>"
+                            html += "</table>"
+                            t_pos = d.get(f'texto_pos_tabela_{tipo_versao}', '')
+                            if t_pos: html += f"<div class='dispositivo'>{t_pos}</div>"
+                    html += f"<div class='assinatura'>{consolidacao_dict.get('assinatura_nome','')}<br>{consolidacao_dict.get('assinatura_cargo','')}</div></body></html>"
+                    return html
+
+                def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
+                    if not HAS_WEASYPRINT: raise Exception("WeasyPrint indisponível")
+                    html_str = gerar_html_dinamico(consolidacao_dict, tipo_versao)
+                    buffer = io.BytesIO()
+                    WeasyHTML(string=html_str).write_pdf(buffer)
+                    buffer.seek(0)
+                    return buffer.getvalue()
+
+                def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
+                    doc = docx.Document()
+                    doc.add_paragraph(consolidacao_dict.get('titulo_portaria', '')).alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    for d in consolidacao_dict.get('dispositivos', []):
+                        doc.add_paragraph(re.sub(r'<[^>]+>', '', d.get(f'texto_principal_{tipo_versao}', ''))).alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                    b = io.BytesIO(); doc.save(b); b.seek(0)
+                    return b.getvalue()
+
+                c_html, c_pdf, c_docx = st.columns(3)
+                arq_base = nome_base_ou_alt.replace(' ', '_').replace('/', '-')
+                
+                try:
+                    c_html.download_button("🌐 Baixar HTML (Alt)", gerar_html_dinamico(ato, "alterada"), f"{arq_base}_Alt.html", "text/html", key=f"ha_{i}")
+                    c_html.download_button("🌐 Baixar HTML (Cons)", gerar_html_dinamico(ato, "consolidada"), f"{arq_base}_Cons.html", "text/html", key=f"hc_{i}")
+                except: pass
+                try:
+                    c_pdf.download_button("📄 Baixar PDF (Alt)", gerar_pdf_dinamico(ato, "alterada"), f"{arq_base}_Alt.pdf", "application/pdf", key=f"pa_{i}")
+                    c_pdf.download_button("📄 Baixar PDF (Cons)", gerar_pdf_dinamico(ato, "consolidada"), f"{arq_base}_Cons.pdf", "application/pdf", key=f"pc_{i}")
+                except: pass
+                try:
+                    c_docx.download_button("📝 Baixar DOCX (Alt)", gerar_docx_dinamico(ato, "alterada"), f"{arq_base}_Alt.docx", "application/vnd.openxmlformats", key=f"da_{i}")
+                    c_docx.download_button("📝 Baixar DOCX (Cons)", gerar_docx_dinamico(ato, "consolidada"), f"{arq_base}_Cons.docx", "application/vnd.openxmlformats", key=f"dc_{i}")
+                except: pass
+
+    if st.button("🔄 Nova Leitura de Documentos", type="secondary"): 
+        st.session_state.atos_estruturados = []
+        st.rerun()
