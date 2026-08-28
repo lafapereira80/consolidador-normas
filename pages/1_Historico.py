@@ -2,6 +2,7 @@ import streamlit as st
 import json
 from supabase import create_client, Client
 from typing import Optional
+from collections import defaultdict
 
 # Esconde a barra lateral desde o carregamento
 st.set_page_config(page_title="Histórico de Normas", page_icon="🗄️", layout="wide", initial_sidebar_state="collapsed")
@@ -136,7 +137,7 @@ else:
                 st.info("Nenhuma portaria alteradora vinculada a esta norma base.")
 
 # =====================================================================
-# NOVA SEÇÃO: DERIVAÇÕES PENDENTES
+# SEÇÃO: DERIVAÇÕES PENDENTES
 # =====================================================================
 st.markdown("---")
 st.markdown("### 📋 Derivações Pendentes")
@@ -163,6 +164,101 @@ try:
                         st.error(f"Erro ao remover pendência: {e}")
 except Exception as e:
     st.warning(f"Não foi possível carregar as derivações pendentes: {e}")
+
+# =====================================================================
+# SEÇÃO: VERSÕES SALVAS (SNAPSHOTS)
+# =====================================================================
+st.markdown("---")
+st.markdown("### 📚 Versões Salvas")
+st.caption("Histórico de todas as versões (alterada e consolidada) geradas para cada norma. Permite resgatar qualquer combinação de alterações e exportar em PDF ou HTML.")
+
+try:
+    res_versoes = supabase.table("versoes_documentos").select("*, portarias_base(nome_padronizado)").order("criado_em", desc=True).execute()
+    versoes = res_versoes.data if res_versoes.data else []
+    if not versoes:
+        st.info("Nenhuma versão salva até o momento.")
+    else:
+        versoes_por_base = defaultdict(list)
+        for v in versoes:
+            base_id = v['portaria_base_id']
+            versoes_por_base[base_id].append(v)
+
+        for base_id, lista_versoes in versoes_por_base.items():
+            nome_base = lista_versoes[0]['portarias_base']['nome_padronizado'] if lista_versoes[0].get('portarias_base') else f"Base ID {base_id}"
+            with st.expander(f"📁 {nome_base}"):
+                st.markdown(f"**Total de versões salvas:** {len(lista_versoes)}")
+                for v in lista_versoes:
+                    descricao = v.get('descricao', '')
+                    alteradoras = v.get('alteradoras_aplicadas') or []
+                    alteradoras_str = ", ".join(alteradoras) if alteradoras else "Nenhuma"
+                    st.markdown(f"**Versão:** {v['tipo_versao'].upper()} - {descricao}")
+                    st.markdown(f"**Alteradoras aplicadas:** {alteradoras_str}")
+                    st.markdown(f"**Criada em:** {v['criado_em']}")
+
+                    col_pdf_alt, col_pdf_cons, col_html_alt, col_html_cons = st.columns(4)
+                    estado = v['estado_json']
+                    try:
+                        # Importa funções de exportação do app.py (ou define localmente)
+                        # Para evitar import circular, definimos aqui cópias das funções necessárias
+                        # (gerar_html_dinamico, gerar_pdf_dinamico)
+                        # Elas são idênticas às do app.py.
+                        def gerar_html_dinamico(consolidacao_dict, tipo_versao):
+                            titulo_doc = f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}"
+                            html = f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{titulo_doc}</title><style>@page{{size:A4;margin:2.5cm 2cm;@bottom-center{{content:'Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial.';font-size:9pt;font-style:italic;color:#333;}}}}body{{font-family:'Times New Roman',serif;font-size:11pt;line-height:1.5;text-align:justify;}}.topo{{text-align:center;color:#444;font-size:10pt;font-weight:bold;margin-bottom:20px;text-transform:uppercase;}}.orgaos{{text-align:center;font-weight:bold;margin-bottom:25px;}}.titulo{{text-align:center;font-weight:bold;margin-bottom:20px;}}.ementa{{text-align:justify;margin-left:45%;margin-bottom:25px;font-weight:normal;}}.preambulo{{text-align:justify;margin-bottom:12px;text-indent:0;}}.dispositivo{{text-align:justify;text-indent:40px;margin-bottom:12px;}}.capitulo{{text-align:center;font-weight:bold;margin-top:20px;margin-bottom:12px;text-transform:uppercase;}}.assinatura{{text-align:center;font-weight:bold;margin-top:50px;margin-bottom:20px;}}table{{width:100%;border-collapse:collapse;margin-top:15px;margin-bottom:15px;}}td,th{{border:1px solid black;padding:6px;text-align:left;vertical-align:middle;}}strike,s,del{{text-decoration:line-through;}}b,strong{{font-weight:bold;}}i,em{{font-style:italic;}}font[color='red'],span[style*='color: red'],span[style*='color:rgb(230']{{color:red!important;}}</style></head><body><div class='topo'>{titulo_doc}</div><div class='orgaos'>{consolidacao_dict.get('orgaos_emissores','')}</div><div class='titulo'>{consolidacao_dict.get('titulo_portaria','')}</div><div class='ementa'>{consolidacao_dict.get('ementa','')}</div><div class='preambulo'>{consolidacao_dict.get('preambulo','')}</div>"
+                            for item in consolidacao_dict.get('dispositivos', []):
+                                t = (item.get('tipo') or '').lower()
+                                t_prin = item.get(f'texto_principal_{tipo_versao}', '')
+                                if 'capitulo' in t or 'anexo' in t:
+                                    html += f"<div class='capitulo'>{t_prin}</div>"
+                                    if not item.get('is_tabela'):
+                                        continue
+                                else:
+                                    if t_prin:
+                                        for p in t_prin.split('<br/>'):
+                                            if p.strip(): html += f"<div class='dispositivo'>{p.strip()}</div>"
+                                if item.get('is_tabela'):
+                                    linhas = item.get(f'tabela_{tipo_versao}') or []
+                                    if linhas:
+                                        html += "<table>"
+                                        for linha in linhas:
+                                            html += "<tr>"
+                                            for celula in linha:
+                                                html += f"<td>{celula}</td>"
+                                            html += "</tr>"
+                                        html += "</table>"
+                                    t_pos = item.get(f'texto_pos_tabela_{tipo_versao}')
+                                    if t_pos:
+                                        for p in t_pos.split('<br/>'):
+                                            if p.strip(): html += f"<div class='dispositivo'>{p.strip()}</div>"
+                            html += f"<div class='assinatura'>{consolidacao_dict.get('assinatura_nome','')}<br>{consolidacao_dict.get('assinatura_cargo','')}</div></body></html>"
+                            return html
+
+                        def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
+                            from weasyprint import HTML
+                            html_str = gerar_html_dinamico(consolidacao_dict, tipo_versao)
+                            buffer = io.BytesIO()
+                            HTML(string=html_str).write_pdf(buffer)
+                            buffer.seek(0)
+                            return buffer.getvalue()
+
+                        pdf_alt = gerar_pdf_dinamico(estado, "alterada")
+                        pdf_cons = gerar_pdf_dinamico(estado, "consolidada")
+                        html_alt = gerar_html_dinamico(estado, "alterada")
+                        html_cons = gerar_html_dinamico(estado, "consolidada")
+
+                        with col_pdf_alt:
+                            st.download_button("📄 PDF Alterada", pdf_alt, file_name=f"{descricao}_alterada.pdf", mime="application/pdf")
+                        with col_pdf_cons:
+                            st.download_button("📄 PDF Consolidada", pdf_cons, file_name=f"{descricao}_consolidada.pdf", mime="application/pdf")
+                        with col_html_alt:
+                            st.download_button("🌐 HTML Alterada", html_alt, file_name=f"{descricao}_alterada.html", mime="text/html")
+                        with col_html_cons:
+                            st.download_button("🌐 HTML Consolidada", html_cons, file_name=f"{descricao}_consolidada.html", mime="text/html")
+                    except Exception as e:
+                        st.error(f"Erro ao gerar arquivos para esta versão: {e}")
+                    st.markdown("---")
+except Exception as e:
+    st.warning(f"Não foi possível carregar as versões: {e}")
 
 st.markdown("---")
 st.markdown("### 🧠 Aprendizado da IA (correções registradas)")
