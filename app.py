@@ -584,17 +584,18 @@ if st.session_state.atos_estruturados:
                     st.info(f"🔗 O sistema identificou que este ato deriva da norma: **{ref_t} {ref_n}**")
                     
                     if supabase:
-                        bases_db = supabase.table("portarias_base").select("id, nome_padronizado, data_assinatura").execute().data
+                        bases_db = []
+                        if ref_n and ref_n.strip() and ref_n != 'Desconhecido':
+                            numero_limpo = str(ref_n).strip()
+                            res_db = supabase.table("portarias_base").select("id, nome_padronizado, data_assinatura").ilike("numero_documento", f"%{numero_limpo}%").execute()
+                            bases_db = res_db.data or []
+                            if not bases_db:
+                                res_db2 = supabase.table("portarias_base").select("id, nome_padronizado, data_assinatura").ilike("nome_padronizado", f"%{numero_limpo}%").execute()
+                                bases_db = res_db2.data or []
+                        
                         if bases_db:
-                            opcoes = {b['id']: f"{b['nome_padronizado']} (Data: {b['data_assinatura']})" for b in bases_db}
-                            # Tenta pré-selecionar caso já ache correspondência
-                            idx_pre_select = 0
-                            for k, v in opcoes.items():
-                                if ref_n != 'Desconhecido' and ref_n in v:
-                                    idx_pre_select = list(opcoes.keys()).index(k)
-                                    break
-                            
-                            sel_base = st.selectbox("Selecione o Ato Base no Banco para vincular e consolidar:", options=list(opcoes.keys()), format_func=lambda x: opcoes[x], index=idx_pre_select, key=f"sel_base_{i}")
+                            opcoes = {b['id']: f"{b['nome_padronizado']} (Data: {b.get('data_assinatura', 'S/D')})" for b in bases_db}
+                            sel_base = st.selectbox("Selecione o Ato Base no Banco para vincular e consolidar:", options=list(opcoes.keys()), format_func=lambda x: opcoes[x], key=f"sel_base_{i}")
                             
                             if st.button("🔍 Analisar e Consolidar com o Ato Base Selecionado", key=f"btn_consol_{i}", type="primary"):
                                 with st.spinner("Buscando histórico no banco e aplicando Efeito Cascata..."):
@@ -612,7 +613,26 @@ if st.session_state.atos_estruturados:
                                     except Exception as e:
                                         st.error(f"Erro na análise de consolidação: {e}")
                         else:
-                            st.warning("Nenhum Ato Base cadastrado no banco de dados. Você deve salvar a norma original no banco primeiro antes de aplicar uma alteração nela.")
+                            st.warning(f"⚠️ O Ato base relacionado ({ref_t} {ref_n}) não foi encontrado no banco de dados. Este documento ficará pendente de verificação.")
+                            if st.button("📥 Salvar nas Pendências", key=f"btn_pend_{i}", type="secondary"):
+                                try:
+                                    supabase.table("atos_importados").insert({
+                                        "nome_arquivo_original": ato.get('_upload_name', ''),
+                                        "texto_integra": json.dumps(ato),
+                                        "tipo_documento": ato.get('norma_base', {}).get('tipo_documento', None),
+                                        "numero_documento": ato.get('norma_base', {}).get('numero_documento', None),
+                                        "data_assinatura": converter_para_iso(ato.get('norma_base', {}).get('data_assinatura')),
+                                        "orgao_emissor": ato.get('norma_base', {}).get('orgao_emissor', None),
+                                        "ato_base_referenciado_tipo": ref_t,
+                                        "ato_base_referenciado_numero": ref_n,
+                                        "status": "pendente",
+                                        "estrutura_json": ato
+                                    }).execute()
+                                    st.success("Ato enviado para as pendências com sucesso! Você poderá consolidá-lo depois pelo Histórico.")
+                                    st.session_state.atos_estruturados.pop(i)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Erro ao salvar na tabela de pendências: {e}")
                     else:
                         st.error("Sem conexão com o Banco de Dados.")
                 
@@ -631,7 +651,7 @@ if st.session_state.atos_estruturados:
                             try:
                                 supabase.table("portarias_base").upsert(dados_db, on_conflict="nome_padronizado").execute()
                                 st.success(f"O Ato Base '{nome_base_ou_alt}' foi cadastrado no banco com sucesso e já está disponível para receber derivações!")
-                                ato['_is_consolidado'] = True # Marca como concluído só para mudar estado visual
+                                ato['_is_consolidado'] = True 
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Erro ao salvar: {e}")
@@ -675,7 +695,6 @@ if st.session_state.atos_estruturados:
 
                 st.markdown("### 📥 Opções de Banco e Exportação")
                 
-                # Se for alteradora, exibe botão de salvar os diffs (versoes)
                 if '_id_base_vinculada' in ato:
                     if st.button("💾 Atualizar Ato Base e Salvar Histórico de Versões no Banco", key=f"btn_salvar_versoes_{i}", type="primary"):
                         if supabase:
@@ -705,7 +724,6 @@ if st.session_state.atos_estruturados:
                             except Exception as e:
                                 st.error(f"Erro ao salvar versões no histórico: {e}")
 
-                # Exportadores (HTML/PDF/DOCX)
                 def gerar_html_dinamico(consolidacao_dict, tipo_versao):
                     titulo_doc = f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}"
                     html = f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{titulo_doc}</title><style>@page {{ size: A4; margin: 2.5cm 2cm; @bottom-center {{ content: 'Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Diário Oficial.'; font-size: 9pt; font-style: italic; color: #333; }} }} body {{ font-family: 'Times New Roman', serif; font-size: 11pt; line-height: 1.5; text-align: justify; }} .topo, .titulo, .orgaos, .capitulo, .assinatura {{ text-align: center; font-weight: bold; }} .ementa {{ margin-left: 45%; }} .dispositivo {{ text-indent: 40px; }} table {{ width: 100%; border-collapse: collapse; }} td, th {{ border: 1px solid black; padding: 6px; }} strike, font[color='red'] {{ color: red !important; text-decoration: line-through; }} </style></head><body>"
