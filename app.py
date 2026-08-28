@@ -356,9 +356,9 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_pagin
             html_text += "<br/>\n"
         if caracteres_uteis < 30 * max(doc.page_count, 1):
             partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO. Leia o conteúdo visualmente:"]
-            for page_num, page in enumerate(doc):
+            for page_num, enumerate_doc in enumerate(doc):
                 if max_paginas_ocr and page_num >= max_paginas_ocr: break
-                pix = page.get_pixmap(matrix=fitz.Matrix(dpi_ocr, dpi_ocr))
+                pix = enumerate_doc.get_pixmap(matrix=fitz.Matrix(dpi_ocr, dpi_ocr))
                 partes.append({"tipo": "imagem", "mime": "image/jpeg", "dados": pix.tobytes("jpg", jpg_quality=78)})
             return partes
         return [html_text]
@@ -528,7 +528,7 @@ if arquivos_enviados and current_lote_id != st.session_state.lote_processado_id:
 
 if arquivos_enviados and not st.session_state.atos_estruturados:
     if st.button("1. Ler e Estruturar Documento(s)", type="primary"):
-        with st.spinner("Lendo PDFs e Estruturando..."):
+        with st.spinner("Lendo PDFs e Estruturando (Etapa 1/2)..."):
             dpi = 1.2 if modo_processamento == "Rápido" else 1.5
             max_p = 10 if modo_processamento == "Rápido" else (20 if modo_processamento == "Equilibrado" else None)
             tl = "low" if modo_processamento == "Rápido" else ("medium" if modo_processamento == "Equilibrado" else "high")
@@ -576,11 +576,23 @@ if st.session_state.atos_estruturados:
                         disp['texto_pos_tabela_consolidada'] = st.text_area("Pós-tabela", value=disp.get('texto_pos_tabela_consolidada', ''), key=f"tpc_orig_{i}_{j}")
                 
                 st.markdown("---")
-                if st.button("💾 Salvar e Verificar Relações no Banco", key=f"btn_check_{i}", type="primary"):
-                    if not supabase:
-                        st.error("Sem conexão com o Banco de Dados.")
+
+                if tipo_ato == "Base":
+                    ja_existe_base = False
+                    if supabase:
+                        check_base = supabase.table("portarias_base").select("id").eq("nome_padronizado", nome_base_ou_alt).execute()
+                        ja_existe_base = bool(check_base.data)
+
+                    if ja_existe_base:
+                        st.warning(f"⚠️ Atenção: O Ato Base '{nome_base_ou_alt}' já se encontra cadastrado no banco de dados.")
+                        btn_label = "🔄 Substituir Ato Base no Banco"
+                        btn_type = "secondary"
                     else:
-                        if tipo_ato == "Base":
+                        btn_label = "💾 Salvar este Ato Base no Banco de Dados"
+                        btn_type = "primary"
+
+                    if st.button(btn_label, key=f"btn_salv_base_{i}", type=btn_type):
+                        if supabase:
                             dados_db = {
                                 "tipo_documento": ato.get('norma_base', {}).get('tipo_documento', 'Norma'),
                                 "numero_documento": ato.get('norma_base', {}).get('numero_documento', 'S/N'),
@@ -592,14 +604,39 @@ if st.session_state.atos_estruturados:
                             }
                             try:
                                 supabase.table("portarias_base").upsert(dados_db, on_conflict="nome_padronizado").execute()
+                                if ja_existe_base:
+                                    st.success(f"O Ato Base '{nome_base_ou_alt}' foi substituído com sucesso!")
+                                else:
+                                    st.success(f"O Ato Base '{nome_base_ou_alt}' foi cadastrado no banco com sucesso e já está disponível para receber derivações!")
                                 ato['fase'] = 'concluido'
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"Erro ao salvar Base: {e}")
+                                st.error(f"Erro ao salvar: {e}")
                         else:
-                            # Tipo Alteradora - Busca candidatos
-                            ref_n = str(triagem.get('ato_base_referenciado_numero', '')).strip()
-                            ref_t = triagem.get('ato_base_referenciado_tipo', 'Desconhecido')
+                            st.error("Sem conexão com o DB.")
+                            
+                elif tipo_ato == "Alteradora":
+                    ref_t = triagem.get('ato_base_referenciado_tipo', 'Desconhecido')
+                    ref_n = str(triagem.get('ato_base_referenciado_numero', '')).strip()
+                    
+                    ja_existe_alt = False
+                    if supabase:
+                        check_alt = supabase.table("portarias_alteradoras").select("id").eq("nome_padronizado", nome_base_ou_alt).execute()
+                        ja_existe_alt = bool(check_alt.data)
+                    
+                    if ja_existe_alt:
+                        st.warning(f"⚠️ Atenção: A portaria alteradora '{nome_base_ou_alt}' já foi processada e vinculada a um ato no banco de dados.")
+                        btn_txt_check = "🔄 Substituir/Reprocessar Vínculo"
+                        btn_type_check = "secondary"
+                    else:
+                        st.info(f"🔗 O sistema identificou que este ato deriva da norma: **{ref_t} {ref_n}**")
+                        btn_txt_check = "💾 Buscar Relações no Banco"
+                        btn_type_check = "primary"
+
+                    if st.button(btn_txt_check, key=f"btn_check_{i}", type=btn_type_check):
+                        if not supabase:
+                            st.error("Sem conexão com o Banco de Dados.")
+                        else:
                             bases_db = []
                             if ref_n and ref_n != 'Desconhecido':
                                 bases_db = supabase.table("portarias_base").select("id, nome_padronizado, data_assinatura").ilike("numero_documento", f"%{ref_n}%").execute().data or []
@@ -609,6 +646,7 @@ if st.session_state.atos_estruturados:
                             if bases_db:
                                 ato['candidatos_base'] = bases_db
                                 ato['fase'] = 'vincular'
+                                ato['ja_existe_alt'] = ja_existe_alt
                                 st.rerun()
                             else:
                                 try:
@@ -638,7 +676,15 @@ if st.session_state.atos_estruturados:
                 opcoes = {b['id']: f"{b['nome_padronizado']} (Data: {b.get('data_assinatura', 'S/D')})" for b in candidatos}
                 sel_base = st.selectbox("Selecione o Ato Base correto para vincular e consolidar:", options=list(opcoes.keys()), format_func=lambda x: opcoes[x], key=f"sel_base_{i}")
                 
-                if st.button("🔍 Gerar Versões Alterada e Consolidada", key=f"btn_consol_{i}", type="primary"):
+                ja_existe_alt = ato.get('ja_existe_alt', False)
+                if ja_existe_alt:
+                    btn_txt_consol = "🔄 Analisar, Substituir e Consolidar"
+                    btn_type_consol = "secondary"
+                else:
+                    btn_txt_consol = "🔍 Gerar Versões Alterada e Consolidada"
+                    btn_type_consol = "primary"
+                
+                if st.button(btn_txt_consol, key=f"btn_consol_{i}", type=btn_type_consol):
                     with st.spinner("Buscando histórico no banco e aplicando Efeito Cascata..."):
                         tl = "low" if modo_processamento == "Rápido" else ("medium" if modo_processamento == "Equilibrado" else "high")
                         try:
@@ -693,7 +739,22 @@ if st.session_state.atos_estruturados:
                         try:
                             supabase.table("portarias_base").update({"documento_consolidado_json": ato}).eq("id", ato['_id_base_vinculada']).execute()
                             desc = f"Alteração processada via: {ato.get('_upload_name')}"
-                            alt_aplicadas = [a['nome_padronizado'] for a in ato.get('normas_alteradoras', [])]
+                            alt_aplicadas = []
+                            
+                            for n_alt in ato.get('normas_alteradoras', []):
+                                alt_nome = n_alt.get('nome_padronizado')
+                                alt_aplicadas.append(alt_nome)
+                                check_alt = supabase.table("portarias_alteradoras").select("id").eq("portaria_base_id", ato['_id_base_vinculada']).eq("nome_padronizado", alt_nome).execute()
+                                if not check_alt.data:
+                                    supabase.table("portarias_alteradoras").insert({
+                                        "portaria_base_id": ato['_id_base_vinculada'],
+                                        "tipo_documento": n_alt.get('tipo_documento', 'Alteradora'),
+                                        "numero_documento": n_alt.get('numero_documento', 'S/N'),
+                                        "orgao_emissor": n_alt.get('orgao_emissor', ''),
+                                        "data_assinatura": converter_para_iso(n_alt.get('data_assinatura')),
+                                        "nome_padronizado": alt_nome,
+                                        "arquivo_nome_original": ato.get('_upload_name', '')
+                                    }).execute()
                             
                             supabase.table("versoes_documentos").insert({
                                 "portaria_base_id": ato['_id_base_vinculada'],
@@ -718,7 +779,7 @@ if st.session_state.atos_estruturados:
 
             elif fase == 'concluido':
                 if tipo_ato == "Base":
-                    st.success("✅ O Ato Base foi cadastrado com sucesso e está disponível para derivações.")
+                    st.success("✅ O Ato Base foi cadastrado/atualizado com sucesso e está disponível para derivações.")
                 else:
                     st.success("✅ Análise concluída! O banco de dados e as versões salvas foram atualizados.")
                 
