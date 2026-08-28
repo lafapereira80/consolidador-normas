@@ -348,7 +348,7 @@ def editor_para_pdf(texto):
         return texto_limpo
 
 # =====================================================================
-# INSTRUÇÃO DA IA
+# INSTRUÇÃO DA IA (mantida completa)
 # =====================================================================
 
 SYSTEM_INSTRUCTION_LEGISTECNICA = """
@@ -493,13 +493,253 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
 """
 
 # =====================================================================
-# FUNÇÕES DE SCHEMA E CHAMADA DE IA (mantidas iguais)
+# FUNÇÕES DE SCHEMA E CHAMADA DE IA
 # =====================================================================
 
-# ... (todas as funções de _prompt_schema_json, _extrair_json_bruto, etc. permanecem as mesmas da última versão completa) ...
+def _prompt_schema_json(response_schema):
+    esquema = response_schema.model_json_schema()
+    return (
+        "\n\nRESPONDA EXCLUSIVAMENTE COM UM OBJETO JSON VÁLIDO (sem markdown, sem ```json, sem comentários, "
+        "sem texto antes ou depois) que obedeça RIGOROSAMENTE a este JSON Schema:\n"
+        + json.dumps(esquema, ensure_ascii=False)
+    )
+
+def _extrair_json_bruto(texto):
+    if not texto: raise Exception("Resposta vazia da IA.")
+    t = texto.strip()
+    t = re.sub(r'^```(json)?', '', t.strip(), flags=re.IGNORECASE).strip()
+    t = re.sub(r'```$', '', t.strip()).strip()
+    inicio = t.find('{')
+    fim = t.rfind('}')
+    if inicio == -1 or fim == -1: raise Exception("A IA não retornou um JSON reconhecível.")
+    return t[inicio:fim + 1]
+
+def _itens_para_texto_e_imagens(itens):
+    textos, imagens = [], []
+    for it in itens:
+        if isinstance(it, dict) and it.get("tipo") == "imagem":
+            imagens.append((it["mime"], it["dados"]))
+        elif isinstance(it, str):
+            textos.append(it)
+    return "\n\n".join(textos), imagens
+
+def _itens_para_parts_gemini(itens):
+    partes = []
+    for it in itens:
+        if isinstance(it, dict) and it.get("tipo") == "imagem":
+            partes.append(types.Part.from_bytes(data=it["dados"], mime_type=it["mime"]))
+        elif isinstance(it, str):
+            partes.append(it)
+    return partes
+
+def _chamar_gemini(chave, itens, response_schema, thinking_level, modelos):
+    client = genai.Client(api_key=chave)
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=response_schema,
+        system_instruction=SYSTEM_INSTRUCTION_LEGISTECNICA,
+        thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
+    )
+    contents = _itens_para_parts_gemini(itens)
+    ultimo_erro = None
+    for modelo in modelos:
+        cota_diaria_esgotada = False
+        for tentativa in range(1, 4):
+            try:
+                resp = client.models.generate_content(model=modelo, contents=contents, config=config)
+                _validar_resposta_gemini(resp)
+                dados = json.loads(resp.text)
+                return response_schema.model_validate(dados)
+            except Exception as e:
+                ultimo_erro = e
+                erro_str = str(e).upper()
+                if "PERDAY" in erro_str.replace(" ", "") or "FREE_TIER" in erro_str or "GENERATEREQUESTSPERDAY" in erro_str.replace(" ", ""):
+                    st.toast(f"⚠️ Cota diária do {modelo} esgotada (free tier). Pulando para o próximo modelo...", icon="📅")
+                    cota_diaria_esgotada = True
+                    break
+                elif "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str or "503" in erro_str or "UNAVAILABLE" in erro_str:
+                    if tentativa < 3:
+                        tempo_espera = min(tentativa * 3, 10)
+                        st.toast(f"⚡ Fila no Google ({modelo}). Tentativa {tentativa}/3. Aguardando {tempo_espera}s...", icon="⏳")
+                        time.sleep(tempo_espera)
+                        continue
+                    st.toast(f"⚡ Tempo esgotado no {modelo}. Mudando para o próximo...", icon="🔄")
+                    break
+                elif "404" in erro_str or "NOT_FOUND" in erro_str or "400" in erro_str:
+                    st.toast(f"⚠️ Modelo {modelo} indisponível. Pulando...", icon="⏭️")
+                    break
+                else:
+                    raise e
+        if cota_diaria_esgotada:
+            continue
+    raise Exception(f"Google Gemini: todos os modelos falharam. Último erro: {ultimo_erro}")
+
+def _validar_resposta_gemini(resp):
+    candidatos = getattr(resp, "candidates", None) or []
+    if candidatos:
+        finish = getattr(candidatos[0], "finish_reason", None)
+        finish_str = str(finish) if finish else ""
+        if "MAX_TOKENS" in finish_str: raise Exception("Resposta cortada por limite de tokens.")
+        if "SAFETY" in finish_str or "PROHIBITED" in finish_str: raise Exception("Bloqueado por política de segurança.")
+    if not getattr(resp, "text", None): raise Exception("Resposta vazia da IA.")
+
+def _montar_mensagens_openai_like(itens, response_schema):
+    texto, imagens = _itens_para_texto_e_imagens(itens)
+    texto += _prompt_schema_json(response_schema)
+    conteudo_usuario = [{"type": "text", "text": texto}]
+    for mime, dados in imagens:
+        b64 = base64.b64encode(dados).decode()
+        conteudo_usuario.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+    mensagens = [
+        {"role": "system", "content": SYSTEM_INSTRUCTION_LEGISTECNICA},
+        {"role": "user", "content": conteudo_usuario if imagens else texto},
+    ]
+    return mensagens
+
+def _chamar_groq(chave, itens, response_schema, modelos):
+    if Groq is None: raise Exception("Biblioteca 'groq' não instalada no servidor.")
+    client = Groq(api_key=chave)
+    mensagens = _montar_mensagens_openai_like(itens, response_schema)
+    ultimo_erro = None
+    for modelo in modelos:
+        for tentativa in range(1, 4):
+            try:
+                resp = client.chat.completions.create(
+                    model=modelo, messages=mensagens,
+                    response_format={"type": "json_object"}, temperature=0.2,
+                )
+                bruto = _extrair_json_bruto(resp.choices[0].message.content)
+                return response_schema.model_validate(json.loads(bruto))
+            except Exception as e:
+                ultimo_erro = e
+                erro_str = str(e).upper()
+                if "429" in erro_str or "RATE_LIMIT" in erro_str or "503" in erro_str:
+                    if tentativa < 3:
+                        tempo_espera = min(tentativa * 3, 10)
+                        st.toast(f"⚡ Fila na Groq ({modelo}). Tentativa {tentativa}/3. Aguardando {tempo_espera}s...", icon="⏳")
+                        time.sleep(tempo_espera)
+                        continue
+                    break
+                elif "404" in erro_str or "NOT_FOUND" in erro_str or isinstance(e, (ValidationError, json.JSONDecodeError)) or "JSON" in erro_str.upper() or "não retornou" in str(e):
+                    st.toast(f"⚠️ {modelo} indisponível/formato inválido. Pulando...", icon="⏭️")
+                    break
+                else:
+                    raise e
+    raise Exception(f"Groq: todos os modelos falharam. Último erro: {ultimo_erro}")
+
+def _chamar_openrouter(chave, itens, response_schema, modelos):
+    if OpenAI is None: raise Exception("Biblioteca 'openai' não instalada no servidor.")
+    client = OpenAI(api_key=chave, base_url="https://openrouter.ai/api/v1")
+    mensagens = _montar_mensagens_openai_like(itens, response_schema)
+    ultimo_erro = None
+    for modelo in modelos:
+        for tentativa in range(1, 4):
+            try:
+                resp = client.chat.completions.create(
+                    model=modelo, messages=mensagens,
+                    response_format={"type": "json_object"}, temperature=0.2,
+                )
+                bruto = _extrair_json_bruto(resp.choices[0].message.content)
+                return response_schema.model_validate(json.loads(bruto))
+            except Exception as e:
+                ultimo_erro = e
+                erro_str = str(e).upper()
+                if "429" in erro_str or "RATE_LIMIT" in erro_str or "503" in erro_str:
+                    if tentativa < 3:
+                        tempo_espera = min(tentativa * 3, 10)
+                        st.toast(f"⚡ Fila no OpenRouter ({modelo}). Tentativa {tentativa}/3. Aguardando {tempo_espera}s...", icon="⏳")
+                        time.sleep(tempo_espera)
+                        continue
+                    break
+                elif "404" in erro_str or "NOT_FOUND" in erro_str or isinstance(e, (ValidationError, json.JSONDecodeError)) or "JSON" in erro_str.upper() or "não retornou" in str(e):
+                    st.toast(f"⚠️ {modelo} indisponível/formato inválido. Pulando...", icon="⏭️")
+                    break
+                else:
+                    raise e
+    raise Exception(f"OpenRouter: todos os modelos falharam. Último erro: {ultimo_erro}")
+
+def _chamar_mistral(chave, itens, response_schema, modelos):
+    if Mistral is None: raise Exception("Biblioteca 'mistralai' não instalada no servidor.")
+    client = Mistral(api_key=chave)
+    mensagens = _montar_mensagens_openai_like(itens, response_schema)
+    ultimo_erro = None
+    for modelo in modelos:
+        for tentativa in range(1, 4):
+            try:
+                resp = client.chat.complete(
+                    model=modelo, messages=mensagens,
+                    response_format={"type": "json_object"}, temperature=0.2,
+                )
+                bruto = _extrair_json_bruto(resp.choices[0].message.content)
+                return response_schema.model_validate(json.loads(bruto))
+            except Exception as e:
+                ultimo_erro = e
+                erro_str = str(e).upper()
+                if "429" in erro_str or "CAPACITY" in erro_str or "503" in erro_str:
+                    if tentativa < 3:
+                        tempo_espera = min(tentativa * 3, 10)
+                        st.toast(f"⚡ Fila na Mistral ({modelo}). Tentativa {tentativa}/3. Aguardando {tempo_espera}s...", icon="⏳")
+                        time.sleep(tempo_espera)
+                        continue
+                    break
+                elif "404" in erro_str or "NOT_FOUND" in erro_str or isinstance(e, (ValidationError, json.JSONDecodeError)) or "JSON" in erro_str.upper() or "não retornou" in str(e):
+                    st.toast(f"⚠️ {modelo} indisponível/formato inválido. Pulando...", icon="⏭️")
+                    break
+                else:
+                    raise e
+    raise Exception(f"Mistral AI: todos os modelos falharam. Último erro: {ultimo_erro}")
+
+def _chamar_por_motor(motor, chave, itens, response_schema, thinking_level, modelos):
+    if motor == "gemini":
+        return _chamar_gemini(chave, itens, response_schema, thinking_level, modelos)
+    elif motor == "groq":
+        return _chamar_groq(chave, itens, response_schema, modelos)
+    elif motor == "openrouter":
+        return _chamar_openrouter(chave, itens, response_schema, modelos)
+    elif motor == "mistral":
+        return _chamar_mistral(chave, itens, response_schema, modelos)
+    raise Exception(f"Provedor desconhecido: {motor}")
+
+def executar_com_fallback(chave, itens, response_schema, provedor, thinking_level="high"):
+    cfg = PROVEDORES_IA[provedor]
+    try:
+        resultado = _chamar_por_motor(cfg["motor"], chave, itens, response_schema, thinking_level, cfg["modelos"])
+    except Exception as erro_provedor_escolhido:
+        outros = [p for p in PROVEDORES_IA if p != provedor]
+        ultimo_erro = erro_provedor_escolhido
+        resultado = None
+        for nome_alt in outros:
+            chave_alt = obter_chave_provedor(nome_alt)
+            if not chave_alt:
+                continue
+            try:
+                st.toast(f"🔀 {provedor} indisponível. Tentando automaticamente com {nome_alt}...", icon="🔁")
+                cfg_alt = PROVEDORES_IA[nome_alt]
+                resultado = _chamar_por_motor(cfg_alt["motor"], chave_alt, itens, response_schema, thinking_level, cfg_alt["modelos"])
+                break
+            except Exception as e2:
+                ultimo_erro = e2
+                continue
+        if resultado is None:
+            raise Exception(f"{provedor} falhou e nenhum provedor alternativo configurado deu certo. Último erro: {ultimo_erro}")
+
+    class _RespCompat:
+        def __init__(self, obj): self.text = obj.model_dump_json()
+    return _RespCompat(resultado)
+
+def converter_para_iso(data_str):
+    if not data_str: return None
+    data_str = data_str.strip()
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', data_str): return data_str
+    match_br = re.match(r'^(\d{2})/(\d{2})/(\d{4})$', data_str)
+    if match_br:
+        d, m, a = match_br.groups()
+        return f"{a}-{m}-{d}"
+    try: return datetime.strptime(data_str, "%d/%m/%Y").strftime("%Y-%m-%d")
+    except: return None
 
 # =====================================================================
-# EXTRAÇÃO DE PDF (mantida igual)
+# EXTRAÇÃO DE PDF
 # =====================================================================
 
 @st.cache_data(show_spinner=False, max_entries=20)
@@ -507,14 +747,188 @@ def extrair_conteudo_cache(file_bytes, nome_arquivo, dpi_ocr=1.5, max_paginas_oc
     return extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr, max_paginas_ocr)
 
 def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_paginas_ocr=None):
-    # ... (código completo já fornecido) ...
-    pass
+    if nome_arquivo.lower().endswith(".docx"): return [f"ARQUIVO DOCX: {nome_arquivo}"]
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        html_text = f"CONTEÚDO DO ARQUIVO {nome_arquivo}:\n\n"
+        caracteres_uteis = 0
+        for page_num, page in enumerate(doc):
+            html_text += f"=== PÁGINA {page_num + 1} ===\n"
+            page_text = page.get_text()
+            if re.search(r'ANEXO\s+[IVXLC]+', page_text, re.IGNORECASE):
+                html_text += "[ANEXO]\n"
+            tabelas_bbox = []
+            try:
+                tab_finder = page.find_tables()
+                for tabela in tab_finder.tables:
+                    linhas = tabela.extract()
+                    if not linhas: continue
+                    caracteres_uteis += sum(len(str(c or "")) for linha in linhas for c in linha)
+                    tabelas_bbox.append(fitz.Rect(tabela.bbox))
+                    html_text += "[TABELA]\n"
+                    for linha in linhas:
+                        html_text += " | ".join((str(c).strip() if c is not None else "") for c in linha) + "\n"
+                    html_text += "[/TABELA]\n<br/>\n"
+            except Exception:
+                pass
+            blocks = page.get_text("dict", sort=True).get("blocks", [])
+            for b in blocks:
+                if b.get('type') != 0: continue
+                bloco_rect = fitz.Rect(b.get("bbox", (0, 0, 0, 0)))
+                if any(bloco_rect.intersects(tb) for tb in tabelas_bbox):
+                    continue
+                bloco_linhas = ""
+                for l in b.get("lines", []):
+                    linha_span = ""
+                    for s in l.get("spans", []):
+                        texto = s.get("text", "")
+                        if not texto: continue
+                        caracteres_uteis += len(texto.strip())
+                        flags = s.get("flags", 0)
+                        if flags & 2**4: texto = f"<b>{texto}</b>"
+                        if flags & 2**1: texto = f"<i>{texto}</i>"
+                        linha_span += texto
+                    if linha_span.strip(): bloco_linhas += linha_span + " "
+                if bloco_linhas.strip(): html_text += bloco_linhas.strip() + "<br/>\n"
+            html_text += "<br/>\n"
+        if caracteres_uteis < 30 * max(doc.page_count, 1):
+            partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO. Leia o conteúdo visualmente, inclusive tabelas:"]
+            for page in doc:
+                pix = page.get_pixmap(matrix=fitz.Matrix(dpi_ocr, dpi_ocr))
+                partes.append({"tipo": "imagem", "mime": "image/jpeg", "dados": pix.tobytes("jpg", jpg_quality=78)})
+            return partes
+        return [html_text]
+    except Exception as e:
+        return [f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"]
 
 # =====================================================================
 # ESTRUTURAS PYDANTIC
 # =====================================================================
 
-# ... (classes já definidas) ...
+class ArquivoClassificado(BaseModel):
+    nome_arquivo_upload: str
+    tipo: str
+    grupo_id: int
+    nome_padronizado_identificado: str
+    data_oficial_iso: str
+    ato_base_referenciado_tipo: Optional[str] = None
+    ato_base_referenciado_numero: Optional[str] = None
+
+class TriagemDocumentos(BaseModel):
+    arquivos: List[ArquivoClassificado]
+
+class MetadadosNorma(BaseModel):
+    tipo_documento: str
+    numero_documento: str
+    orgao_emissor: str
+    data_assinatura: str
+    nome_padronizado: str
+
+class Dispositivo(BaseModel):
+    tipo: str
+    texto_principal_alterada: str
+    texto_principal_consolidada: str
+    is_tabela: bool
+    tabela_alterada: Optional[List[List[str]]] = None
+    tabela_consolidada: Optional[List[List[str]]] = None
+    texto_pos_tabela_alterada: Optional[str] = None
+    texto_pos_tabela_consolidada: Optional[str] = None
+    nota_remissiva: Optional[str] = ""
+
+class Consolidacao(BaseModel):
+    arquivos_originais_identificados: List[str]
+    arquivos_alteradores_identificados: List[str]
+    norma_base: MetadadosNorma
+    normas_alteradoras: List[MetadadosNorma]
+    cabecalho_complemento: str
+    orgaos_emissores: str
+    titulo_portaria: str
+    ementa: str
+    preambulo: str
+    assinatura_nome: str
+    assinatura_cargo: str
+    dispositivos: List[Dispositivo]
+
+class AnaliseGlobal(BaseModel):
+    consolidacoes_geradas: List[Consolidacao]
+    arquivos_nao_alterados: List[str]
+
+def limpar_texto_ia(texto):
+    if not texto: return ""
+    return re.sub(r' {2,}', ' ', str(texto)).strip()
+
+def injetar_nota_remissiva(texto, nota):
+    if nota and nota.strip():
+        n_sem_parenteses = nota.strip("()").strip()
+        n_fmt = f"({n_sem_parenteses})"
+        texto_puro = re.sub(r'<[^>]+>', '', texto if texto else '')
+        if n_sem_parenteses.lower() in texto_puro.lower(): return texto
+        if texto:
+            texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
+            return f'{texto_limpo} &nbsp;<span style="color: red;">{n_fmt}</span>'
+        return f'<span style="color: red;">{n_fmt}</span>'
+    return texto
+
+def corrigir_posicionamento_tabela(consolidacao: dict):
+    if not isinstance(consolidacao, dict):
+        return consolidacao
+    dispositivos = consolidacao.get("dispositivos", [])
+    for disp in dispositivos:
+        if not disp.get("is_tabela"):
+            continue
+        txt_alt = disp.get("texto_principal_alterada") or ""
+        txt_pos_alt = disp.get("texto_pos_tabela_alterada") or ""
+        if "redação dada pelo" in txt_pos_alt.lower() or "nova redação" in txt_pos_alt.lower():
+            continue
+        nova_redacao = None
+        texto_antigo = txt_alt
+        partes = re.split(r'<br\s*/?>\s*<br\s*/?>', txt_alt, flags=re.IGNORECASE)
+        if len(partes) >= 2:
+            primeira = partes[0].strip()
+            segunda = partes[-1].strip()
+            if '<strike' not in segunda.lower() and '<font color="red"' not in segunda.lower() and '<s>' not in segunda.lower():
+                nova_redacao = segunda
+                texto_antigo = primeira
+            else:
+                for idx in range(len(partes)-1, -1, -1):
+                    parte_limpa = partes[idx].strip()
+                    if '<strike' not in parte_limpa.lower() and '<font color="red"' not in parte_limpa.lower() and '<s>' not in parte_limpa.lower():
+                        nova_redacao = parte_limpa
+                        texto_antigo = "<br/><br/>".join(partes[:idx]).strip()
+                        break
+        else:
+            match = re.search(r'(\(?\s*Redação dada pelo.*)', txt_alt, flags=re.IGNORECASE)
+            if match:
+                inicio_nova = match.start()
+                texto_antigo = txt_alt[:inicio_nova].strip()
+                nova_redacao = txt_alt[inicio_nova:].strip()
+            else:
+                partes_simples = re.split(r'<br\s*/?>', txt_alt, flags=re.IGNORECASE)
+                if len(partes_simples) > 1:
+                    ultima = partes_simples[-1].strip()
+                    if '<strike' not in ultima.lower() and '<font color="red"' not in ultima.lower() and '<s>' not in ultima.lower():
+                        nova_redacao = ultima
+                        texto_antigo = "<br/>".join(partes_simples[:-1]).strip()
+        if nova_redacao:
+            disp["texto_principal_alterada"] = texto_antigo if texto_antigo else ""
+            if disp["texto_principal_alterada"] and not disp["texto_principal_alterada"].endswith("<br/><br/>"):
+                disp["texto_principal_alterada"] += "<br/><br/>"
+            if txt_pos_alt.strip() and txt_pos_alt.strip() != nova_redacao:
+                disp["texto_pos_tabela_alterada"] = nova_redacao + "<br/><br/>" + txt_pos_alt.strip()
+            else:
+                disp["texto_pos_tabela_alterada"] = nova_redacao
+    return consolidacao
+
+def resgatar_memoria():
+    memoria = ""
+    if supabase:
+        try:
+            res = supabase.table("memoria_de_correcoes").select("*").order("id", desc=True).limit(5).execute()
+            if res.data:
+                memoria = "\n\n⚠️ HISTÓRICO DE CORREÇÕES (Não repita os erros da IA):\n"
+                for m in res.data: memoria += f"- Erro: {m['texto_ia']}\n- Correção: {m['texto_corrigido']}\n\n"
+        except: pass
+    return memoria
 
 # =====================================================================
 # FUNÇÕES DE BANCO DE DADOS
@@ -625,26 +1039,6 @@ def salvar_no_supabase(cons, cons_original):
         else:
             base_id = supabase.table("portarias_base").select("id").eq("nome_padronizado", base['nome_padronizado']).execute().data[0]['id']
 
-        # Inserir versões na nova tabela
-        alteradoras_nomes = [alt['nome_padronizado'] for alt in alteradoras] if alteradoras else []
-        descricao = f"{base['nome_padronizado']}" + (f" + {', '.join(alteradoras_nomes)}" if alteradoras_nomes else "")
-        
-        supabase.table("versoes_documentos").insert({
-            "portaria_base_id": base_id,
-            "tipo_versao": "alterada",
-            "estado_json": cons,
-            "alteradoras_aplicadas": alteradoras_nomes,
-            "descricao": descricao
-        }).execute()
-        
-        supabase.table("versoes_documentos").insert({
-            "portaria_base_id": base_id,
-            "tipo_versao": "consolidada",
-            "estado_json": cons,
-            "alteradoras_aplicadas": alteradoras_nomes,
-            "descricao": descricao
-        }).execute()
-
         for alt in alteradoras:
             res_alt = supabase.table("portarias_alteradoras").select("id").eq("portaria_base_id", base_id).eq("nome_padronizado", alt['nome_padronizado']).execute()
             if not res_alt.data:
@@ -657,7 +1051,243 @@ def salvar_no_supabase(cons, cons_original):
 # ANÁLISE DE LOTE E PROCESSAMENTO
 # =====================================================================
 
-# ... (funções classificar_arquivo_unico, processar_derivacoes_arquivo_unico, analisar_lote_arquivos, _processar_cascata_grupo, _consultar_estado_e_historico) ...
+def classificar_arquivo_unico(arquivo, key, provedor, thinking_level="medium"):
+    """Extrai o texto e faz a triagem, retornando a classificação do arquivo."""
+    textos_extraidos = {}
+    try:
+        conteudo = extrair_conteudo_multimodal(arquivo.getvalue(), arquivo.name, dpi_ocr=1.5, max_paginas_ocr=None)
+        textos_extraidos[arquivo.name] = conteudo
+    except Exception as e:
+        return None, None, str(e)
+    contents_triagem = [f"Analise o documento. Classifique-o como 'Base' ou 'Alteradora'. Se for 'Alteradora', extraia o tipo e número do ato base referenciado. ARQUIVO: {arquivo.name}"]
+    contents_triagem.extend(conteudo)
+    try:
+        resp_triagem = executar_com_fallback(key, contents_triagem, TriagemDocumentos, provedor, thinking_level="low")
+        triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
+        if triagem_dados:
+            return triagem_dados[0], conteudo, None
+        else:
+            return None, None, "Não foi possível classificar o documento."
+    except Exception as e:
+        return None, None, str(e)
+
+def processar_derivacoes_arquivo_unico(arquivo, texto_editado, key, provedor, thinking_level):
+    class FakeUploadedFile:
+        def __init__(self, name, content):
+            self.name = name
+            self._content = content
+        def getvalue(self):
+            return self._content
+    fake_arquivo = FakeUploadedFile(arquivo.name, texto_editado.encode('utf-8'))
+    resultado = analisar_lote_arquivos([fake_arquivo], key, provedor, thinking_level)
+    return resultado
+
+def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi_ocr=1.5, max_paginas_ocr=None, progresso=None, confirmar_derivacoes=False):
+    memoria_aprendida = resgatar_memoria()
+
+    textos_extraidos = {}
+    max_workers_extração = 2 if thinking_level == "low" else 4
+    with ThreadPoolExecutor(max_workers=min(max_workers_extração, max(1, len(arquivos)))) as ex:
+        futuros = {submit_com_contexto(ex, extrair_conteudo_cache, arq.getvalue(), arq.name, dpi_ocr, max_paginas_ocr): arq.name for arq in arquivos}
+        total_arquivos = len(arquivos)
+        for idx, fut in enumerate(as_completed(futuros)):
+            textos_extraidos[futuros[fut]] = fut.result()
+            if progresso:
+                progresso.progress((idx + 1) / (total_arquivos * 2), text=f"Extraindo conteúdo de {futuros[fut]}...")
+
+    contents_triagem = [f"Analise os documentos. Agrupe cada ato original com seus derivativos presentes neste lote. Se uma Alteradora citar um ato original que NÃO está entre os arquivos deste lote, preencha ato_base_referenciado_tipo/numero com o que ela declara alterar/revogar, para localização posterior no banco de dados. ARQUIVOS: {', '.join(textos_extraidos.keys())}"]
+    for partes in textos_extraidos.values(): contents_triagem.extend(partes)
+    if progresso:
+        progresso.progress(0.5, text="Classificando documentos...")
+    resp_triagem = executar_com_fallback(key, contents_triagem, TriagemDocumentos, provedor, thinking_level="low")
+    triagem_dados = json.loads(resp_triagem.text).get("arquivos", [])
+
+    if fluxo_inteligente and confirmar_derivacoes:
+        derivacoes = []
+        pendentes = []
+        for a in triagem_dados:
+            if a.get('tipo') == 'Alteradora':
+                base = _localizar_base_no_banco(a.get('ato_base_referenciado_tipo'), a.get('ato_base_referenciado_numero'))
+                if base:
+                    derivacoes.append({
+                        "nome_arquivo_upload": a['nome_arquivo_upload'],
+                        "ato_base_referenciado_tipo": a.get('ato_base_referenciado_tipo'),
+                        "ato_base_referenciado_numero": a.get('ato_base_referenciado_numero'),
+                        "nome_base": base.get('nome_padronizado', ''),
+                    })
+                else:
+                    pendentes.append({
+                        "tipo_ref": a.get('ato_base_referenciado_tipo') or 'Desconhecido',
+                        "numero_ref": a.get('ato_base_referenciado_numero') or 'Desconhecido',
+                        "nome_arquivo": a['nome_arquivo_upload'],
+                        "texto_integra": "\n".join(textos_extraidos.get(a['nome_arquivo_upload'], [])),
+                    })
+        if derivacoes:
+            return {
+                "derivacoes_detectadas": derivacoes,
+                "textos_extraidos": textos_extraidos,
+                "triagem_dados": triagem_dados,
+            }
+        if pendentes:
+            return {
+                "pendencia_salvar": pendentes[0]
+            }
+
+    grupos = {}
+    for a in triagem_dados: grupos.setdefault(a.get('grupo_id', 0), []).append(a)
+
+    grupos_validos = []
+    consolidacoes_geradas, arquivos_nao_alterados = [], []
+    referencias_pendentes = []
+
+    for grupo_id, itens in grupos.items():
+        arquivo_base = next((a for a in itens if a['tipo'] == 'Base'), None)
+        arquivos_alteradores = sorted([a for a in itens if a['tipo'] == 'Alteradora'], key=lambda x: x['data_oficial_iso'])
+
+        if not arquivo_base and not arquivos_alteradores: continue
+        if not arquivo_base:
+            base_reconstruida = None
+            ato_ref_tipo = None
+            ato_ref_numero = None
+            for alt in arquivos_alteradores:
+                if alt.get('ato_base_referenciado_tipo') and alt.get('ato_base_referenciado_numero'):
+                    ato_ref_tipo = alt['ato_base_referenciado_tipo']
+                    ato_ref_numero = alt['ato_base_referenciado_numero']
+                candidato = _localizar_base_no_banco(alt.get('ato_base_referenciado_tipo'), alt.get('ato_base_referenciado_numero'))
+                if candidato:
+                    base_reconstruida = candidato
+                    break
+            if base_reconstruida:
+                arquivo_base = {
+                    "nome_arquivo_upload": None,
+                    "tipo": "Base",
+                    "nome_padronizado_identificado": base_reconstruida.get("nome_padronizado", ""),
+                    "data_oficial_iso": "",
+                    "_reconstruida_do_banco": True,
+                }
+                grupos_validos.append((arquivo_base, arquivos_alteradores))
+            else:
+                if not ato_ref_tipo or not ato_ref_numero:
+                    ato_ref_tipo = "Desconhecido"
+                    ato_ref_numero = "Desconhecido"
+                referencias_pendentes.append({
+                    "ato_referenciado_tipo": ato_ref_tipo,
+                    "ato_referenciado_numero": ato_ref_numero,
+                    "arquivos_alteradores": [a['nome_arquivo_upload'] for a in arquivos_alteradores],
+                })
+                arquivos_nao_alterados.extend([a['nome_arquivo_upload'] for a in arquivos_alteradores])
+            continue
+        grupos_validos.append((arquivo_base, arquivos_alteradores))
+
+    if grupos_validos:
+        max_workers_processamento = 1 if thinking_level == "low" else 2
+        with ThreadPoolExecutor(max_workers=min(max_workers_processamento, len(grupos_validos))) as ex:
+            futuros = {}
+            for arquivo_base, arquivos_alteradores in grupos_validos:
+                st.toast(f"⚙️ Processando: {arquivo_base.get('nome_padronizado_identificado')}...", icon="⏳")
+                fut = submit_com_contexto(ex, _processar_cascata_grupo, key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida, thinking_level)
+                futuros[fut] = (arquivo_base, arquivos_alteradores)
+            total_grupos = len(grupos_validos)
+            for idx, fut in enumerate(as_completed(futuros)):
+                arquivo_base, arquivos_alteradores = futuros[fut]
+                try:
+                    resultado, mensagens = fut.result()
+                    resultado = corrigir_posicionamento_tabela(resultado)
+                    consolidacoes_geradas.append(resultado)
+                    for tipo_msg, texto_msg in mensagens:
+                        if tipo_msg == "info": st.info(texto_msg)
+                        elif tipo_msg == "warning": st.warning(texto_msg)
+                except Exception as e:
+                    st.error(f"❌ Falha em '{arquivo_base.get('nome_padronizado_identificado')}': {e}")
+                    if arquivo_base.get('nome_arquivo_upload'):
+                        arquivos_nao_alterados.append(arquivo_base['nome_arquivo_upload'])
+                    arquivos_nao_alterados.extend([a['nome_arquivo_upload'] for a in arquivos_alteradores])
+                if progresso:
+                    progresso.progress(0.5 + 0.5 * (idx + 1) / total_grupos, text=f"Processando grupo {idx+1}/{total_grupos}...")
+
+    return {
+        "consolidacoes_geradas": consolidacoes_geradas,
+        "arquivos_nao_alterados": arquivos_nao_alterados,
+        "referencias_pendentes": referencias_pendentes,
+    }
+
+def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida, thinking_level="medium"):
+    nome_padrao = arquivo_base.get('nome_padronizado_identificado', '')
+    reconstruida = bool(arquivo_base.get('_reconstruida_do_banco'))
+    estado_json_atual, ja_processadas = _consultar_estado_e_historico(nome_padrao)
+    mensagens = []
+
+    if reconstruida:
+        detalhe = f" com {len(ja_processadas)} derivação(ões) já aplicada(s) ({', '.join(ja_processadas)})" if ja_processadas else ""
+        mensagens.append(("info", f"📎 Os arquivos enviados alteram/revogam o ato '{nome_padrao}', já cadastrado no banco{detalhe}. Recomendamos anexar também o arquivo ORIGINAL de '{nome_padrao}' em um novo envio para garantir a máxima fidelidade; por ora, o processamento usará o estado já consolidado salvo no banco de dados."))
+    elif estado_json_atual is not None:
+        detalhe = f" ({', '.join(ja_processadas)})" if ja_processadas else ""
+        mensagens.append(("info", f"🧠 '{nome_padrao}' já possui histórico no banco: {len(ja_processadas)} alteração(ões)/revogação(ões) processada(s) anteriormente{detalhe}."))
+
+    if reconstruida and estado_json_atual is None:
+        mensagens.append(("warning", f"⚠️ '{nome_padrao}' foi localizado no banco, mas sem conteúdo consolidado salvo. Envie também o arquivo ORIGINAL de '{nome_padrao}' junto com as alteradoras para que o processamento seja possível."))
+        raise Exception(f"Ato base '{nome_padrao}' localizado no banco sem conteúdo salvo — reenvie junto com o arquivo original.")
+
+    ja_processadas_lower = {j.lower() for j in ja_processadas}
+    alteradoras_para_aplicar = []
+    for alt in arquivos_alteradores:
+        nome_alt = alt.get('nome_padronizado_identificado', '')
+        if nome_alt and nome_alt.lower() in ja_processadas_lower:
+            mensagens.append(("warning", f"⚠️ '{nome_alt}' já havia sido processada e aplicada anteriormente a '{nome_padrao}' — não será reaplicada agora para evitar duplicar a alteração/revogação."))
+        else:
+            alteradoras_para_aplicar.append(alt)
+    alteradoras_para_aplicar.sort(key=lambda x: x.get('data_oficial_iso') or '')
+
+    if not alteradoras_para_aplicar:
+        if estado_json_atual:
+            return json.loads(estado_json_atual), mensagens
+        conteudo_loop = ["Texto Base:"] + textos_extraidos[arquivo_base['nome_arquivo_upload']]
+        resp_loop = executar_com_fallback(key, conteudo_loop + ["Estruture o documento separando a ementa do preâmbulo e aplicando rigorosamente o mapeamento de dispositivos, incluindo tabelas quando houver." + memoria_aprendida], Consolidacao, provedor, thinking_level)
+        return json.loads(resp_loop.text), mensagens
+
+    resp_loop = None
+    for i, alt in enumerate(alteradoras_para_aplicar):
+        conteudo_loop = []
+        if estado_json_atual:
+            conteudo_loop.append(f"ESTADO ATUAL (JSON):\n{estado_json_atual}")
+        elif i == 0:
+            conteudo_loop.append("DOCUMENTO BASE ORIGINAL:")
+            conteudo_loop.extend(textos_extraidos[arquivo_base['nome_arquivo_upload']])
+
+        conteudo_loop.append(f"ATO ALTERADOR/REVOGADOR Nº {i+1} DE {len(alteradoras_para_aplicar)} A SER APLICADO, EM ORDEM CRONOLÓGICA DO MAIS ANTIGO PARA O MAIS NOVO ({alt['nome_arquivo_upload']}):")
+        conteudo_loop.extend(textos_extraidos[alt['nome_arquivo_upload']])
+        prompt_loop = f"""
+        Aplique o ato alterador/revogador cruzando detalhadamente com o ato base (seja Lei, Decreto,
+        Resolução, Enunciado, Portaria ou qualquer outra espécie normativa).
+        Obrigatório: siga EXATAMENTE o formato de citação e a estrutura de parágrafos definidos nas regras
+        do sistema (item 4 e item 6 para tabelas) — "(Alterada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" na
+        linha riscada, "(Redação dada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" na linha nova, ou
+        "(Revogado pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" para revogação (sem repetir linha). Preserve
+        <b>/<i> e tabelas ([TABELA]...[/TABELA]) com fidelidade absoluta, redesenhando a tabela inteira
+        quando alterada.
+        Se o ato for de revogação integral, aplique a taxação completa em todos os dispositivos, anexos e tabelas,
+        conforme item 8.
+        {memoria_aprendida}
+        """
+        conteudo_loop.append(prompt_loop)
+        resp_loop = executar_com_fallback(key, conteudo_loop, Consolidacao, provedor, thinking_level)
+        estado_json_atual = resp_loop.text
+    return json.loads(resp_loop.text), mensagens
+
+def _consultar_estado_e_historico(nome_padrao):
+    if not supabase or not nome_padrao:
+        return None, []
+    try:
+        res_bd = supabase.table("portarias_base").select("id, documento_consolidado_json").eq("nome_padronizado", nome_padrao).execute()
+        if not res_bd.data:
+            return None, []
+        base_id = res_bd.data[0]['id']
+        estado = res_bd.data[0].get("documento_consolidado_json")
+        res_alt = supabase.table("portarias_alteradoras").select("nome_padronizado").eq("portaria_base_id", base_id).execute()
+        ja_processadas = [r['nome_padronizado'] for r in (res_alt.data or []) if r.get('nome_padronizado')]
+        return (json.dumps(estado) if estado else None), ja_processadas
+    except Exception:
+        return None, []
 
 # =====================================================================
 # EXPORTAÇÃO
@@ -737,12 +1367,88 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
     return buffer.getvalue()
 
 def aplicar_html_no_docx(p, texto_html):
-    # ... (mantida igual) ...
-    pass
+    texto_html = texto_html.replace("&nbsp;", "\xa0")
+    tokens = re.split(r'(<[^>]+>)', texto_html)
+    is_bold = is_strike = is_red = is_italic = False
+    for token in tokens:
+        if not token: continue
+        t = token.lower()
+        if t.startswith('<b') and not t.startswith('<br'): is_bold = True
+        elif t == '</b>': is_bold = False
+        elif t.startswith('<i'): is_italic = True
+        elif t == '</i>': is_italic = False
+        elif t.startswith('<strike') or t.startswith('<s') and not t.startswith('<span'): is_strike = True
+        elif t == '</strike>' or t == '</s>': is_strike = False
+        elif t.startswith('<font') and ('red' in t or '#f00' in t or '#e6' in t): is_red = True
+        elif t.startswith('<span') and ('red' in t or '#f00' in t or '#e6' in t): is_red = True
+        elif t == '</font>' or t == '</span>': is_red = False
+        elif token.startswith('<'): pass
+        else:
+            token = unescape(token)
+            run = p.add_run(token)
+            run.font.name, run.font.size = 'Times New Roman', Pt(11)
+            if is_bold: run.bold = True
+            if is_italic: run.italic = True
+            if is_strike: run.font.strike = True
+            if is_red: run.font.color.rgb = RGBColor(230, 0, 0)
 
 def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
-    # ... (mantida igual) ...
-    pass
+    doc = docx.Document()
+    for section in doc.sections: section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Inches(1)
+    ph = doc.add_paragraph(); ph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    rh = ph.add_run(f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}")
+    rh.font.name, rh.font.size, rh.bold, rh.font.color.rgb = 'Times New Roman', Pt(10), True, RGBColor(68, 68, 68)
+    po = doc.add_paragraph(); po.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    ro = po.add_run(limpar_texto_ia(consolidacao_dict.get("orgaos_emissores") or "").replace("<br/>", "\n"))
+    ro.font.name, ro.font.size, ro.bold = 'Times New Roman', Pt(11), True
+    ptit = doc.add_paragraph(); ptit.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    rt = ptit.add_run(limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or ""))
+    rt.font.name, rt.font.size, rt.bold = 'Times New Roman', Pt(11), True
+    def _render_docx_p(p_obj, texto_html, bold_all=False):
+        if not texto_html: return
+        for p_html in texto_html.split("<br/>"):
+            if not p_html.strip(): continue
+            if bold_all:
+                run = p_obj.add_run(re.sub(r'<[^>]+>', '', p_html).replace("&nbsp;", "\xa0"))
+                run.font.name, run.font.size, run.bold = 'Times New Roman', Pt(10), True
+            else:
+                aplicar_html_no_docx(p_obj, p_html)
+            p_obj.add_run("\n")
+    p_ementa = doc.add_paragraph(); p_ementa.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; p_ementa.paragraph_format.left_indent = Inches(3)
+    _render_docx_p(p_ementa, consolidacao_dict.get("ementa", ""))
+    p_preambulo = doc.add_paragraph(); p_preambulo.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; p_preambulo.paragraph_format.left_indent = Inches(0)
+    _render_docx_p(p_preambulo, consolidacao_dict.get("preambulo", ""))
+    for item in consolidacao_dict.get("dispositivos", []):
+        t = (item.get("tipo") or "").lower()
+        t_prin = injetar_nota_remissiva(item.get(f"texto_principal_{tipo_versao}"), item.get("nota_remissiva") if not item.get("is_tabela") else "")
+        if "capitulo" in t or "anexo" in t:
+            if "anexo" in t: doc.add_page_break()
+            p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _render_docx_p(p, t_prin, bold_all=True)
+            if not item.get("is_tabela"): continue
+        else:
+            if t_prin:
+                p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; p.paragraph_format.first_line_indent = Inches(0.4)
+                _render_docx_p(p, t_prin)
+        if item.get("is_tabela"):
+            linhas = item.get(f"tabela_{tipo_versao}") or []
+            if linhas:
+                tb = doc.add_table(rows=len(linhas), cols=len(linhas[0])); tb.style = 'Table Grid'
+                for r_idx, linha in enumerate(linhas):
+                    for c_idx, celula in enumerate(linha):
+                        _render_docx_p(tb.cell(r_idx, c_idx).paragraphs[0], celula.replace('\n', '<br/>'))
+            t_pos = injetar_nota_remissiva(item.get(f"texto_pos_tabela_{tipo_versao}"), item.get("nota_remissiva"))
+            if t_pos:
+                p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; p.paragraph_format.first_line_indent = Inches(0.4)
+                _render_docx_p(p, t_pos)
+    pa = doc.add_paragraph(); pa.alignment = WD_ALIGN_PARAGRAPH.CENTER; pa.paragraph_format.space_before = Pt(36)
+    ra = pa.add_run(f"{limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')}\n{limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')}")
+    ra.font.name, ra.font.size, ra.bold = 'Times New Roman', Pt(11), True
+    p_nota = doc.add_paragraph(); p_nota.alignment = WD_ALIGN_PARAGRAPH.CENTER; p_nota.paragraph_format.space_before = Pt(30)
+    r_nota = p_nota.add_run("Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial.")
+    r_nota.font.name = 'Times New Roman'; r_nota.font.size = Pt(9); r_nota.italic = True
+    buffer = io.BytesIO(); doc.save(buffer); buffer.seek(0)
+    return buffer.getvalue()
 
 # =====================================================================
 # FRONTEND
@@ -756,6 +1462,235 @@ if "arquivo_unico_estrutura" not in st.session_state: st.session_state.arquivo_u
 if "arquivo_unico_id" not in st.session_state: st.session_state.arquivo_unico_id = None
 if "arquivo_unico_classificacao" not in st.session_state: st.session_state.arquivo_unico_classificacao = None
 
-# ... (código do fluxo inteligente e fluxo antigo, já completo nas respostas anteriores) ...
+if fluxo_inteligente and len(arquivos_enviados) == 1:
+    arquivo = arquivos_enviados[0]
+    st.markdown("### 📄 Conferência do Documento Original")
+    if st.button("📤 Estruturar Documento", key="btn_extrair_unico"):
+        with st.spinner("Extraindo e estruturando conteúdo..."):
+            try:
+                conteudo = extrair_conteudo_multimodal(arquivo.getvalue(), arquivo.name)
+                texto_integra = "\n".join([c if isinstance(c, str) else "" for c in conteudo])
+                resp = executar_com_fallback(api_key.strip(), [texto_integra], Consolidacao, provedor_escolhido, thinking_level="medium")
+                estrutura = json.loads(resp.text)
+                st.session_state.arquivo_unico_estrutura = estrutura
+                st.session_state.arquivo_unico_id = None
+                st.session_state.arquivo_unico_classificacao = None
+            except Exception as e:
+                st.error(f"Erro na extração/estruturação: {e}")
 
-# Certifique-se de que as funções não definidas aqui (ex: limpar_texto_ia, injetar_nota_remissiva, editor_para_pdf) estejam definidas acima.
+    if st.session_state.arquivo_unico_estrutura:
+        estrutura = st.session_state.arquivo_unico_estrutura
+        estrutura['titulo_portaria'] = st.text_input("Título do Ato", estrutura.get('titulo_portaria', ''), key="titulo_original")
+        estrutura['orgaos_emissores'] = st.text_input("Órgãos Emissores", estrutura.get('orgaos_emissores', ''), key="orgaos_original")
+        estrutura['ementa'] = editor_para_pdf(editor_rico(ia_para_editor(estrutura.get('ementa', '')), key="ementa_original"))
+        estrutura['preambulo'] = editor_para_pdf(editor_rico(ia_para_editor(estrutura.get('preambulo', '')), key="preambulo_original"))
+        estrutura['assinatura_nome'] = st.text_input("Assinatura (Nome)", estrutura.get('assinatura_nome', ''), key="assinatura_nome_original")
+        estrutura['assinatura_cargo'] = st.text_input("Assinatura (Cargo)", estrutura.get('assinatura_cargo', ''), key="assinatura_cargo_original")
+
+        st.markdown("#### Dispositivos")
+        for idx, disp in enumerate(estrutura.get('dispositivos', [])):
+            st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {idx+1}**")
+            disp['texto_principal_alterada'] = editor_para_pdf(editor_rico(ia_para_editor(disp.get('texto_principal_alterada', '')), key=f"texto_original_{idx}"))
+            disp['texto_principal_consolidada'] = disp['texto_principal_alterada']
+            if disp.get('is_tabela'):
+                st.markdown("*Tabela*")
+                disp['tabela_alterada'] = st.data_editor(disp.get('tabela_alterada') or [[""]], key=f"tabela_original_{idx}", num_rows="dynamic")
+                disp['tabela_consolidada'] = disp['tabela_alterada']
+                disp['texto_pos_tabela_alterada'] = st.text_area("Texto após tabela", value=disp.get('texto_pos_tabela_alterada') or "", key=f"pos_tabela_original_{idx}")
+                disp['texto_pos_tabela_consolidada'] = disp['texto_pos_tabela_alterada']
+            st.markdown("---")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("💾 Salvar Ato Original", key="btn_salvar_unico"):
+                st.session_state.arquivo_unico_estrutura = estrutura
+                id_salvo = salvar_ato_integral(
+                    arquivo.name,
+                    json.dumps(estrutura, ensure_ascii=False),
+                    estrutura_json=json.dumps(estrutura, ensure_ascii=False)
+                )
+                if id_salvo:
+                    st.session_state.arquivo_unico_id = id_salvo
+                    st.success("Ato original salvo com sucesso!")
+        with col2:
+            if st.button("🔍 Analisar com atos cadastrados", key="btn_analisar_unico", disabled=(st.session_state.arquivo_unico_id is None)):
+                with st.spinner("Analisando derivações..."):
+                    classif, _, erro = classificar_arquivo_unico(arquivo, api_key.strip(), provedor_escolhido, thinking_level="medium")
+                    if erro:
+                        st.error(f"Erro na classificação: {erro}")
+                    else:
+                        st.session_state.arquivo_unico_classificacao = classif
+                        if classif and classif.get('tipo') == 'Alteradora':
+                            base = _localizar_base_no_banco(classif.get('ato_base_referenciado_tipo'), classif.get('ato_base_referenciado_numero'))
+                            if base:
+                                st.session_state.confirmacao_pendente = {
+                                    "derivacoes_detectadas": [{
+                                        "nome_arquivo_upload": arquivo.name,
+                                        "ato_base_referenciado_tipo": classif.get('ato_base_referenciado_tipo'),
+                                        "ato_base_referenciado_numero": classif.get('ato_base_referenciado_numero'),
+                                        "nome_base": base.get('nome_padronizado', '')
+                                    }]
+                                }
+                                st.session_state.pendencia_salvar = None
+                            else:
+                                st.session_state.pendencia_salvar = {
+                                    "tipo_ref": classif.get('ato_base_referenciado_tipo') or 'Desconhecido',
+                                    "numero_ref": classif.get('ato_base_referenciado_numero') or 'Desconhecido',
+                                    "nome_arquivo": arquivo.name,
+                                    "texto_integra": json.dumps(estrutura, ensure_ascii=False)
+                                }
+                                st.session_state.confirmacao_pendente = None
+                        else:
+                            with st.spinner("Salvando ato base..."):
+                                salvar_no_supabase(estrutura, None)
+                                st.success("Ato base salvo no banco de dados.")
+                                pend = verificar_pendencias_para_base(estrutura['norma_base']['tipo_documento'], estrutura['norma_base']['numero_documento'])
+                                if pend:
+                                    st.warning(f"🔔 Existem {len(pend)} pendência(s) que referenciam este ato. Processe-as se necessário.")
+                            st.session_state.confirmacao_pendente = None
+                            st.session_state.pendencia_salvar = None
+
+    if st.session_state.confirmacao_pendente:
+        derivacoes = st.session_state.confirmacao_pendente.get("derivacoes_detectadas", [])
+        for d in derivacoes:
+            st.warning(f"🔔 O arquivo deriva de {d['ato_base_referenciado_tipo']} {d['ato_base_referenciado_numero']} ({d['nome_base']}). Deseja processar as alterações?")
+        col_sim, col_nao = st.columns(2)
+        with col_sim:
+            if st.button("✅ Sim, processar alterações", key="btn_processar_deriv_unico"):
+                with st.spinner("Processando derivação..."):
+                    try:
+                        resultado = processar_derivacoes_arquivo_unico(arquivo, json.dumps(st.session_state.arquivo_unico_estrutura), api_key.strip(), provedor_escolhido, thinking_level="medium")
+                        st.session_state.dados_processados = resultado
+                        st.session_state.dados_originais_ia = copy.deepcopy(resultado)
+                        st.session_state.confirmacao_pendente = None
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao processar: {e}")
+        with col_nao:
+            if st.button("❌ Não, manter apenas o ato original", key="btn_nao_processar_deriv_unico"):
+                st.session_state.confirmacao_pendente = None
+                st.info("O ato original foi salvo. Nenhuma alteração foi aplicada.")
+                st.rerun()
+
+    if st.session_state.pendencia_salvar:
+        pend = st.session_state.pendencia_salvar
+        st.warning(f"⚠️ Este arquivo é uma alteradora, mas a norma base {pend['tipo_ref']} {pend['numero_ref']} não foi encontrada.")
+        if st.button("💾 Salvar como pendente", key="btn_salvar_pend_unico"):
+            if salvar_ato_pendente(pend['tipo_ref'], pend['numero_ref'], pend['nome_arquivo'], pend['texto_integra']):
+                st.success("Pendência salva! Quando a norma base for cadastrada, você será avisado.")
+                st.session_state.pendencia_salvar = None
+                st.rerun()
+
+else:
+    if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_width=True):
+        if not api_key: st.error("⚠️ Insira sua chave da API nas configurações.")
+        elif not arquivos_enviados: st.warning("⚠️ Envie os arquivos normativos primeiro.")
+        else:
+            if modo_processamento == "Rápido":
+                thinking_level = "low"; dpi_ocr = 1.2; max_paginas_ocr = 10
+            elif modo_processamento == "Equilibrado":
+                thinking_level = "medium"; dpi_ocr = 1.5; max_paginas_ocr = 20
+            else:
+                thinking_level = "high"; dpi_ocr = 1.5; max_paginas_ocr = None
+            with st.spinner("⚡ Executando OCR Estrutural e Consulta ao Histórico de Aprendizado..."):
+                progresso = st.progress(0.0, text="Iniciando análise...")
+                try:
+                    st.session_state.dados_processados = analisar_lote_arquivos(
+                        arquivos_enviados, api_key.strip(), provedor_escolhido,
+                        thinking_level=thinking_level, dpi_ocr=dpi_ocr, max_paginas_ocr=max_paginas_ocr,
+                        progresso=progresso
+                    )
+                    st.session_state.dados_originais_ia = copy.deepcopy(st.session_state.dados_processados)
+                    progresso.progress(1.0, text="Análise concluída!")
+                    st.success("✨ Processamento concluído!")
+                except Exception as e:
+                    st.error(f"❌ Ocorreu um erro: {str(e)}")
+                finally:
+                    progresso.empty()
+
+    if st.session_state.dados_processados:
+        st.markdown("---")
+        dados = st.session_state.dados_processados
+        dados_originais = st.session_state.dados_originais_ia
+        referencias_pendentes = dados.get("referencias_pendentes", [])
+        if referencias_pendentes:
+            st.warning("⚠️ Alguns arquivos fazem referência a normas que não foram encontradas no lote nem no banco de dados. Para processar essas alterações, envie também o(s) ato(s) original(is) correspondente(s).")
+            for ref in referencias_pendentes:
+                ato_ref = f"{ref.get('ato_referenciado_tipo', 'Desconhecido')} {ref.get('ato_referenciado_numero', 'Desconhecido')}"
+                arquivos = ", ".join(ref.get("arquivos_alteradores", []))
+                st.markdown(f"- **Referência:** {ato_ref}  \n  **Alteradora(s):** {arquivos}")
+
+        for i, cons in enumerate(dados.get("consolidacoes_geradas", [])):
+            nome_exibicao_base = cons['norma_base']['nome_padronizado']
+            nomes_alteradoras = [alt['nome_padronizado'] for alt in cons.get('normas_alteradoras', [])]
+            nome_exibicao_alt = " e ".join(nomes_alteradoras) if nomes_alteradoras else "Desconhecido"
+            with st.expander(f"📁 **{nome_exibicao_base}** alterada por **{nome_exibicao_alt}**", expanded=True):
+                st.markdown("### 📝 Editor Visual de Documento")
+                cons['titulo_portaria'] = st.text_input("Título do Ato Normativo", cons.get('titulo_portaria', ''), key=f"titulo_{i}")
+                st.markdown("**Ementa**")
+                val_ementa = ia_para_editor(cons.get('ementa', ''))
+                ementa_editada = editor_rico(value=val_ementa, key=f"q_ementa_{i}")
+                if ementa_editada is not None: cons['ementa'] = editor_para_pdf(ementa_editada)
+                st.markdown("**Preâmbulo e Considerandos**")
+                val_preambulo = ia_para_editor(cons.get('preambulo', ''))
+                preambulo_editado = editor_rico(value=val_preambulo, key=f"q_preambulo_{i}")
+                if preambulo_editado is not None: cons['preambulo'] = editor_para_pdf(preambulo_editado)
+                st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos, Anexos)")
+                for j, disp in enumerate(cons.get("dispositivos", [])):
+                    st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
+                    c_alt, c_cons = st.columns(2)
+                    with c_alt:
+                        st.markdown("*Versão Alterada*")
+                        val_alt = ia_para_editor(disp.get('texto_principal_alterada', ''))
+                        alt_editada = editor_rico(value=val_alt, key=f"q_alt_{i}_{j}")
+                        if alt_editada is not None: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
+                    with c_cons:
+                        st.markdown("*Versão Consolidada*")
+                        val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
+                        cons_editada = editor_rico(value=val_cons, key=f"q_cons_{i}_{j}")
+                        if cons_editada is not None: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
+                    st.markdown("*Nota Remissiva*")
+                    nota_editada = st.text_input("Nota", value=disp.get('nota_remissiva', ''), key=f"nota_{i}_{j}", label_visibility="collapsed")
+                    disp['nota_remissiva'] = nota_editada
+                    st.markdown("---")
+                    if disp.get('is_tabela'):
+                        st.markdown("*Tabela / Anexo*")
+                        t_alt, t_cons = st.columns(2)
+                        with t_alt:
+                            tab_alt_edit = st.data_editor(disp.get('tabela_alterada') or [[""]], key=f"tab_alt_{i}_{j}", num_rows="dynamic", use_container_width=True)
+                            disp['tabela_alterada'] = tab_alt_edit if isinstance(tab_alt_edit, list) else disp.get('tabela_alterada')
+                            pos_alt = st.text_area("Texto após a tabela (Alterada)", value=disp.get('texto_pos_tabela_alterada') or "", key=f"pos_alt_{i}_{j}")
+                            disp['texto_pos_tabela_alterada'] = pos_alt
+                        with t_cons:
+                            tab_cons_edit = st.data_editor(disp.get('tabela_consolidada') or [[""]], key=f"tab_cons_{i}_{j}", num_rows="dynamic", use_container_width=True)
+                            disp['tabela_consolidada'] = tab_cons_edit if isinstance(tab_cons_edit, list) else disp.get('tabela_consolidada')
+                            pos_cons = st.text_area("Texto após a tabela (Consolidada)", value=disp.get('texto_pos_tabela_consolidada') or "", key=f"pos_cons_{i}_{j}")
+                            disp['texto_pos_tabela_consolidada'] = pos_cons
+                st.markdown("### 📥 Opções de Exportação")
+                if st.button(f"💾 Salvar Cascata Inteira no Banco de Dados", key=f"btn_sup_{i}"):
+                    cons_original = dados_originais.get("consolidacoes_geradas", [])[i] if dados_originais else None
+                    if salvar_no_supabase(cons, cons_original): st.success(f"Banco atualizado!")
+                c_html, c_pdf, c_docx = st.columns(3)
+                nome_arquivo_base = nome_exibicao_base.replace(' ', '_').replace('/', '-')
+                try:
+                    html_alt = gerar_html_dinamico(cons, "alterada")
+                    html_cons = gerar_html_dinamico(cons, "consolidada")
+                    c_html.download_button("🌐 Baixar HTML (Alterada)", data=html_alt, file_name=f"{nome_arquivo_base}_Alt.html", mime="text/html", key=f"ha_{i}")
+                    c_html.download_button("🌐 Baixar HTML (Consolidada)", data=html_cons, file_name=f"{nome_arquivo_base}_Cons.html", mime="text/html", key=f"hc_{i}")
+                except Exception as e:
+                    c_html.error(f"Falha ao gerar HTML: {e}")
+                try:
+                    pdf_alt = gerar_pdf_dinamico(cons, "alterada")
+                    pdf_cons = gerar_pdf_dinamico(cons, "consolidada")
+                    c_pdf.download_button("📄 Baixar PDF (Alterada)", data=pdf_alt, file_name=f"{nome_arquivo_base}_Alt.pdf", mime="application/pdf", key=f"pa_{i}")
+                    c_pdf.download_button("📄 Baixar PDF (Consolidada)", data=pdf_cons, file_name=f"{nome_arquivo_base}_Cons.pdf", mime="application/pdf", key=f"pc_{i}")
+                except Exception as e:
+                    c_pdf.error(f"Falha ao gerar PDF: {e}")
+                try:
+                    docx_alt = gerar_docx_dinamico(cons, "alterada")
+                    docx_cons = gerar_docx_dinamico(cons, "consolidada")
+                    c_docx.download_button("📝 Baixar DOCX (Alterada)", data=docx_alt, file_name=f"{nome_arquivo_base}_Alt.docx", mime="application/vnd.openxmlformats", key=f"da_{i}")
+                    c_docx.download_button("📝 Baixar DOCX (Consolidada)", data=docx_cons, file_name=f"{nome_arquivo_base}_Cons.docx", mime="application/vnd.openxmlformats", key=f"dc_{i}")
+                except Exception as e:
+                    c_docx.error(f"Falha ao gerar DOCX: {e}")
+        if st.button("🔄 Nova Análise", type="secondary"): st.session_state.dados_processados = None; st.session_state.dados_originais_ia = None; st.rerun()
