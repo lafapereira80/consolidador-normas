@@ -1,6 +1,8 @@
-# pages/1_Historico.py (modificado)
+# pages/1_Historico.py (corrigido com import os)
 import streamlit as st
 import json
+import os
+import io
 from supabase import create_client, Client
 from typing import Optional
 from collections import defaultdict
