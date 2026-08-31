@@ -189,18 +189,27 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-col_info, col_hist, col_usr, col_logout = st.columns([3, 1.5, 1.5, 1])
+col_info, col_ident, col_hist, col_usr, col_logout = st.columns([2.2, 1.7, 1.5, 1.5, 1])
 
 with col_info:
     st.info("💡 **Sistema Autenticado:** Proteção de dados ativa.")
 
+ident_path = "pages/2_Identificar_Cruzar.py"
 hist_path = "pages/historico.py"
 usr_path = "pages/usuarios.py"
 
 if os.path.exists("pages"):
     for f in os.listdir("pages"):
+        if "identificar" in f.lower() and f.endswith(".py"): ident_path = f"pages/{f}"
         if "historico" in f.lower() and f.endswith(".py"): hist_path = f"pages/{f}"
         if "usuario" in f.lower() and f.endswith(".py"): usr_path = f"pages/{f}"
+
+with col_ident:
+    try:
+        st.page_link(ident_path, label="🔎 Identificar Ato", icon="➡️")
+    except:
+        nome_pagina = ident_path.replace("pages/", "").replace(".py", "")
+        st.markdown(f'<a href="{nome_pagina}" target="_top" style="display: block; text-align: center; background-color: #f0f2f6; border: 1px solid #d0d4dc; color: #31333F !important; padding: 0.5rem; border-radius: 0.5rem; text-decoration: none; font-weight: 500;">➡️ 🔎 Identificar Ato</a>', unsafe_allow_html=True)
 
 with col_hist:
     try:
