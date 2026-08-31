@@ -1,4 +1,4 @@
-# pages/1_Historico.py (com ajustes no título das pendências)
+# pages/1_Historico.py (com exibição da data do ato original)
 import streamlit as st
 import json
 import os
@@ -165,7 +165,7 @@ else:
                 st.info("Nenhuma portaria alteradora vinculada a esta norma base.")
 
 # =====================================================================
-# SEÇÃO: DERIVAÇÕES PENDENTES (com títulos melhorados)
+# SEÇÃO: DERIVAÇÕES PENDENTES (com data do ato original)
 # =====================================================================
 st.markdown("---")
 st.markdown("### 📋 Derivações Pendentes")
@@ -182,9 +182,10 @@ try:
             pend_id = p['id']
             tipo_ref = p.get('ato_base_referenciado_tipo')
             num_ref = p.get('ato_base_referenciado_numero')
+            data_ref = p.get('ato_base_referenciado_data')  # data extraída do texto
             status_atual = p.get('status', 'pendente')
 
-            # --- Obtém o nome padronizado do ato derivativo (o arquivo que foi lido) ---
+            # Obtém o nome padronizado do ato derivativo
             estrutura = p.get('estrutura_json', {})
             if isinstance(estrutura, str):
                 try:
@@ -193,48 +194,62 @@ try:
                     estrutura = {}
             nome_derivativo = estrutura.get('nome_padronizado')
             if not nome_derivativo:
-                # fallback para o nome do arquivo
                 nome_derivativo = p.get('nome_arquivo_original', 'Arquivo desconhecido')
 
-            # --- Obtém o nome padronizado da base referenciada (se encontrada) ---
+            # Verifica se o ato base existe no banco
             relacao_encontrada = False
             nome_base = f"{tipo_ref} {num_ref}" if tipo_ref and num_ref else "Referência desconhecida"
-            data_base = None
+            data_base_banco = None
             if tipo_ref and num_ref:
                 try:
-                    # Busca no banco por correspondência exata do tipo e número
                     res_busca = supabase.table("portarias_base").select("nome_padronizado, data_assinatura").ilike("numero_documento", f"%{num_ref}%").execute()
                     if res_busca.data:
                         for reg in res_busca.data:
                             if reg.get('tipo_documento', '').upper() == tipo_ref.upper():
                                 relacao_encontrada = True
                                 nome_base = reg.get('nome_padronizado', nome_base)
-                                data_base = reg.get('data_assinatura')
+                                data_base_banco = reg.get('data_assinatura')
                                 break
                 except Exception:
                     pass
 
-            # Se não encontrou, mantém o tipo+numero
-            if not relacao_encontrada:
-                nome_base = f"{tipo_ref} {num_ref}" if tipo_ref and num_ref else "Referência desconhecida"
+            # Prioriza data do banco, senão usa a extraída do texto
+            data_base = data_base_banco or data_ref
 
-            # Define ícone e cor
+            # Monta o título
+            if relacao_encontrada:
+                titulo = f"{nome_derivativo} (Ato Derivativo) → {nome_base} (Ato Original)"
+                if data_base:
+                    # Formata data para exibição (ex: 15 de janeiro de 2015)
+                    try:
+                        dt = datetime.strptime(data_base, "%Y-%m-%d")
+                        meses = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro']
+                        data_fmt = f"{dt.day} de {meses[dt.month-1]} de {dt.year}"
+                        titulo += f", de {data_fmt}"
+                    except:
+                        pass
+            else:
+                titulo = f"{nome_derivativo} (Ato Derivativo) → {nome_base} (Ato Original não encontrado) ⚠️"
+                if data_base:
+                    try:
+                        dt = datetime.strptime(data_base, "%Y-%m-%d")
+                        meses = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro']
+                        data_fmt = f"{dt.day} de {meses[dt.month-1]} de {dt.year}"
+                        titulo = f"{nome_derivativo} (Ato Derivativo) → {nome_base}, de {data_fmt} (Ato Original não encontrado) ⚠️"
+                    except:
+                        pass
+
+            # Define ícone
             if status_atual == 'concluido':
                 icone = "✅"
+                titulo = f"{icone} {titulo}"
             elif relacao_encontrada:
                 icone = "🟡"
+                titulo = f"{icone} {titulo}"
             else:
                 icone = "⚪"
+                titulo = f"{icone} {titulo}"
 
-            # Monta o título do expander com os nomes completos e as descrições
-            if relacao_encontrada:
-                titulo = f"{icone} {nome_derivativo} (Ato Derivativo) → {nome_base} (Ato Original)"
-                if data_base:
-                    titulo += f" - Data: {data_base}"
-            else:
-                titulo = f"{icone} {nome_derivativo} (Ato Derivativo) → {nome_base} (Ato Original não encontrado) ⚠️"
-
-            # Exibe o expander com o título melhorado
             with st.expander(titulo, expanded=False):
                 col1, col2, col3 = st.columns([3, 1, 0.5])
                 with col1:
@@ -244,9 +259,10 @@ try:
                         st.markdown(f"**Ato base encontrado:** {nome_base} {f'(Data: {data_base})' if data_base else ''}")
                     else:
                         st.markdown(f"**Ato base referenciado:** {nome_base} (não encontrado no banco)")
+                        if data_ref:
+                            st.markdown(f"**Data extraída do texto:** {data_ref}")
                     st.caption(f"Status atual: {status_atual}")
                 with col2:
-                    # Checkbox para marcar como concluído
                     novo_status = st.checkbox("Concluído", value=(status_atual == 'concluido'), key=f"chk_{pend_id}")
                     if novo_status and status_atual != 'concluido':
                         if supabase.table("atos_importados").update({"status": "concluido"}).eq("id", pend_id).execute():
@@ -301,7 +317,6 @@ try:
                     col_pdf_alt, col_pdf_cons, col_html_alt, col_html_cons = st.columns(4)
                     estado = v['estado_json']
                     try:
-                        # Funções de exportação (copiadas do app.py original)
                         def gerar_html_dinamico(consolidacao_dict, tipo_versao):
                             titulo_doc = f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}"
                             html = f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{titulo_doc}</title><style>@page{{size:A4;margin:2.5cm 2cm;@bottom-center{{content:'Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial.';font-size:9pt;font-style:italic;color:#333;}}}}body{{font-family:'Times New Roman',serif;font-size:11pt;line-height:1.5;text-align:justify;}}.topo{{text-align:center;color:#444;font-size:10pt;font-weight:bold;margin-bottom:20px;text-transform:uppercase;}}.orgaos{{text-align:center;font-weight:bold;margin-bottom:25px;}}.titulo{{text-align:center;font-weight:bold;margin-bottom:20px;}}.ementa{{text-align:justify;margin-left:45%;margin-bottom:25px;font-weight:normal;}}.preambulo{{text-align:justify;margin-bottom:12px;text-indent:0;}}.dispositivo{{text-align:justify;text-indent:40px;margin-bottom:12px;}}.capitulo{{text-align:center;font-weight:bold;margin-top:20px;margin-bottom:12px;text-transform:uppercase;}}.assinatura{{text-align:center;font-weight:bold;margin-top:50px;margin-bottom:20px;}}table{{width:100%;border-collapse:collapse;margin-top:15px;margin-bottom:15px;}}td,th{{border:1px solid black;padding:6px;text-align:left;vertical-align:middle;}}strike,s,del{{text-decoration:line-through;}}b,strong{{font-weight:bold;}}i,em{{font-style:italic;}}font[color='red'],span[style*='color: red'],span[style*='color:rgb(230']{{color:red!important;}}</style></head><body><div class='topo'>{titulo_doc}</div><div class='orgaos'>{consolidacao_dict.get('orgaos_emissores','')}</div><div class='titulo'>{consolidacao_dict.get('titulo_portaria','')}</div><div class='ementa'>{consolidacao_dict.get('ementa','')}</div><div class='preambulo'>{consolidacao_dict.get('preambulo','')}</div>"
