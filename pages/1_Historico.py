@@ -1,4 +1,4 @@
-# pages/1_Historico.py (corrigido)
+# pages/1_Historico.py (com seção de Atos Identificados)
 import streamlit as st
 import json
 import os
@@ -29,6 +29,14 @@ st.markdown("""
         margin-bottom: 25px;
     }
     .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.2rem; margin-bottom: 0px; }
+    .card-identificado {
+        border: 1px solid #d0d4dc;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 10px;
+        background: #f0f7ff;
+        border-left: 5px solid #2a5298;
+    }
 </style>
 <div class="main-header">
     <h1>🗄️ Histórico e Gerenciamento de Banco de Dados</h1>
@@ -105,6 +113,9 @@ with c_busca:
 
 st.markdown("---")
 
+# =====================================================================
+# NORMA BASE (PORTARIAS_BASE)
+# =====================================================================
 res_base = supabase.table("portarias_base").select("*").order("data_assinatura", desc=True).execute()
 portarias_base = res_base.data if res_base.data else []
 
@@ -170,10 +181,8 @@ else:
 # FUNÇÃO PARA EXTRAIR DATA DO TEXTO
 # =====================================================================
 def extrair_data_referenciada(texto, numero_ref):
-    """Tenta extrair a data do ato referenciado a partir do texto."""
     if not texto or not numero_ref:
         return None
-    # Escapa o número de referência para segurança
     try:
         padrao = re.compile(rf'{re.escape(numero_ref)}.*?(?:de|DE)\s+(\d{{1,2}})\s+(?:de|DE)\s+(\w+)\s+(?:de|DE)\s+(\d{{4}})', re.IGNORECASE | re.DOTALL)
         match = padrao.search(texto)
@@ -187,12 +196,69 @@ def extrair_data_referenciada(texto, numero_ref):
             mes = meses.get(mes_str.lower())
             if mes:
                 return f"{ano}-{mes}-{int(dia):02d}"
-    except Exception:
+    except:
         pass
     return None
 
 # =====================================================================
-# SEÇÃO: DERIVAÇÕES PENDENTES (com data do ato original extraída do texto)
+# SEÇÃO: ATOS IDENTIFICADOS (LIDOS) - NOVA
+# =====================================================================
+st.markdown("---")
+st.markdown("### 📄 Atos Identificados (Documentos Lidos)")
+st.caption("Documentos que já foram processados e identificados, mas que não geraram pendências (ou já foram resolvidos).")
+
+try:
+    res_ident = supabase.table("atos_importados").select("*").eq("status", "identificado").order("criado_em", desc=True).execute()
+    identificados = res_ident.data if res_ident.data else []
+    if not identificados:
+        st.info("Nenhum ato identificado ainda.")
+    else:
+        st.caption(f"Exibindo {len(identificados)} ato(s) identificado(s).")
+        for item in identificados:
+            estrutura = item.get('estrutura_json', {})
+            if isinstance(estrutura, str):
+                try:
+                    estrutura = json.loads(estrutura)
+                except:
+                    estrutura = {}
+            nome_padronizado = estrutura.get('nome_padronizado') or item.get('nome_arquivo_original', 'Desconhecido')
+            tipo = estrutura.get('tipo_documento', '')
+            numero = estrutura.get('numero_documento', '')
+            data = estrutura.get('data_assinatura', '')
+            
+            # Verifica se este ato é referenciado por alguma pendência
+            pendentes_referenciam = []
+            if numero:
+                try:
+                    res_pend_ref = supabase.table("atos_importados").select("id, nome_arquivo_original").eq("status", "pendente").ilike("ato_base_referenciado_numero", f"%{numero}%").execute()
+                    pendentes_referenciam = res_pend_ref.data or []
+                except:
+                    pass
+
+            with st.expander(f"📄 {nome_padronizado}", expanded=False):
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown(f"**Tipo:** {tipo} **Número:** {numero} **Data:** {data}")
+                    st.markdown(f"**Arquivo original:** {item.get('nome_arquivo_original', 'N/A')}")
+                    if pendentes_referenciam:
+                        st.warning(f"⚠️ Este ato é referenciado por {len(pendentes_referenciam)} pendência(s):")
+                        for p in pendentes_referenciam:
+                            st.write(f"- {p.get('nome_arquivo_original', 'N/A')}")
+                    else:
+                        st.info("Nenhuma pendência referenciando este ato.")
+                with col2:
+                    if st.button("🗑️ Remover", key=f"del_ident_{item['id']}"):
+                        try:
+                            supabase.table("atos_importados").delete().eq("id", item['id']).execute()
+                            st.success("Removido com sucesso!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao remover: {e}")
+except Exception as e:
+    st.warning(f"Não foi possível carregar os atos identificados: {e}")
+
+# =====================================================================
+# SEÇÃO: DERIVAÇÕES PENDENTES
 # =====================================================================
 st.markdown("---")
 st.markdown("### 📋 Derivações Pendentes")
@@ -211,7 +277,6 @@ try:
             num_ref = p.get('ato_base_referenciado_numero')
             status_atual = p.get('status', 'pendente')
 
-            # Obtém o nome padronizado do ato derivativo
             estrutura = p.get('estrutura_json', {})
             if isinstance(estrutura, str):
                 try:
@@ -222,7 +287,6 @@ try:
             if not nome_derivativo:
                 nome_derivativo = p.get('nome_arquivo_original', 'Arquivo desconhecido')
 
-            # Verifica se o ato base existe no banco
             relacao_encontrada = False
             nome_base = f"{tipo_ref} {num_ref}" if tipo_ref and num_ref else "Referência desconhecida"
             data_base_banco = None
@@ -239,14 +303,12 @@ try:
                 except Exception:
                     pass
 
-            # Tenta extrair a data do texto, se não encontrou no banco
             data_ref = data_base_banco
             if not data_ref and num_ref:
                 texto_integra = p.get('texto_integra', '')
                 if texto_integra:
                     data_ref = extrair_data_referenciada(texto_integra, num_ref)
 
-            # Monta o título
             if relacao_encontrada:
                 titulo = f"{nome_derivativo} (Ato Derivativo) → {nome_base} (Ato Original)"
                 if data_base_banco:
@@ -268,7 +330,6 @@ try:
                     except:
                         pass
 
-            # Define ícone
             if status_atual == 'concluido':
                 icone = "✅"
                 titulo = f"{icone} {titulo}"
