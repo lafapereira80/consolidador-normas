@@ -1,4 +1,4 @@
-# pages/1_Historico.py (layout corrigido com containers nativos do Streamlit)
+# pages/1_Historico.py (com layout corrigido usando expanders)
 import streamlit as st
 import json
 import os
@@ -28,51 +28,20 @@ st.markdown("""
     }
     .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.2rem; margin-bottom: 0px; }
     
-    /* Cards de pendências */
-    .card-pendente {
-        border: 1px solid #d0d4dc;
-        border-radius: 10px;
-        padding: 14px 18px;
-        margin-bottom: 12px;
-        background: #f8faff;
-        word-wrap: break-word;
-        overflow-wrap: break-word;
-        overflow: hidden;
+    /* Estilos para os expanders usados como cards de pendência */
+    div[data-testid="stExpander"] {
+        border-left: 5px solid #cccccc !important;
+        border-radius: 8px !important;
+        margin-bottom: 8px !important;
     }
-    .card-pendente.sem-relacao { border-left: 5px solid #cccccc; }
-    .card-pendente.com-relacao { border-left: 5px solid #d98c00; background: #fff9e6; }
-    .card-pendente.concluido { border-left: 5px solid #1e9c4f; background: #e6f5ed; }
-    .card-pendente .row {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
+    div[data-testid="stExpander"] .stExpanderHeader {
+        background-color: #f8faff !important;
+        border-radius: 8px 8px 0 0 !important;
     }
-    .card-pendente .col-text {
-        flex: 3;
-        min-width: 200px;
-        word-break: break-word;
-        padding-right: 10px;
-    }
-    .card-pendente .col-check {
-        flex: 1;
-        min-width: 100px;
-        text-align: center;
-    }
-    .card-pendente .col-delete {
-        flex: 0 0 40px;
-        text-align: right;
-    }
-    @media (max-width: 600px) {
-        .card-pendente .col-text { flex: 1 1 100%; }
-        .card-pendente .col-check { flex: 1 1 50%; }
-    }
-    /* Para os containers que usamos como cards */
-    div[data-testid="stVerticalBlock"] div.element-container:has(div.card-pendente) {
-        padding: 0 !important;
-    }
-    .stColumn {
-        word-break: break-word;
-    }
+    /* Classes que serão aplicadas via JavaScript (não usaremos) – mas mantemos para referência */
+    .pendente-sem-relacao { border-left-color: #cccccc !important; }
+    .pendente-com-relacao { border-left-color: #d98c00 !important; background-color: #fff9e6 !important; }
+    .pendente-concluido { border-left-color: #1e9c4f !important; background-color: #e6f5ed !important; }
 </style>
 <div class="main-header">
     <h1>🗄️ Histórico e Gerenciamento de Banco de Dados</h1>
@@ -211,7 +180,7 @@ else:
                 st.info("Nenhuma portaria alteradora vinculada a esta norma base.")
 
 # =====================================================================
-# SEÇÃO: DERIVAÇÕES PENDENTES (CORRIGIDA)
+# SEÇÃO: DERIVAÇÕES PENDENTES (usando expanders para melhor layout)
 # =====================================================================
 st.markdown("---")
 st.markdown("### 📋 Derivações Pendentes")
@@ -240,6 +209,7 @@ try:
                     res_busca = supabase.table("portarias_base").select("nome_padronizado, data_assinatura").ilike("numero_documento", f"%{num_ref}%").execute()
                     if res_busca.data:
                         for reg in res_busca.data:
+                            # Comparação case-insensitive do tipo
                             if reg.get('tipo_documento', '').upper() == tipo_ref.upper():
                                 relacao_encontrada = True
                                 nome_completo_ref = reg.get('nome_padronizado', nome_completo_ref)
@@ -248,31 +218,49 @@ try:
                 except Exception:
                     pass
 
-            # Define classe CSS
+            # Define ícone e cor do expander
             if status_atual == 'concluido':
-                card_class = "card-pendente concluido"
                 icone = "✅"
+                border_color = "#1e9c4f"
+                bg_color = "#e6f5ed"
             elif relacao_encontrada:
-                card_class = "card-pendente com-relacao"
                 icone = "🟡"
+                border_color = "#d98c00"
+                bg_color = "#fff9e6"
             else:
-                card_class = "card-pendente sem-relacao"
                 icone = "⚪"
+                border_color = "#cccccc"
+                bg_color = "#f8faff"
 
-            # Cria o card usando container e colunas do Streamlit
-            with st.container():
-                # Aplica a classe CSS via markdown (div wrapper)
-                st.markdown(f'<div class="{card_class}">', unsafe_allow_html=True)
-                
-                # Conteúdo do card com colunas Streamlit
+            # Título do expander
+            titulo_expander = f"{icone} {nome_arquivo} → {nome_completo_ref}"
+            if data_ref:
+                titulo_expander += f" (Data: {data_ref})"
+            if not relacao_encontrada:
+                titulo_expander += " ⚠️ não encontrado"
+
+            # Abre o expander com estilo customizado via markdown (não é possível aplicar estilo diretamente no expander, mas podemos usar HTML dentro)
+            # Vamos usar um container com borda e dentro o expander, mas o expander já tem borda.
+            # Aplicamos estilo via CSS que seleciona o expander pelo índice, mas não é confiável.
+            # Em vez disso, usamos um container com borda personalizada.
+            # Como o expander é um componente nativo, podemos usar st.markdown com uma div antes e depois.
+            # A solução mais simples: usar um st.container com border e dentro colocar o conteúdo, sem expander.
+            # Mas o usuário quer algo organizado; o expander é bom para esconder detalhes.
+            # Vou usar o expander e aplicar uma classe CSS dinâmica via JavaScript? Não.
+            # Usarei o container com border e dentro o conteúdo, sem expander, para ter controle total.
+            # Como a lista pode ser grande, o expander é útil. Vou manter o expander e apenas estilizar a borda via CSS global com base no status? Não é possível dinamicamente.
+
+            # Decisão: Usar st.expander normalmente, mas adicionar um indicador visual com o ícone e cor no título.
+            # O usuário pode ver a cor pelo ícone e pelo texto.
+            with st.expander(titulo_expander, expanded=False):
                 col1, col2, col3 = st.columns([3, 1, 0.5])
                 with col1:
-                    st.markdown(f"**{icone} {nome_arquivo}**")
+                    st.markdown(f"**Arquivo:** {nome_arquivo}")
                     if relacao_encontrada:
-                        st.markdown(f"**Referência:** {nome_completo_ref} {f'(Data: {data_ref})' if data_ref else ''}")
+                        st.markdown(f"**Referência encontrada:** {nome_completo_ref} {f'(Data: {data_ref})' if data_ref else ''}")
                     else:
                         st.markdown(f"**Referência:** {nome_completo_ref} (não encontrada no banco)")
-                    st.caption(f"Status: {status_atual}")
+                    st.caption(f"Status atual: {status_atual}")
                 with col2:
                     # Checkbox para marcar como concluído
                     novo_status = st.checkbox("Concluído", value=(status_atual == 'concluido'), key=f"chk_{pend_id}")
@@ -292,8 +280,6 @@ try:
                             st.rerun()
                         except Exception as e:
                             st.error(f"Erro ao remover pendência: {e}")
-                
-                st.markdown('</div>', unsafe_allow_html=True)
 
 except Exception as e:
     st.warning(f"Não foi possível carregar as derivações pendentes: {e}")
