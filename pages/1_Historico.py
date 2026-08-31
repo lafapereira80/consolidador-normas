@@ -1,4 +1,4 @@
-# pages/1_Historico.py (com ajustes de layout)
+# pages/1_Historico.py (layout corrigido com containers nativos do Streamlit)
 import streamlit as st
 import json
 import os
@@ -27,11 +27,13 @@ st.markdown("""
         margin-bottom: 25px;
     }
     .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.2rem; margin-bottom: 0px; }
+    
+    /* Cards de pendências */
     .card-pendente {
         border: 1px solid #d0d4dc;
         border-radius: 10px;
         padding: 14px 18px;
-        margin-bottom: 10px;
+        margin-bottom: 12px;
         background: #f8faff;
         word-wrap: break-word;
         overflow-wrap: break-word;
@@ -63,6 +65,13 @@ st.markdown("""
     @media (max-width: 600px) {
         .card-pendente .col-text { flex: 1 1 100%; }
         .card-pendente .col-check { flex: 1 1 50%; }
+    }
+    /* Para os containers que usamos como cards */
+    div[data-testid="stVerticalBlock"] div.element-container:has(div.card-pendente) {
+        padding: 0 !important;
+    }
+    .stColumn {
+        word-break: break-word;
     }
 </style>
 <div class="main-header">
@@ -202,7 +211,7 @@ else:
                 st.info("Nenhuma portaria alteradora vinculada a esta norma base.")
 
 # =====================================================================
-# SEÇÃO: DERIVAÇÕES PENDENTES (modificada)
+# SEÇÃO: DERIVAÇÕES PENDENTES (CORRIGIDA)
 # =====================================================================
 st.markdown("---")
 st.markdown("### 📋 Derivações Pendentes")
@@ -239,7 +248,7 @@ try:
                 except Exception:
                     pass
 
-            # Define classe CSS e ícone
+            # Define classe CSS
             if status_atual == 'concluido':
                 card_class = "card-pendente concluido"
                 icone = "✅"
@@ -250,68 +259,41 @@ try:
                 card_class = "card-pendente sem-relacao"
                 icone = "⚪"
 
-            # Exibe o card usando layout flex via CSS
-            st.markdown(f"""
-            <div class="{card_class}">
-                <div class="row">
-                    <div class="col-text">
-                        <strong>{icone} {nome_arquivo}</strong><br>
-                        <span style="font-size:0.95rem;">
-                            <b>Referência:</b> {nome_completo_ref}{f' <i>(Data: {data_ref})</i>' if data_ref else ''}
-                            {'' if relacao_encontrada else ' <span style="color:#c00;">(não encontrada no banco)</span>'}
-                        </span><br>
-                        <span style="font-size:0.85rem; color:#666;">Status: {status_atual}</span>
-                    </div>
-                    <div class="col-check">
-                        <label style="cursor:pointer;">
-                            <input type="checkbox" {"checked" if status_atual == "concluido" else ""}
-                                   onchange="window.location.href = '?check=' + '{pend_id}'">
-                            Concluído
-                        </label>
-                    </div>
-                    <div class="col-delete">
-                        <button onclick="window.location.href='?delete={pend_id}'" style="background:none;border:none;color:#c00;cursor:pointer;font-size:1.2rem;">🗑️</button>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Lógica para checkbox e delete via query params (simples)
-            # Como o Streamlit não suporta JavaScript facilmente, usaremos botões Streamlit abaixo do card
-            # Alternativa: usar st.checkbox e st.button dentro de colunas
-            # Vamos substituir a abordagem acima por uma mais Streamlit-friendly:
-            # Reimplementando com colunas Streamlit, pois o HTML com onclick não funciona bem.
-
-            # Para garantir funcionalidade, vou refazer usando st.columns:
-            st.markdown(f'<div class="{card_class}">', unsafe_allow_html=True)
-            col1, col2, col3 = st.columns([3, 1, 0.5])
-            with col1:
-                st.markdown(f"**{icone} {nome_arquivo}**")
-                if relacao_encontrada:
-                    st.markdown(f"**Referência:** {nome_completo_ref} {f'(Data: {data_ref})' if data_ref else ''}")
-                else:
-                    st.markdown(f"**Referência:** {nome_completo_ref} (não encontrada no banco)")
-                st.caption(f"Status: {status_atual}")
-            with col2:
-                # Checkbox para marcar como concluído
-                novo_status = st.checkbox("Concluído", value=(status_atual == 'concluido'), key=f"chk_{pend_id}")
-                if novo_status and status_atual != 'concluido':
-                    if supabase.table("atos_importados").update({"status": "concluido"}).eq("id", pend_id).execute():
-                        st.success("Marcado como concluído!")
-                        st.rerun()
-                elif not novo_status and status_atual == 'concluido':
-                    if supabase.table("atos_importados").update({"status": "pendente"}).eq("id", pend_id).execute():
-                        st.success("Reaberto!")
-                        st.rerun()
-            with col3:
-                if st.button("🗑️", key=f"del_pend_{pend_id}"):
-                    try:
-                        supabase.table("atos_importados").delete().eq("id", pend_id).execute()
-                        st.success("Pendência removida com sucesso!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro ao remover pendência: {e}")
-            st.markdown('</div>', unsafe_allow_html=True)
+            # Cria o card usando container e colunas do Streamlit
+            with st.container():
+                # Aplica a classe CSS via markdown (div wrapper)
+                st.markdown(f'<div class="{card_class}">', unsafe_allow_html=True)
+                
+                # Conteúdo do card com colunas Streamlit
+                col1, col2, col3 = st.columns([3, 1, 0.5])
+                with col1:
+                    st.markdown(f"**{icone} {nome_arquivo}**")
+                    if relacao_encontrada:
+                        st.markdown(f"**Referência:** {nome_completo_ref} {f'(Data: {data_ref})' if data_ref else ''}")
+                    else:
+                        st.markdown(f"**Referência:** {nome_completo_ref} (não encontrada no banco)")
+                    st.caption(f"Status: {status_atual}")
+                with col2:
+                    # Checkbox para marcar como concluído
+                    novo_status = st.checkbox("Concluído", value=(status_atual == 'concluido'), key=f"chk_{pend_id}")
+                    if novo_status and status_atual != 'concluido':
+                        if supabase.table("atos_importados").update({"status": "concluido"}).eq("id", pend_id).execute():
+                            st.success("Marcado como concluído!")
+                            st.rerun()
+                    elif not novo_status and status_atual == 'concluido':
+                        if supabase.table("atos_importados").update({"status": "pendente"}).eq("id", pend_id).execute():
+                            st.success("Reaberto!")
+                            st.rerun()
+                with col3:
+                    if st.button("🗑️", key=f"del_pend_{pend_id}"):
+                        try:
+                            supabase.table("atos_importados").delete().eq("id", pend_id).execute()
+                            st.success("Pendência removida com sucesso!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao remover pendência: {e}")
+                
+                st.markdown('</div>', unsafe_allow_html=True)
 
 except Exception as e:
     st.warning(f"Não foi possível carregar as derivações pendentes: {e}")
