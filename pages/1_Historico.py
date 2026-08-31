@@ -1,4 +1,4 @@
-# pages/1_Historico.py (com layout corrigido usando expanders)
+# pages/1_Historico.py (com ajustes no título das pendências)
 import streamlit as st
 import json
 import os
@@ -27,21 +27,6 @@ st.markdown("""
         margin-bottom: 25px;
     }
     .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.2rem; margin-bottom: 0px; }
-    
-    /* Estilos para os expanders usados como cards de pendência */
-    div[data-testid="stExpander"] {
-        border-left: 5px solid #cccccc !important;
-        border-radius: 8px !important;
-        margin-bottom: 8px !important;
-    }
-    div[data-testid="stExpander"] .stExpanderHeader {
-        background-color: #f8faff !important;
-        border-radius: 8px 8px 0 0 !important;
-    }
-    /* Classes que serão aplicadas via JavaScript (não usaremos) – mas mantemos para referência */
-    .pendente-sem-relacao { border-left-color: #cccccc !important; }
-    .pendente-com-relacao { border-left-color: #d98c00 !important; background-color: #fff9e6 !important; }
-    .pendente-concluido { border-left-color: #1e9c4f !important; background-color: #e6f5ed !important; }
 </style>
 <div class="main-header">
     <h1>🗄️ Histórico e Gerenciamento de Banco de Dados</h1>
@@ -180,7 +165,7 @@ else:
                 st.info("Nenhuma portaria alteradora vinculada a esta norma base.")
 
 # =====================================================================
-# SEÇÃO: DERIVAÇÕES PENDENTES (usando expanders para melhor layout)
+# SEÇÃO: DERIVAÇÕES PENDENTES (com títulos melhorados)
 # =====================================================================
 st.markdown("---")
 st.markdown("### 📋 Derivações Pendentes")
@@ -197,69 +182,68 @@ try:
             pend_id = p['id']
             tipo_ref = p.get('ato_base_referenciado_tipo')
             num_ref = p.get('ato_base_referenciado_numero')
-            nome_arquivo = p.get('nome_arquivo_original', 'N/A')
             status_atual = p.get('status', 'pendente')
 
-            # Verifica se existe relação no banco
+            # --- Obtém o nome padronizado do ato derivativo (o arquivo que foi lido) ---
+            estrutura = p.get('estrutura_json', {})
+            if isinstance(estrutura, str):
+                try:
+                    estrutura = json.loads(estrutura)
+                except:
+                    estrutura = {}
+            nome_derivativo = estrutura.get('nome_padronizado')
+            if not nome_derivativo:
+                # fallback para o nome do arquivo
+                nome_derivativo = p.get('nome_arquivo_original', 'Arquivo desconhecido')
+
+            # --- Obtém o nome padronizado da base referenciada (se encontrada) ---
             relacao_encontrada = False
-            nome_completo_ref = f"{tipo_ref} {num_ref}" if tipo_ref and num_ref else "Referência desconhecida"
-            data_ref = None
+            nome_base = f"{tipo_ref} {num_ref}" if tipo_ref and num_ref else "Referência desconhecida"
+            data_base = None
             if tipo_ref and num_ref:
                 try:
+                    # Busca no banco por correspondência exata do tipo e número
                     res_busca = supabase.table("portarias_base").select("nome_padronizado, data_assinatura").ilike("numero_documento", f"%{num_ref}%").execute()
                     if res_busca.data:
                         for reg in res_busca.data:
-                            # Comparação case-insensitive do tipo
                             if reg.get('tipo_documento', '').upper() == tipo_ref.upper():
                                 relacao_encontrada = True
-                                nome_completo_ref = reg.get('nome_padronizado', nome_completo_ref)
-                                data_ref = reg.get('data_assinatura')
+                                nome_base = reg.get('nome_padronizado', nome_base)
+                                data_base = reg.get('data_assinatura')
                                 break
                 except Exception:
                     pass
 
-            # Define ícone e cor do expander
+            # Se não encontrou, mantém o tipo+numero
+            if not relacao_encontrada:
+                nome_base = f"{tipo_ref} {num_ref}" if tipo_ref and num_ref else "Referência desconhecida"
+
+            # Define ícone e cor
             if status_atual == 'concluido':
                 icone = "✅"
-                border_color = "#1e9c4f"
-                bg_color = "#e6f5ed"
             elif relacao_encontrada:
                 icone = "🟡"
-                border_color = "#d98c00"
-                bg_color = "#fff9e6"
             else:
                 icone = "⚪"
-                border_color = "#cccccc"
-                bg_color = "#f8faff"
 
-            # Título do expander
-            titulo_expander = f"{icone} {nome_arquivo} → {nome_completo_ref}"
-            if data_ref:
-                titulo_expander += f" (Data: {data_ref})"
-            if not relacao_encontrada:
-                titulo_expander += " ⚠️ não encontrado"
+            # Monta o título do expander com os nomes completos e as descrições
+            if relacao_encontrada:
+                titulo = f"{icone} {nome_derivativo} (Ato Derivativo) → {nome_base} (Ato Original)"
+                if data_base:
+                    titulo += f" - Data: {data_base}"
+            else:
+                titulo = f"{icone} {nome_derivativo} (Ato Derivativo) → {nome_base} (Ato Original não encontrado) ⚠️"
 
-            # Abre o expander com estilo customizado via markdown (não é possível aplicar estilo diretamente no expander, mas podemos usar HTML dentro)
-            # Vamos usar um container com borda e dentro o expander, mas o expander já tem borda.
-            # Aplicamos estilo via CSS que seleciona o expander pelo índice, mas não é confiável.
-            # Em vez disso, usamos um container com borda personalizada.
-            # Como o expander é um componente nativo, podemos usar st.markdown com uma div antes e depois.
-            # A solução mais simples: usar um st.container com border e dentro colocar o conteúdo, sem expander.
-            # Mas o usuário quer algo organizado; o expander é bom para esconder detalhes.
-            # Vou usar o expander e aplicar uma classe CSS dinâmica via JavaScript? Não.
-            # Usarei o container com border e dentro o conteúdo, sem expander, para ter controle total.
-            # Como a lista pode ser grande, o expander é útil. Vou manter o expander e apenas estilizar a borda via CSS global com base no status? Não é possível dinamicamente.
-
-            # Decisão: Usar st.expander normalmente, mas adicionar um indicador visual com o ícone e cor no título.
-            # O usuário pode ver a cor pelo ícone e pelo texto.
-            with st.expander(titulo_expander, expanded=False):
+            # Exibe o expander com o título melhorado
+            with st.expander(titulo, expanded=False):
                 col1, col2, col3 = st.columns([3, 1, 0.5])
                 with col1:
-                    st.markdown(f"**Arquivo:** {nome_arquivo}")
+                    st.markdown(f"**Arquivo original:** {p.get('nome_arquivo_original', 'N/A')}")
+                    st.markdown(f"**Ato derivativo identificado:** {nome_derivativo}")
                     if relacao_encontrada:
-                        st.markdown(f"**Referência encontrada:** {nome_completo_ref} {f'(Data: {data_ref})' if data_ref else ''}")
+                        st.markdown(f"**Ato base encontrado:** {nome_base} {f'(Data: {data_base})' if data_base else ''}")
                     else:
-                        st.markdown(f"**Referência:** {nome_completo_ref} (não encontrada no banco)")
+                        st.markdown(f"**Ato base referenciado:** {nome_base} (não encontrado no banco)")
                     st.caption(f"Status atual: {status_atual}")
                 with col2:
                     # Checkbox para marcar como concluído
