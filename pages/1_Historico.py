@@ -1,11 +1,13 @@
-# pages/1_Historico.py (com exibição da data do ato original)
+# pages/1_Historico.py (corrigido)
 import streamlit as st
 import json
 import os
+import re
 import io
 from supabase import create_client, Client
 from typing import Optional
 from collections import defaultdict
+from datetime import datetime
 
 st.set_page_config(page_title="Histórico de Normas", page_icon="🗄️", layout="wide", initial_sidebar_state="collapsed")
 
@@ -165,7 +167,32 @@ else:
                 st.info("Nenhuma portaria alteradora vinculada a esta norma base.")
 
 # =====================================================================
-# SEÇÃO: DERIVAÇÕES PENDENTES (com data do ato original)
+# FUNÇÃO PARA EXTRAIR DATA DO TEXTO
+# =====================================================================
+def extrair_data_referenciada(texto, numero_ref):
+    """Tenta extrair a data do ato referenciado a partir do texto."""
+    if not texto or not numero_ref:
+        return None
+    # Escapa o número de referência para segurança
+    try:
+        padrao = re.compile(rf'{re.escape(numero_ref)}.*?(?:de|DE)\s+(\d{{1,2}})\s+(?:de|DE)\s+(\w+)\s+(?:de|DE)\s+(\d{{4}})', re.IGNORECASE | re.DOTALL)
+        match = padrao.search(texto)
+        if match:
+            dia, mes_str, ano = match.groups()
+            meses = {
+                'janeiro': '01', 'fevereiro': '02', 'março': '03', 'abril': '04',
+                'maio': '05', 'junho': '06', 'julho': '07', 'agosto': '08',
+                'setembro': '09', 'outubro': '10', 'novembro': '11', 'dezembro': '12'
+            }
+            mes = meses.get(mes_str.lower())
+            if mes:
+                return f"{ano}-{mes}-{int(dia):02d}"
+    except Exception:
+        pass
+    return None
+
+# =====================================================================
+# SEÇÃO: DERIVAÇÕES PENDENTES (com data do ato original extraída do texto)
 # =====================================================================
 st.markdown("---")
 st.markdown("### 📋 Derivações Pendentes")
@@ -182,7 +209,6 @@ try:
             pend_id = p['id']
             tipo_ref = p.get('ato_base_referenciado_tipo')
             num_ref = p.get('ato_base_referenciado_numero')
-            data_ref = p.get('ato_base_referenciado_data')  # data extraída do texto
             status_atual = p.get('status', 'pendente')
 
             # Obtém o nome padronizado do ato derivativo
@@ -213,16 +239,19 @@ try:
                 except Exception:
                     pass
 
-            # Prioriza data do banco, senão usa a extraída do texto
-            data_base = data_base_banco or data_ref
+            # Tenta extrair a data do texto, se não encontrou no banco
+            data_ref = data_base_banco
+            if not data_ref and num_ref:
+                texto_integra = p.get('texto_integra', '')
+                if texto_integra:
+                    data_ref = extrair_data_referenciada(texto_integra, num_ref)
 
             # Monta o título
             if relacao_encontrada:
                 titulo = f"{nome_derivativo} (Ato Derivativo) → {nome_base} (Ato Original)"
-                if data_base:
-                    # Formata data para exibição (ex: 15 de janeiro de 2015)
+                if data_base_banco:
                     try:
-                        dt = datetime.strptime(data_base, "%Y-%m-%d")
+                        dt = datetime.strptime(data_base_banco, "%Y-%m-%d")
                         meses = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro']
                         data_fmt = f"{dt.day} de {meses[dt.month-1]} de {dt.year}"
                         titulo += f", de {data_fmt}"
@@ -230,9 +259,9 @@ try:
                         pass
             else:
                 titulo = f"{nome_derivativo} (Ato Derivativo) → {nome_base} (Ato Original não encontrado) ⚠️"
-                if data_base:
+                if data_ref:
                     try:
-                        dt = datetime.strptime(data_base, "%Y-%m-%d")
+                        dt = datetime.strptime(data_ref, "%Y-%m-%d")
                         meses = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro']
                         data_fmt = f"{dt.day} de {meses[dt.month-1]} de {dt.year}"
                         titulo = f"{nome_derivativo} (Ato Derivativo) → {nome_base}, de {data_fmt} (Ato Original não encontrado) ⚠️"
@@ -256,11 +285,17 @@ try:
                     st.markdown(f"**Arquivo original:** {p.get('nome_arquivo_original', 'N/A')}")
                     st.markdown(f"**Ato derivativo identificado:** {nome_derivativo}")
                     if relacao_encontrada:
-                        st.markdown(f"**Ato base encontrado:** {nome_base} {f'(Data: {data_base})' if data_base else ''}")
+                        st.markdown(f"**Ato base encontrado:** {nome_base} {f'(Data: {data_base_banco})' if data_base_banco else ''}")
                     else:
                         st.markdown(f"**Ato base referenciado:** {nome_base} (não encontrado no banco)")
                         if data_ref:
-                            st.markdown(f"**Data extraída do texto:** {data_ref}")
+                            try:
+                                dt = datetime.strptime(data_ref, "%Y-%m-%d")
+                                meses = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro']
+                                data_fmt = f"{dt.day} de {meses[dt.month-1]} de {dt.year}"
+                                st.markdown(f"**Data extraída do texto:** {data_fmt}")
+                            except:
+                                pass
                     st.caption(f"Status atual: {status_atual}")
                 with col2:
                     novo_status = st.checkbox("Concluído", value=(status_atual == 'concluido'), key=f"chk_{pend_id}")
