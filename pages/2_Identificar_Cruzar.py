@@ -531,6 +531,7 @@ def salvar_pendencia(nome_arquivo, texto_integra, identificacao: dict, ref: dict
             "texto_integra": texto_integra[:100000],
             "tipo_documento": identificacao.get("tipo_documento"),
             "numero_documento": identificacao.get("numero_documento"),
+            "nome_padronizado": identificacao.get("nome_padronizado"),
             "data_assinatura": converter_para_iso(identificacao.get("data_assinatura")),
             "orgao_emissor": identificacao.get("orgao_emissor"),
             "ato_base_referenciado_tipo": ref.get("tipo_ato_afetado"),
@@ -547,7 +548,7 @@ def salvar_leitura(nome_arquivo, texto_integra, identificacao: dict):
     """Sempre registra o documento lido no banco (sem vínculo de pendência), mesmo quando ele
     não altera/revoga nada ou quando todas as referências já foram resolvidas. Isso garante que,
     caso algum outro Ato apareça futuramente alterando ou revogando este documento, o cruzamento
-    o encontre."""
+    o encontre. O nome padronizado do Ato é sempre gravado, tal como identificado."""
     if ja_existe_leitura(identificacao.get("numero_documento")):
         return False
     try:
@@ -556,6 +557,7 @@ def salvar_leitura(nome_arquivo, texto_integra, identificacao: dict):
             "texto_integra": texto_integra[:100000],
             "tipo_documento": identificacao.get("tipo_documento"),
             "numero_documento": identificacao.get("numero_documento"),
+            "nome_padronizado": identificacao.get("nome_padronizado"),
             "data_assinatura": converter_para_iso(identificacao.get("data_assinatura")),
             "orgao_emissor": identificacao.get("orgao_emissor"),
             "ato_base_referenciado_tipo": None,
@@ -567,6 +569,43 @@ def salvar_leitura(nome_arquivo, texto_integra, identificacao: dict):
     except Exception as e:
         st.error(f"Erro ao salvar leitura no banco: {e}")
         return False
+
+def salvar_cruzamento(identificacao: dict, ref: Optional[dict], status_cruzamento: str, registro_afetado: Optional[dict] = None, dependente: Optional[dict] = None):
+    """Registra permanentemente o cruzamento identificado (resolvido ou pendente) na tabela
+    cruzamentos_identificados, para consulta futura independente do status atual em
+    atos_importados/portarias_base."""
+    try:
+        if dependente is not None:
+            payload = {
+                "ato_origem_arquivo": dependente.get("nome_arquivo_original"),
+                "ato_origem_tipo": dependente.get("tipo_documento"),
+                "ato_origem_numero": dependente.get("numero_documento"),
+                "ato_origem_nome_padronizado": dependente.get("nome_padronizado"),
+                "ato_afetado_tipo": identificacao.get("tipo_documento"),
+                "ato_afetado_numero": identificacao.get("numero_documento"),
+                "ato_afetado_nome_padronizado": identificacao.get("nome_padronizado"),
+                "tipo_operacao": dependente.get("ato_base_referenciado_tipo"),
+                "dispositivo_afetado": None,
+                "resumo_alteracao": "Arquivo pendente encontrado aguardando este Ato como base.",
+                "status_cruzamento": status_cruzamento,
+            }
+        else:
+            payload = {
+                "ato_origem_arquivo": identificacao.get("_arquivo"),
+                "ato_origem_tipo": identificacao.get("tipo_documento"),
+                "ato_origem_numero": identificacao.get("numero_documento"),
+                "ato_origem_nome_padronizado": identificacao.get("nome_padronizado"),
+                "ato_afetado_tipo": ref.get("tipo_ato_afetado") if ref else None,
+                "ato_afetado_numero": ref.get("numero_ato_afetado") if ref else None,
+                "ato_afetado_nome_padronizado": (registro_afetado or {}).get("nome_padronizado"),
+                "tipo_operacao": ref.get("tipo_operacao") if ref else None,
+                "dispositivo_afetado": ref.get("dispositivo_afetado") if ref else None,
+                "resumo_alteracao": ref.get("resumo_alteracao") if ref else None,
+                "status_cruzamento": status_cruzamento,
+            }
+        supabase.table("cruzamentos_identificados").insert(payload).execute()
+    except Exception as e:
+        st.error(f"Erro ao salvar cruzamento no banco: {e}")
 
 # ----------------- PROCESSAMENTO DE UM ARQUIVO -----------------
 def processar_arquivo(arquivo, api_key, provedor):
@@ -581,6 +620,8 @@ def processar_arquivo(arquivo, api_key, provedor):
     if not texto_integra:
         texto_integra = f"[Documento {arquivo.name} extraído via OCR de imagem]"
 
+    identificacao["_arquivo"] = arquivo.name
+
     achados = []
     algum_pendente = False
     if identificacao.get("e_documento_alterador"):
@@ -590,6 +631,12 @@ def processar_arquivo(arquivo, api_key, provedor):
             if origem is None:
                 salvo_pendente = salvar_pendencia(arquivo.name, texto_integra, identificacao, ref)
                 algum_pendente = True
+                status_cruz = "pendente"
+            elif origem == "portarias_base":
+                status_cruz = "resolvido_base"
+            else:
+                status_cruz = "resolvido_pendente"
+            salvar_cruzamento(identificacao, ref, status_cruz, registro_afetado=registro)
             achados.append({"ref": ref, "origem": origem, "registro": registro, "salvo_pendente": salvo_pendente})
 
     # Todo documento lido é sempre persistido no banco (mesmo sem pendência aberta), pois
@@ -599,6 +646,8 @@ def processar_arquivo(arquivo, api_key, provedor):
         salvo_leitura = salvar_leitura(arquivo.name, texto_integra, identificacao)
 
     dependentes = buscar_dependentes_pendentes(identificacao.get("numero_documento"))
+    for dep in dependentes:
+        salvar_cruzamento(identificacao, None, "dependente_encontrado", dependente=dep)
 
     return {
         "arquivo": arquivo.name,
