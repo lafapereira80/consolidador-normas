@@ -417,41 +417,11 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
    texto de origem), transcreva TODAS as linhas e colunas com fidelidade absoluta em 'tabela_alterada' e
    'tabela_consolidada' (uma lista de listas, uma sublista por linha, mantendo a ordem exata de colunas).
    NUNCA descreva a tabela em prosa, NUNCA a omita, e NUNCA resuma seu conteúdo — reproduza célula a célula,
-   mesmo que a tabela seja grande.
-
-   ORDEM OBRIGATÓRIA quando o dispositivo com tabela é ALTERADO ou tem NOVA REDAÇÃO (aplica-se também a
-   Capítulos/Anexos com tabela): a tabela é sempre o ÚLTIMO elemento do dispositivo, depois do texto. NUNCA
-   coloque a nova redação depois da tabela. A ordem correta é sempre:
-     1º) em 'texto_principal_alterada': o texto ANTIGO integral riscado (com a nota "(Alterada pelo Art. <N>
-         da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)"), seguido de `<br/><br/>`, seguido da NOVA redação do texto
-         (se houver — se só a tabela mudou e o texto do caput não mudou, repita o mesmo texto sem riscar),
-         com a nota "(Redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)." — EXATAMENTE como
-         a regra 4a abaixo, IGNORANDO a tabela nesta etapa.
-     2º) SÓ DEPOIS disso, em 'tabela_alterada': a tabela (nova e completa se ela mudou; ou a mesma se não
-         mudou), e em 'texto_pos_tabela_alterada' a nota "(Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)"
-         referente à tabela.
-   Ou seja: texto antigo riscado → texto novo → (só então) a tabela. NUNCA: texto antigo → tabela → texto
-   novo. Se a própria tabela teve células alteradas, marque as células mudadas com
-   <strike><font color="red">célula antiga</font></strike> dentro de 'tabela_alterada'.
-   'tabela_consolidada' e 'texto_principal_consolidada'/'texto_pos_tabela_consolidada' sempre refletem
-   apenas a versão vigente (mais recente), sem riscos.
-
-   Exemplo completo obrigatório (dispositivo com tabela cujo caput foi alterado):
-     texto_principal_alterada = <strike><font color="red">X - Fixar a lotação dos Assessores Jurídicos
-     dos Gabinetes dos Subprocuradores-Gerais de Justiça Militar, de acordo com Ofícios Gerais abaixo
-     relacionados:</font></strike> (Alterada pelo Art. 1º da PORTARIA Nº 103/PGJM, DE 21 DE MAIO DE
-     2026)<br/><br/>X Os Assessores Jurídicos dos Subprocuradores-Gerais de Justiça Militar são lotados
-     nos respectivos Gabinetes. (Redação dada pelo Art. 1º da PORTARIA Nº 103/PGJM, DE 21 DE MAIO DE
-     2026).
-     tabela_alterada = [["Lotação","Servidor"], ["1º Ofício Geral - PGJM","Maria Carolina Mazzei de
-     Freitas"], ...todas as linhas da tabela antiga, célula a célula...]
-     texto_pos_tabela_alterada = (Art. 1º da PORTARIA Nº 103/PGJM, DE 21 DE MAIO DE 2026)
-     texto_principal_consolidada = X Os Assessores Jurídicos dos Subprocuradores-Gerais de Justiça
-     Militar são lotados nos respectivos Gabinetes. (Redação dada pelo Art. 1º da PORTARIA Nº 103/PGJM,
-     DE 21 DE MAIO DE 2026).
-     tabela_consolidada = [] (vazia — a tabela deixou de existir na redação vigente; se a nova redação
-     ainda usa tabela, coloque aqui a tabela vigente)
-     texto_pos_tabela_consolidada = ""
+   mesmo que a tabela seja grande. Se um ato alterador modifica um conteúdo e dentro desse conteúdo existe
+   uma tabela (acrescenta, remove ou muda linhas/colunas) ela deve ser taxada, com  <strike><font color="red"> Célula </font></strike>, 'tabela_alterada' deve conter a tabela NOVA e COMPLETA (com todas as
+   linhas, alteradas ou não), e o campo 'texto_pos_tabela_alterada' deve trazer a nota
+   "(Nova redação dada pelo Art. <N> da <TIPO> Nº <NÚMERO>/<SIGLA>, <DATA>)" logo abaixo da tabela.
+   'tabela_consolidada' sempre reflete a versão vigente (mais recente) da tabela, a nova redação no caso de alterada deve vir após a tabela ou texto, verifique o que vem por último e após isso que deve vir a nova redação.
 4. CRITÉRIO RIGOROSO DE ALTERAÇÃO E REVOGAÇÃO — formato EXATO e obrigatório (siga rigorosamente a
    pontuação, os parênteses e a ordem abaixo; NUNCA misture os dois casos):
 
@@ -474,10 +444,7 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
         relatórios de atividade ao(à) instruendo(a), conforme modelo anexo; (Redação dada pelo Art. 8 da
         PORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026).
 
-      Na versão CONSOLIDADA (`texto_principal_consolidada`) do MESMO dispositivo, mostre SOMENTE a Linha 2
-      (a nova redação), nunca a antiga, nunca riscada:
-        X - apresentar trimestralmente relatórios de atividade ao(à) instruendo(a), conforme modelo anexo;
-        (Redação dada pelo Art. 8 daPORTARIA Nº 1/PGJCG, de 01 JUNHO DE 2026).
+      Para dispositivos com tabela, siga as regras do item 6.
 
    b) DISPOSITIVO REVOGADO — na versão ALTERADA, UMA ÚNICA LINHA (NÃO repita/acrescente uma segunda linha):
       identificador + texto INTEGRAL riscado em vermelho, seguido IMEDIATAMENTE da nota
@@ -497,23 +464,67 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
       parênteses), só para fins de indexação/auditoria — mas isso é redundante ao texto, não substitui.
    d) NUNCA deixe de taxar o dispositivo correto, e NUNCA junte texto antigo e novo na mesma linha sem a
       quebra de parágrafo dupla `<br/><br/>` entre eles, exceto no caso de revogação (que é uma única linha).
-   e) HISTÓRICO DE MÚLTIPLAS ALTERAÇÕES: quando um dispositivo já foi alterado antes (o "ESTADO ATUAL"
-      recebido já contém uma linha de nova redação com sua própria nota "(Redação dada pelo Art. X da
-      ATO Y...)") e agora sofre OUTRA alteração, NÃO apague o histórico anterior: risque a redação que
-      estava vigente até então (mantendo visível, riscada, a nota antiga que a acompanhava) e acrescente,
-      em nova linha após `<br/><br/>`, a redação mais recente com sua própria nota. O resultado acumula
-      TODAS as redações sucessivas na ordem cronológica em que ocorreram (a mais antiga primeiro,
-      riscada; a mais recente por último, vigente), por exemplo:
-        <strike><font color="red">X texto original</font></strike> (Alterada pelo Art. 1 da PORTARIA Nº
-        1/PGJM, DE 1 DE JANEIRO DE 2026)<br/><br/><strike><font color="red">X primeira redação nova
-        </font></strike> (Alterada pelo Art. 1 da PORTARIA Nº 1/PGJM, DE 1 DE JANEIRO DE 2026)<br/><br/>
-        X redação mais recente e vigente (Redação dada pelo Art. 1 da PORTARIA Nº 5/PGJM, DE 1 DE AGOSTO
-        DE 2026).
-      Na versão CONSOLIDADA, mostre sempre só a última redação vigente, com sua nota.
 5. GENERALIDADE: as regras acima valem para qualquer espécie normativa (Lei, Decreto, Resolução, Portaria,
    Enunciado, Instrução Normativa etc.) e para qualquer tipo de dispositivo (Artigo, Parágrafo, Parágrafo
    Único, Inciso, Alínea, Item).
+
+6. REGRAS ESPECÍFICAS PARA DISPOSITIVOS COM TABELA (is_tabela=True)
+   Quando um dispositivo normativo contiver uma tabela (campo is_tabela=True) e for objeto de alteração
+   por um ato modificador, siga rigorosamente as regras abaixo:
+
+   6.1. Estrutura geral na versão ALTERADA:
+   - O texto ANTIGO (riscado) fica no campo 'texto_principal_alterada', **sem a nota de alteração**.
+   - A nota "(Alterada pelo Art. N da TIPO Nº NÚMERO/ANO - SIGLA)" DEVE ser colocada **no início do campo
+     'texto_pos_tabela_alterada'**, logo após a tabela, antes de qualquer nova redação.
+   - A tabela ALTERADA (com as células taxadas quando houver mudança) fica no campo 'tabela_alterada'.
+   - A NOVA REDAÇÃO completa (texto novo, se houver, e a nota "(Redação dada pelo Art. N da TIPO Nº
+     NÚMERO/ANO - SIGLA)") fica NO MESMO CAMPO 'texto_pos_tabela_alterada', logo após a nota de alteração,
+     separada por um espaço ou quebra de linha, conforme necessário.
+   - A ordem final no campo 'texto_pos_tabela_alterada' deve ser:
+     "(Alterada pelo Art. ...) <br/> X - texto novo... (Redação dada pelo Art. ...)"
+     ou, se não houver nova redação, apenas a nota de alteração.
+
+   6.2. Casos específicos:
+   a) Dispositivo com texto introdutório + tabela + texto final:
+      - 'texto_principal_alterada': contém o texto antigo completo (introdução + referência à tabela +
+        texto final) riscado, SEM a nota de alteração.
+      - 'tabela_alterada': a tabela completa, com células taxadas se alteradas.
+      - 'texto_pos_tabela_alterada': inicia com a nota "(Alterada pelo Art. ...)", seguida da NOVA redação
+        do dispositivo inteiro (introdução nova, se aplicável, descrição da tabela, texto final novo) e da
+        nota "(Redação dada pelo...)".
+        Exemplo:
+          texto_principal_alterada = "<strike><font color='red'>Art. 5º - O prazo para entrega é de 30 dias,
+          conforme tabela abaixo:</font></strike>"
+          tabela_alterada = [["Item", "Prazo"], ["Documento", "10 dias"], ["Relatório", "20 dias"]]
+          texto_pos_tabela_alterada = "(Alterada pelo Art. 2 da PORTARIA Nº 5/PGJ, de 10 de maio de 2025)<br/>Art. 5º - O prazo para entrega é de 60 dias, conforme tabela abaixo: (Redação dada pelo Art. 2 da PORTARIA Nº 5/PGJ, de 10 de maio de 2025)"
+
+   b) Dispositivo que contém APENAS a tabela (sem texto antes ou depois):
+      - 'texto_principal_alterada': conterá apenas o identificador do dispositivo (ex.: "Art. 7º") riscado,
+        sem a nota de alteração.
+      - 'tabela_alterada': a tabela completa, com alterações taxadas.
+      - 'texto_pos_tabela_alterada': inicia com a nota "(Alterada pelo...)", seguida da nova redação da
+        tabela em forma de texto descritivo (caso a tabela tenha sido substituída por texto) ou apenas a
+        nota se a tabela foi apenas modificada e não há texto adicional.
+        Importante: se a tabela foi substituída por texto, descreva-a em texto_pos_tabela_alterada;
+        caso contrário, deixe apenas a nota.
+
+   c) Alteração que NÃO afeta a tabela, mas afeta o texto ao redor:
+      - Nesse caso, o campo 'is_tabela' deve ser False se a tabela em si não faz parte da alteração.
+        Ou seja, se a tabela permanece intacta e apenas o texto muda, trate como um dispositivo normal
+        (is_tabela=False) e coloque a Linha 2 em 'texto_principal_alterada' normalmente.
+
+   6.3. Versão CONSOLIDADA:
+   - 'texto_principal_consolidada': deve conter a versão vigente do dispositivo (sem riscados).
+     Se houver texto antes da tabela, ele deve estar aqui; se não, apenas o identificador.
+   - 'tabela_consolidada': a tabela na versão vigente (sem taxações).
+   - 'texto_pos_tabela_consolidada': se existir texto após a tabela na versão vigente, ele deve ser
+     colocado aqui. Caso contrário, deixe vazio.
+   - A nota "(Redação dada pelo...)" pode aparecer em 'texto_principal_consolidada' ou em
+     'texto_pos_tabela_consolidada', conforme a posição natural do texto novo, mas nunca duplicada.
+
+   6.4. A nota de redação deve sempre aparecer **fora** da tabela, nunca dentro de uma célula.
 """
+
 
 # ----------------- SCHEMA JSON PARA PROVEDORES SEM STRUCTURED OUTPUT NATIVO -----------------
 def _prompt_schema_json(response_schema):
