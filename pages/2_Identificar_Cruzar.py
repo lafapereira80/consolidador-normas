@@ -513,6 +513,15 @@ def ja_existe_pendente(numero_documento, numero_ato_afetado):
     except Exception:
         return False
 
+def ja_existe_leitura(numero_documento):
+    try:
+        res = supabase.table("atos_importados").select("id").eq(
+            "numero_documento", numero_documento
+        ).is_("ato_base_referenciado_numero", "null").execute()
+        return bool(res.data)
+    except Exception:
+        return False
+
 def salvar_pendencia(nome_arquivo, texto_integra, identificacao: dict, ref: dict):
     if ja_existe_pendente(identificacao["numero_documento"], ref["numero_ato_afetado"]):
         return False
@@ -534,6 +543,31 @@ def salvar_pendencia(nome_arquivo, texto_integra, identificacao: dict, ref: dict
         st.error(f"Erro ao salvar pendência no banco: {e}")
         return False
 
+def salvar_leitura(nome_arquivo, texto_integra, identificacao: dict):
+    """Sempre registra o documento lido no banco (sem vínculo de pendência), mesmo quando ele
+    não altera/revoga nada ou quando todas as referências já foram resolvidas. Isso garante que,
+    caso algum outro Ato apareça futuramente alterando ou revogando este documento, o cruzamento
+    o encontre."""
+    if ja_existe_leitura(identificacao.get("numero_documento")):
+        return False
+    try:
+        supabase.table("atos_importados").insert({
+            "nome_arquivo_original": nome_arquivo,
+            "texto_integra": texto_integra[:100000],
+            "tipo_documento": identificacao.get("tipo_documento"),
+            "numero_documento": identificacao.get("numero_documento"),
+            "data_assinatura": converter_para_iso(identificacao.get("data_assinatura")),
+            "orgao_emissor": identificacao.get("orgao_emissor"),
+            "ato_base_referenciado_tipo": None,
+            "ato_base_referenciado_numero": None,
+            "status": "identificado",
+            "estrutura_json": identificacao,
+        }).execute()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar leitura no banco: {e}")
+        return False
+
 # ----------------- PROCESSAMENTO DE UM ARQUIVO -----------------
 def processar_arquivo(arquivo, api_key, provedor):
     file_bytes = arquivo.getvalue()
@@ -548,13 +582,21 @@ def processar_arquivo(arquivo, api_key, provedor):
         texto_integra = f"[Documento {arquivo.name} extraído via OCR de imagem]"
 
     achados = []
+    algum_pendente = False
     if identificacao.get("e_documento_alterador"):
         for ref in identificacao.get("atos_referenciados", []):
             origem, registro = localizar_no_banco(ref.get("numero_ato_afetado"), ref.get("tipo_ato_afetado"))
             salvo_pendente = False
             if origem is None:
                 salvo_pendente = salvar_pendencia(arquivo.name, texto_integra, identificacao, ref)
+                algum_pendente = True
             achados.append({"ref": ref, "origem": origem, "registro": registro, "salvo_pendente": salvo_pendente})
+
+    # Todo documento lido é sempre persistido no banco (mesmo sem pendência aberta), pois
+    # futuramente outro Ato pode vir a alterá-lo ou revogá-lo e precisa encontrá-lo no cruzamento.
+    salvo_leitura = False
+    if not algum_pendente:
+        salvo_leitura = salvar_leitura(arquivo.name, texto_integra, identificacao)
 
     dependentes = buscar_dependentes_pendentes(identificacao.get("numero_documento"))
 
@@ -563,6 +605,7 @@ def processar_arquivo(arquivo, api_key, provedor):
         "identificacao": identificacao,
         "achados": achados,
         "dependentes": dependentes,
+        "salvo_leitura": salvo_leitura,
     }
 
 # ----------------- FRONT-END -----------------
@@ -616,6 +659,11 @@ if st.session_state.get("resultados_identificacao"):
             c4.markdown(f"**Data:**\n{ident.get('data_assinatura', '—')}")
             if ident.get("ementa"):
                 st.caption(f"Ementa: {ident['ementa']}")
+
+            if res.get("salvo_leitura"):
+                st.caption("💾 Documento salvo no banco para consulta em cruzamentos futuros.")
+            elif not any(a.get("salvo_pendente") for a in res.get("achados", [])):
+                st.caption("💾 Documento já constava no banco (leitura anterior).")
 
             if not ident.get("e_documento_alterador"):
                 st.info("ℹ️ Este documento **não** altera nem revoga outro Ato — é um Ato base/original.")
