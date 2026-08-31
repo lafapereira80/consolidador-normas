@@ -1,4 +1,4 @@
-# pages/3_Consolidar_Norma.py
+# pages/3_Consolidar_Norma.py (com correção do erro supabase não definido)
 import streamlit as st
 import tempfile
 import io
@@ -56,6 +56,25 @@ if "autenticado" not in st.session_state or not st.session_state.autenticado:
     st.stop()
 
 st.set_page_config(page_title="Consolidar Norma", page_icon="⚙️", layout="wide", initial_sidebar_state="collapsed")
+
+# =====================================================================
+# INICIALIZAÇÃO DO SUPABASE (CORREÇÃO)
+# =====================================================================
+@st.cache_resource
+def init_supabase() -> Optional[Client]:
+    try:
+        url = st.secrets["supabase"]["url"]
+        key = st.secrets["supabase"]["key"]
+        return create_client(url, key)
+    except Exception:
+        return None
+
+supabase = init_supabase()
+if not supabase:
+    st.error("⚠️ Não foi possível conectar ao Supabase.")
+    st.stop()
+
+# =====================================================================
 
 st.markdown("""
 <style>
