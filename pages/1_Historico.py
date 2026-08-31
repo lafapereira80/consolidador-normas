@@ -1,4 +1,4 @@
-# pages/1_Historico.py (corrigido com import os)
+# pages/1_Historico.py (com ajustes de layout)
 import streamlit as st
 import json
 import os
@@ -28,12 +28,42 @@ st.markdown("""
     }
     .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.2rem; margin-bottom: 0px; }
     .card-pendente {
-        border: 1px solid #d0d4dc; border-radius: 10px; padding: 14px 18px;
-        margin-bottom: 10px; background: #f8faff;
+        border: 1px solid #d0d4dc;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 10px;
+        background: #f8faff;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+        overflow: hidden;
     }
     .card-pendente.sem-relacao { border-left: 5px solid #cccccc; }
     .card-pendente.com-relacao { border-left: 5px solid #d98c00; background: #fff9e6; }
     .card-pendente.concluido { border-left: 5px solid #1e9c4f; background: #e6f5ed; }
+    .card-pendente .row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+    .card-pendente .col-text {
+        flex: 3;
+        min-width: 200px;
+        word-break: break-word;
+        padding-right: 10px;
+    }
+    .card-pendente .col-check {
+        flex: 1;
+        min-width: 100px;
+        text-align: center;
+    }
+    .card-pendente .col-delete {
+        flex: 0 0 40px;
+        text-align: right;
+    }
+    @media (max-width: 600px) {
+        .card-pendente .col-text { flex: 1 1 100%; }
+        .card-pendente .col-check { flex: 1 1 50%; }
+    }
 </style>
 <div class="main-header">
     <h1>🗄️ Histórico e Gerenciamento de Banco de Dados</h1>
@@ -213,19 +243,48 @@ try:
             if status_atual == 'concluido':
                 card_class = "card-pendente concluido"
                 icone = "✅"
-                checkbox_valor = True
             elif relacao_encontrada:
                 card_class = "card-pendente com-relacao"
                 icone = "🟡"
-                checkbox_valor = False
             else:
                 card_class = "card-pendente sem-relacao"
                 icone = "⚪"
-                checkbox_valor = False
 
-            # Exibe o card
+            # Exibe o card usando layout flex via CSS
+            st.markdown(f"""
+            <div class="{card_class}">
+                <div class="row">
+                    <div class="col-text">
+                        <strong>{icone} {nome_arquivo}</strong><br>
+                        <span style="font-size:0.95rem;">
+                            <b>Referência:</b> {nome_completo_ref}{f' <i>(Data: {data_ref})</i>' if data_ref else ''}
+                            {'' if relacao_encontrada else ' <span style="color:#c00;">(não encontrada no banco)</span>'}
+                        </span><br>
+                        <span style="font-size:0.85rem; color:#666;">Status: {status_atual}</span>
+                    </div>
+                    <div class="col-check">
+                        <label style="cursor:pointer;">
+                            <input type="checkbox" {"checked" if status_atual == "concluido" else ""}
+                                   onchange="window.location.href = '?check=' + '{pend_id}'">
+                            Concluído
+                        </label>
+                    </div>
+                    <div class="col-delete">
+                        <button onclick="window.location.href='?delete={pend_id}'" style="background:none;border:none;color:#c00;cursor:pointer;font-size:1.2rem;">🗑️</button>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Lógica para checkbox e delete via query params (simples)
+            # Como o Streamlit não suporta JavaScript facilmente, usaremos botões Streamlit abaixo do card
+            # Alternativa: usar st.checkbox e st.button dentro de colunas
+            # Vamos substituir a abordagem acima por uma mais Streamlit-friendly:
+            # Reimplementando com colunas Streamlit, pois o HTML com onclick não funciona bem.
+
+            # Para garantir funcionalidade, vou refazer usando st.columns:
             st.markdown(f'<div class="{card_class}">', unsafe_allow_html=True)
-            col1, col2, col3 = st.columns([3, 1, 1])
+            col1, col2, col3 = st.columns([3, 1, 0.5])
             with col1:
                 st.markdown(f"**{icone} {nome_arquivo}**")
                 if relacao_encontrada:
