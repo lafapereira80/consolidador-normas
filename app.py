@@ -1,4 +1,4 @@
-# app.py (nova página principal - Identificar e Cruzar)
+# app.py (página principal - Identificar e Cruzar) com extração de data do ato referenciado
 import streamlit as st
 import os
 import re
@@ -141,7 +141,6 @@ with col_home:
     st.markdown("🏠 **Início**")
 
 with col_cons:
-    # Link para a página de consolidação (nova)
     cons_path = "pages/3_Consolidar_Norma.py"
     if os.path.exists("pages"):
         for f in os.listdir("pages"):
@@ -604,9 +603,30 @@ def ja_existe_leitura(numero_documento):
     except Exception:
         return False
 
+def extrair_data_referenciada(texto, numero_ref):
+    """Tenta extrair a data do ato referenciado a partir do texto."""
+    if not texto:
+        return None
+    # Busca padrões como "PORTARIA Nº 137/PGJM, de 15 de janeiro de 2015"
+    padrao = re.compile(rf'{re.escape(numero_ref)}.*?(?:de|DE)\s+(\d{{1,2}})\s+(?:de|DE)\s+(\w+)\s+(?:de|DE)\s+(\d{{4}})', re.IGNORECASE)
+    match = padrao.search(texto)
+    if match:
+        dia, mes_str, ano = match.groups()
+        meses = {
+            'janeiro': '01', 'fevereiro': '02', 'março': '03', 'abril': '04',
+            'maio': '05', 'junho': '06', 'julho': '07', 'agosto': '08',
+            'setembro': '09', 'outubro': '10', 'novembro': '11', 'dezembro': '12'
+        }
+        mes = meses.get(mes_str.lower())
+        if mes:
+            return f"{ano}-{mes}-{int(dia):02d}"
+    return None
+
 def salvar_pendencia(nome_arquivo, texto_integra, identificacao: dict, ref: dict):
     if ja_existe_pendente(identificacao["numero_documento"], ref["numero_ato_afetado"]):
         return False
+    # Extrai data do ato referenciado
+    data_ref = extrair_data_referenciada(texto_integra, ref["numero_ato_afetado"])
     try:
         supabase.table("atos_importados").insert({
             "nome_arquivo_original": nome_arquivo,
@@ -617,6 +637,7 @@ def salvar_pendencia(nome_arquivo, texto_integra, identificacao: dict, ref: dict
             "orgao_emissor": identificacao.get("orgao_emissor"),
             "ato_base_referenciado_tipo": ref.get("tipo_ato_afetado"),
             "ato_base_referenciado_numero": ref.get("numero_ato_afetado"),
+            "ato_base_referenciado_data": data_ref,  # novo campo
             "status": "pendente",
             "estrutura_json": identificacao,
         }).execute()
@@ -626,10 +647,6 @@ def salvar_pendencia(nome_arquivo, texto_integra, identificacao: dict, ref: dict
         return False
 
 def salvar_leitura(nome_arquivo, texto_integra, identificacao: dict):
-    """Sempre registra o documento lido no banco (sem vínculo de pendência), mesmo quando ele
-    não altera/revoga nada ou quando todas as referências já foram resolvidas. Isso garante que,
-    caso algum outro Ato apareça futuramente alterando ou revogando este documento, o cruzamento
-    o encontre."""
     if ja_existe_leitura(identificacao.get("numero_documento")):
         return False
     try:
@@ -682,8 +699,6 @@ def processar_arquivo(arquivo, api_key, provedor):
                 algum_pendente = True
             achados.append({"ref": ref, "origem": origem, "registro": registro, "salvo_pendente": salvo_pendente})
 
-    # Todo documento lido é sempre persistido no banco (mesmo sem pendência aberta), pois
-    # futuramente outro Ato pode vir a alterá-lo ou revogá-lo e precisa encontrá-lo no cruzamento.
     salvo_leitura = False
     if not algum_pendente:
         salvo_leitura = salvar_leitura(arquivo.name, texto_integra, identificacao)
@@ -735,7 +750,6 @@ if st.button("🔎 Identificar e Cruzar", type="primary", use_container_width=Tr
 if st.session_state.get("resultados_identificacao"):
     st.markdown("---")
     st.markdown("## 📋 Resultado da Identificação e Cruzamento")
-    # Verifica se há correlações encontradas para emitir alerta
     tem_correlacao = False
     for res in st.session_state.resultados_identificacao:
         if "erro" not in res:
