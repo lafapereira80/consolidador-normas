@@ -1,4 +1,4 @@
-# app.py (página principal - Identificar e Cruzar) com extração de data do ato referenciado
+# app.py (página principal - Identificar e Cruzar) - CORRIGIDO
 import streamlit as st
 import os
 import re
@@ -605,9 +605,8 @@ def ja_existe_leitura(numero_documento):
 
 def extrair_data_referenciada(texto, numero_ref):
     """Tenta extrair a data do ato referenciado a partir do texto."""
-    if not texto:
+    if not texto or not numero_ref:
         return None
-    # Busca padrões como "PORTARIA Nº 137/PGJM, de 15 de janeiro de 2015"
     padrao = re.compile(rf'{re.escape(numero_ref)}.*?(?:de|DE)\s+(\d{{1,2}})\s+(?:de|DE)\s+(\w+)\s+(?:de|DE)\s+(\d{{4}})', re.IGNORECASE)
     match = padrao.search(texto)
     if match:
@@ -625,8 +624,6 @@ def extrair_data_referenciada(texto, numero_ref):
 def salvar_pendencia(nome_arquivo, texto_integra, identificacao: dict, ref: dict):
     if ja_existe_pendente(identificacao["numero_documento"], ref["numero_ato_afetado"]):
         return False
-    # Extrai data do ato referenciado
-    data_ref = extrair_data_referenciada(texto_integra, ref["numero_ato_afetado"])
     try:
         supabase.table("atos_importados").insert({
             "nome_arquivo_original": nome_arquivo,
@@ -637,7 +634,6 @@ def salvar_pendencia(nome_arquivo, texto_integra, identificacao: dict, ref: dict
             "orgao_emissor": identificacao.get("orgao_emissor"),
             "ato_base_referenciado_tipo": ref.get("tipo_ato_afetado"),
             "ato_base_referenciado_numero": ref.get("numero_ato_afetado"),
-            "ato_base_referenciado_data": data_ref,  # novo campo
             "status": "pendente",
             "estrutura_json": identificacao,
         }).execute()
