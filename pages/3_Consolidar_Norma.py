@@ -1045,8 +1045,25 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
     for item in consolidacao_dict.get("dispositivos", []):
         t = (item.get("tipo") or "").lower()
         t_prin = injetar_nota_remissiva(item.get(f"texto_principal_{tipo_versao}"), item.get("nota_remissiva") if not item.get("is_tabela") else "")
-        if "capitulo" in t or "anexo" in t:
+        eh_capitulo_ou_anexo = "capitulo" in t or "anexo" in t
+        texto_puro = re.sub(r'<[^>]+>', '', t_prin or '')
+        if eh_capitulo_ou_anexo and len(texto_puro) <= 150:
+            # Título curto (ex.: "CAPÍTULO I", "ANEXO I"): mantém o destaque
+            # centralizado/negrito/maiúsculo de sempre.
             html += f"<div class='capitulo'>{t_prin}</div>"
+            if not item.get("is_tabela"):
+                continue
+        elif eh_capitulo_ou_anexo:
+            # Bloco longo (ex.: corpo inteiro de um Anexo, não só o título):
+            # força tudo em negrito/maiúsculo/centralizado deixava o texto
+            # ilegível. Só a 1ª linha é o título; o resto vira parágrafo
+            # normal, preservando negrito/itálico/riscado originais.
+            partes_bloco = (t_prin or "").split("<br/>")
+            if partes_bloco:
+                html += f"<div class='capitulo'>{partes_bloco[0].strip()}</div>"
+                for p in partes_bloco[1:]:
+                    if p.strip():
+                        html += f"<div class='dispositivo' style='text-indent:0;'>{p.strip()}</div>"
             if not item.get("is_tabela"):
                 continue
         else:
@@ -1139,10 +1156,30 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
     for item in consolidacao_dict.get("dispositivos", []):
         t = (item.get("tipo") or "").lower()
         t_prin = injetar_nota_remissiva(item.get(f"texto_principal_{tipo_versao}"), item.get("nota_remissiva") if not item.get("is_tabela") else "")
-        if "capitulo" in t or "anexo" in t: 
+        eh_capitulo_ou_anexo = "capitulo" in t or "anexo" in t
+        texto_puro = re.sub(r'<[^>]+>', '', t_prin or '')
+        if eh_capitulo_ou_anexo and len(texto_puro) <= 150:
+            # Título curto: mantém o destaque centralizado/negrito de sempre.
             if "anexo" in t: doc.add_page_break()
             p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             _render_docx_p(p, t_prin, bold_all=True)
+            if not item.get("is_tabela"):
+                continue
+        elif eh_capitulo_ou_anexo:
+            # Bloco longo: só a 1ª linha é o título (centralizado/negrito); o
+            # resto vira parágrafo normal, preservando negrito/itálico/riscado
+            # originais (bold_all=True apagava essas tags e forçava tudo em
+            # negrito, deixando o corpo do Anexo desformatado).
+            if "anexo" in t: doc.add_page_break()
+            partes_bloco = (t_prin or "").split("<br/>")
+            if partes_bloco:
+                p_tit = doc.add_paragraph(); p_tit.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                r_tit = p_tit.add_run(re.sub(r'<[^>]+>', '', partes_bloco[0]).replace("&nbsp;", "\xa0"))
+                r_tit.font.name, r_tit.font.size, r_tit.bold = 'Times New Roman', Pt(10), True
+                corpo_restante = "<br/>".join(partes_bloco[1:]).strip()
+                if corpo_restante:
+                    p_corpo = doc.add_paragraph(); p_corpo.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                    _render_docx_p(p_corpo, corpo_restante)
             if not item.get("is_tabela"):
                 continue
         else:
