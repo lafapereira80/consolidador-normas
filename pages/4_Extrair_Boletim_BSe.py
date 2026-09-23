@@ -119,22 +119,18 @@ def extrair_texto_boletim(pdf_bytes: bytes) -> str:
 
 def identificar_autoridade(texto: str) -> Dict[str, str]:
     """Localiza o nome e o cargo do Procurador-Geral de Justiça Militar no Boletim."""
-    # Procura por linhas típicas de cabeçalho do Boletim de Serviço
     padrao = re.search(r'([A-Z\s]{5,50})\n\s*(Procurador-Geral de Justiça Militar)', texto, re.IGNORECASE)
     if padrao:
         nome = padrao.group(1).strip()
         cargo = padrao.group(2).strip()
         return {"nome": nome, "cargo": cargo}
     
-    # Fallback caso não encontre regex exata
     return {"nome": "JAIME DE CASSIO MIRANDA", "cargo": "Procurador-Geral de Justiça Militar"}
 
 def extrair_atos_normativos(texto: str) -> List[Dict[str, str]]:
     """Identifica e separa cada Portaria/Ato normativo do Boletim."""
-    # Padronização de quebras de linha para busca
     texto_limpo = re.sub(r'\r\n', '\n', texto)
     
-    # Expressão regular para capturar Portarias e seus corpos
     padrao_ato = re.compile(
         r'((?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*[\d\w/-]+[^\n]*\n)(.*?)(?=(?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*[\d\w/-]+|\Z)',
         re.DOTALL | re.IGNORECASE
@@ -147,10 +143,8 @@ def extrair_atos_normativos(texto: str) -> List[Dict[str, str]]:
         titulo_limpo = titulo.strip()
         corpo_limpo = corpo.strip()
         
-        # Remove eventuais cabeçalhos de página repetidos
         corpo_limpo = re.sub(r'Boletim de Serviço nº \d+.*?\n', '', corpo_limpo, flags=re.IGNORECASE)
         
-        # Identifica notas de publicação (ex: "(Publicada no DOU nº...)")
         nota_publicacao = ""
         match_pub = re.search(r'(\(Publicada no DOU[^\)]+\))', corpo_limpo, re.IGNORECASE)
         if match_pub:
@@ -173,14 +167,12 @@ def gerar_pdf_padrao_sei(titulo: str, corpo: str, autoridade_nome: str, autorida
     if not HAS_WEASYPRINT:
         raise Exception("Biblioteca 'WeasyPrint' não está disponível no ambiente.")
 
-    # Carrega e codifica a imagem do Brasão da República
     brasao_base64 = ""
     caminho_brasao = obter_caminho_brasao()
     if caminho_brasao and os.path.exists(caminho_brasao):
         with open(caminho_brasao, "rb") as img_f:
             brasao_base64 = base64.b64encode(img_f.read()).decode("utf-8")
 
-    # Formata parágrafos do corpo do ato
     linhas_corpo = [l.strip() for l in corpo.split('\n') if l.strip()]
     html_corpo = ""
     for linha in linhas_corpo:
@@ -310,9 +302,8 @@ def gerar_pdf_padrao_sei(titulo: str, corpo: str, autoridade_nome: str, autorida
 
 # --- INTERFACE PRINCIPAL ---
 st.markdown("""
-Envie o arquivo do **Boletim de Serviço Eletrônico (PDF)**. O sistema fará a varredura completa do documento,
-identificará a autoridade signatária do BSe (Procurador-Geral de Justiça Militar) e apresentará a lista
-dos Atos normativos encontrados para seleção e exportação em PDF formatado.
+Envie o arquivo do **Boletim de Serviço Eletrônico (PDF)**. O sistema extrairá todos os Atos normativos encontrados
+e disponibilizará um editor de texto completo para revisão antes da exportação em PDF.
 """)
 
 arquivo_bse = st.file_uploader("Selecione o Boletim de Serviço (PDF)", type=["pdf"], key="uploader_bse")
@@ -334,62 +325,45 @@ if arquivo_bse is not None:
         cargo_autoridade = st.text_input("Cargo", value=autoridade["cargo"])
 
     st.markdown("---")
-    st.markdown("### 📜 Atos Encontrados")
+    st.markdown("### 📜 Atos Encontrados para Edição e Exportação")
 
     if not atos:
         st.warning("Nenhum ato normativo no padrão reconhecido foi identificado automaticamente.")
     else:
-        # Opção de Seleção Múltipla
-        selecionados = []
-        c_sel_todos, _ = st.columns([2, 4])
-        with c_sel_todos:
-            marcar_todos = st.checkbox("Marcar / Desmarcar Todos", value=True)
-
         for ato in atos:
-            expander_title = f"{ato['titulo']}"
-            with st.expander(expander_title, expanded=False):
-                chk = st.checkbox(f"Selecionar para exportação", value=marcar_todos, key=f"chk_ato_{ato['id']}")
-                if chk:
-                    selecionados.append(ato)
+            expander_title = f"📄 {ato['titulo']}"
+            with st.expander(expander_title, expanded=True):
+                st.markdown("**Título do Ato**")
+                titulo_editado = st.text_input("Título", value=ato['titulo'], key=f"tit_{ato['id']}", label_visibility="collapsed")
                 
-                # Editor de conteúdo do ato
-                ato['titulo'] = st.text_input("Título", value=ato['titulo'], key=f"tit_{ato['id']}")
-                ato['corpo'] = st.text_area("Texto do Ato", value=ato['corpo'], height=250, key=f"corp_{ato['id']}")
-                ato['nota_publicacao'] = st.text_input("Nota de Publicação", value=ato['nota_publicacao'], key=f"nota_{ato['id']}")
+                st.markdown("**Texto Completo do Ato (Caixa de Edição / Ajuste Manual)**")
+                corpo_editado = st.text_area(
+                    "Conteúdo do Ato",
+                    value=ato['corpo'],
+                    height=350,
+                    key=f"corp_{ato['id']}",
+                    label_visibility="collapsed"
+                )
+                
+                st.markdown("**Nota de Publicação (DOU)**")
+                nota_editada = st.text_input("Nota de Publicação", value=ato['nota_publicacao'], key=f"nota_{ato['id']}", label_visibility="collapsed")
 
-                # Botão de Download Individual
+                st.markdown("<br/>", unsafe_allow_html=True)
+                
+                # Gerador e Download Individual
                 try:
                     pdf_individual = gerar_pdf_padrao_sei(
-                        ato['titulo'], ato['corpo'], nome_autoridade, cargo_autoridade, ato['nota_publicacao']
+                        titulo_editado, corpo_editado, nome_autoridade, cargo_autoridade, nota_editada
                     )
-                    nome_arquivo_pdf = f"{ato['titulo'].replace('/', '_').replace(' ', '_')}.pdf"
+                    nome_arquivo_pdf = f"{titulo_editado.replace('/', '_').replace(' ', '_')}.pdf"
+                    
                     st.download_button(
-                        label="📄 Baixar este Ato em PDF",
+                        label="📄 Gerar e Baixar este Ato em PDF Formatado",
                         data=pdf_individual,
                         file_name=nome_arquivo_pdf,
                         mime="application/pdf",
+                        type="primary",
                         key=f"btn_dl_{ato['id']}"
                     )
                 except Exception as e:
-                    st.error(f"Erro ao gerar PDF individual: {e}")
-
-        # Exportação em Lote
-        if selecionados:
-            st.markdown("---")
-            st.markdown(f"#### 📦 Exportação em Lote ({len(selecionados)} ato(s) selecionado(s))")
-            
-            for ato_sel in selecionados:
-                try:
-                    pdf_bytes_sel = gerar_pdf_padrao_sei(
-                        ato_sel['titulo'], ato_sel['corpo'], nome_autoridade, cargo_autoridade, ato_sel['nota_publicacao']
-                    )
-                    nome_arq = f"{ato_sel['titulo'].replace('/', '_').replace(' ', '_')}.pdf"
-                    st.download_button(
-                        label=f"⬇️ Baixar PDF: {ato_sel['titulo']}",
-                        data=pdf_bytes_sel,
-                        file_name=nome_arq,
-                        mime="application/pdf",
-                        key=f"btn_lote_{ato_sel['id']}"
-                    )
-                except Exception as e:
-                    st.error(f"Erro ao gerar {ato_sel['titulo']}: {e}")
+                    st.error(f"Erro ao gerar PDF do ato: {e}")
