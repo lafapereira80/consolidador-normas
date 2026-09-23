@@ -114,7 +114,6 @@ QUILL_TOOLBAR = [
 
 # --- FUNÇÕES DE EXTRAÇÃO DE TEXTO E BUSCA DA AUTORIDADE ---
 def obter_caminho_brasao() -> Optional[str]:
-    """Localiza o arquivo brasao.png na raiz do projeto."""
     candidatos = [
         "brasao.png",
         os.path.join(os.path.dirname(__file__), "..", "brasao.png"),
@@ -126,7 +125,6 @@ def obter_caminho_brasao() -> Optional[str]:
     return None
 
 def extrair_texto_boletim(pdf_bytes: bytes) -> str:
-    """Extrai todo o texto do PDF do Boletim de Serviço."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     texto_completo = []
     for page in doc:
@@ -134,17 +132,14 @@ def extrair_texto_boletim(pdf_bytes: bytes) -> str:
     return "\n".join(texto_completo)
 
 def identificar_autoridade(texto: str) -> Dict[str, str]:
-    """Localiza o nome e o cargo do Procurador-Geral de Justiça Militar no Boletim."""
     padrao = re.search(r'([A-Z\s]{5,50})\n\s*(Procurador-Geral de Justiça Militar)', texto, re.IGNORECASE)
     if padrao:
         nome = padrao.group(1).strip()
         cargo = padrao.group(2).strip()
         return {"nome": nome, "cargo": cargo}
-    
     return {"nome": "JAIME DE CASSIO MIRANDA", "cargo": "Procurador-Geral de Justiça Militar"}
 
 def extrair_atos_normativos(texto: str) -> List[Dict[str, str]]:
-    """Identifica e separa cada Portaria/Ato normativo do Boletim."""
     texto_limpo = re.sub(r'\r\n', '\n', texto)
     
     padrao_ato = re.compile(
@@ -177,7 +172,6 @@ def extrair_atos_normativos(texto: str) -> List[Dict[str, str]]:
     return atos
 
 def texto_para_html_inicial(titulo: str, corpo: str) -> str:
-    """Converte o texto simples extraído do PDF em HTML estruturado inicial para o Quill."""
     linhas = [l.strip() for l in corpo.split('\n') if l.strip()]
     paragraphs = [f'<p class="ql-align-center"><strong>{titulo}</strong></p>']
     
@@ -192,7 +186,6 @@ def texto_para_html_inicial(titulo: str, corpo: str) -> str:
 
 # --- GERADOR DE PDF FORMATADO (FIEL À EDIÇÃO DO USUÁRIO) ---
 def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_cargo: str, nota_pub: str = "") -> bytes:
-    """Gera o PDF individual formatado refletindo exatamente o HTML editado pelo usuário."""
     if not HAS_WEASYPRINT:
         raise Exception("Biblioteca 'WeasyPrint' não está disponível no ambiente.")
 
@@ -210,7 +203,8 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
         <style>
             @page {{
                 size: A4;
-                margin: 2cm 2cm 2.5cm 2cm;
+                /* Reduzida margem superior de 2cm para 1.2cm para puxar o texto para cima */
+                margin: 1.2cm 2cm 2.5cm 2cm;
                 @bottom-center {{
                     content: "Este texto não substitui o publicado no Boletim de Serviço Eletrônico.";
                     font-family: 'Times New Roman', serif;
@@ -239,6 +233,9 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
                 margin-top: 0px;
                 margin-bottom: 6px;
                 text-align: justify;
+                /* Evita linhas solitárias no final ou início de páginas (Viúvas e Órfãs) */
+                orphans: 3;
+                widows: 3;
             }}
             p.ql-align-justify {{
                 text-indent: 1.25cm;
@@ -262,10 +259,13 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
                 text-transform: uppercase;
                 margin-bottom: 20px;
             }}
+            
+            /* Mantém a assinatura unida e evita que quebre de forma indesejada */
             .assinatura-container {{
                 margin-top: 40px;
                 text-align: center;
                 page-break-inside: avoid;
+                break-inside: avoid;
             }}
             .assinatura-nome {{
                 font-weight: bold;
@@ -281,6 +281,7 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
                 font-style: italic;
                 margin-top: 25px;
                 text-align: left;
+                page-break-inside: avoid;
             }}
         </style>
     </head>
@@ -347,11 +348,9 @@ if arquivo_bse is not None:
         for ato in atos:
             expander_title = f"📄 {ato['titulo']}"
             
-            # ATOS FECHADOS POR PADRÃO (expanded=False)
             with st.expander(expander_title, expanded=False):
                 st.markdown("**Editor de Texto Rico (Negrito, Itálico, Sublinhado, Alinhamentos e Formatação)**")
                 
-                # Prepara o HTML inicial a partir do título e corpo do ato
                 html_inicial = texto_para_html_inicial(ato['titulo'], ato['corpo'])
                 
                 if HAS_QUILL:
@@ -370,7 +369,6 @@ if arquivo_bse is not None:
 
                 st.markdown("<br/>", unsafe_allow_html=True)
                 
-                # Gerador e Download Individual Fiel ao Texto Editado
                 if conteudo_editado_html:
                     try:
                         pdf_individual = gerar_pdf_fiel_sei(
