@@ -112,7 +112,7 @@ QUILL_TOOLBAR = [
 ]
 
 
-# --- FUNÇÕES DE EXTRAÇÃO AVANÇADA (TEXTO FORMATADO E TABELAS EXATAS) ---
+# --- FUNÇÃO AUXILIAR PARA LOCALIZAR BRASÃO ---
 def obter_caminho_brasao() -> Optional[str]:
     candidatos = [
         "brasao.png",
@@ -124,16 +124,19 @@ def obter_caminho_brasao() -> Optional[str]:
             return os.path.abspath(c)
     return None
 
+
+# --- EXTRAÇÃO AVANÇADA DE TEXTO COM CONFIGURAÇÃO DE PARÁGRAFO E TABELAS ---
 def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
-    """Extrai o texto preservando a exatidão das tabelas e a formatação (negrito/itálico)."""
+    """Extrai o texto identificando alinhamento, recuo de parágrafo, fontes e tabelas exatas."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     html_paginas = []
     
     for page in doc:
+        page_width = page.rect.width
         tabelas_bbox = []
         html_tabelas = {}
         
-        # 1. Identifica e extrai tabelas com estrutura exata
+        # 1. Identificação e montagem das tabelas
         try:
             tab_finder = page.find_tables()
             for tabela in tab_finder.tables:
@@ -159,22 +162,39 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
         except Exception:
             pass
 
-        # 2. Extrai blocos de texto preservando negrito/itálico e ignorando áreas de tabelas já processadas
+        # 2. Análise de margem esquerda base para cálculo de recuo (indentação)
         blocks = page.get_text("dict", sort=True).get("blocks", [])
         elementos = []
         
+        x0_min = page_width
         for b in blocks:
-            if b.get("type") != 0:  # Apenas blocos de texto
+            if b.get("type") == 0:
+                b_rect = fitz.Rect(b.get("bbox", (0, 0, 0, 0)))
+                if not any(b_rect.intersects(tb) for tb in tabelas_bbox):
+                    if b_rect.x0 < x0_min:
+                        x0_min = b_rect.x0
+        if x0_min == page_width:
+            x0_min = 50.0  # Margem padrão fallback
+
+        # 3. Leitura linha a linha identificando a estrutura do parágrafo
+        for b in blocks:
+            if b.get("type") != 0:
                 continue
             bloco_rect = fitz.Rect(b.get("bbox", (0, 0, 0, 0)))
-            
-            # Se o bloco está dentro de alguma tabela, ignora
             if any(bloco_rect.intersects(tb) for tb in tabelas_bbox):
                 continue
             
-            bloco_html = ""
-            for line in b.get("lines", []):
-                linha_str = ""
+            paragrafos_bloco = []
+            paragrafo_atual_spans = []
+            paragrafo_atual_align = "ql-align-justify"
+            paragrafo_atual_indent = False
+            
+            lines = b.get("lines", [])
+            for line in lines:
+                lx0, ly0, lx1, ly1 = line.get("bbox", (0, 0, 0, 0))
+                
+                # Coleta e formata os elementos de texto da linha (spans)
+                linha_spans_html = ""
                 for span in line.get("spans", []):
                     txt = span.get("text", "")
                     if not txt:
@@ -191,28 +211,67 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
                         txt_esc = f"<strong>{txt_esc}</strong>"
                     if is_italic:
                         txt_esc = f"<em>{txt_esc}</em>"
-                        
-                    linha_str += txt_esc
+                    linha_spans_html += txt_esc
                 
-                if linha_str.strip():
-                    bloco_html += linha_str + " "
+                if not linha_spans_html.strip():
+                    continue
+                    
+                # Análise geométrica de alinhamento e recuo
+                line_center = (lx0 + lx1) / 2.0
+                line_width = lx1 - lx0
+                
+                is_centered = abs(line_center - (page_width / 2.0)) < 25 and line_width < (page_width * 0.75)
+                is_right = lx0 > (page_width * 0.5) and lx1 > (page_width - 80) and line_width < (page_width * 0.45)
+                is_indented = (lx0 - x0_min) > 15
+                
+                texto_puro_linha = re.sub(r'<[^>]+>', '', linha_spans_html).strip()
+                is_new_paragraph_pattern = bool(re.match(r'^(Art\.|§|Parágrafo|Inciso|[I|V|X|L|C]+|\d+[\.\º\°]|a\)|b\)|c\)|[A-Z\s]{4,}:)', texto_puro_linha))
+                
+                iniciar_novo = False
+                if not paragrafo_atual_spans:
+                    iniciar_novo = True
+                elif is_centered or is_right or is_indented or is_new_paragraph_pattern:
+                    iniciar_novo = True
+                
+                if iniciar_novo and paragrafo_atual_spans:
+                    p_html = " ".join(paragrafo_atual_spans).strip()
+                    style_attr = ' style="text-indent: 1.25cm;"' if paragrafo_atual_indent else ''
+                    paragrafos_bloco.append(f'<p class="{paragrafo_atual_align}"{style_attr}>{p_html}</p>')
+                    paragrafo_atual_spans = []
+                
+                if is_centered:
+                    paragrafo_atual_align = "ql-align-center"
+                    paragrafo_atual_indent = False
+                elif is_right:
+                    paragrafo_atual_align = "ql-align-right"
+                    paragrafo_atual_indent = False
+                else:
+                    paragrafo_atual_align = "ql-align-justify"
+                    paragrafo_atual_indent = is_indented or is_new_paragraph_pattern
+                
+                paragrafo_atual_spans.append(linha_spans_html)
             
-            if bloco_html.strip():
-                elementos.append((bloco_rect.y0, f"<p>{bloco_html.strip()}</p>"))
+            if paragrafo_atual_spans:
+                p_html = " ".join(paragrafo_atual_spans).strip()
+                style_attr = ' style="text-indent: 1.25cm;"' if paragrafo_atual_indent else ''
+                paragrafos_bloco.append(f'<p class="{paragrafo_atual_align}"{style_attr}>{p_html}</p>')
+            
+            if paragrafos_bloco:
+                elementos.append((bloco_rect.y0, "\n".join(paragrafos_bloco)))
         
-        # Junta tabelas e blocos em ordem de leitura vertical
+        # Intercala tabelas e texto na ordem cronológica de leitura vertical
         for y0, (rect, tab_html) in html_tabelas.items():
             elementos.append((y0, tab_html))
             
         elementos.sort(key=lambda x: x[0])
-        
         for _, html_elem in elementos:
             html_paginas.append(html_elem)
             
     return "\n".join(html_paginas)
 
+
 def identificar_autoridade(texto_html: str) -> Dict[str, str]:
-    """Identifica o signatário no documento extraído."""
+    """Localiza a autoridade signatária no documento."""
     texto_puro = re.sub(r'<[^>]+>', '', texto_html)
     padrao = re.search(r'([A-Z\s]{5,50})\n\s*(Procurador-Geral de Justiça Militar)', texto_puro, re.IGNORECASE)
     if padrao:
@@ -221,8 +280,9 @@ def identificar_autoridade(texto_html: str) -> Dict[str, str]:
         return {"nome": nome, "cargo": cargo}
     return {"nome": "JAIME DE CASSIO MIRANDA", "cargo": "Procurador-Geral de Justiça Militar"}
 
+
 def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
-    """Separa cada Portaria/Ato mantendo integralmente o HTML formatado e as tabelas."""
+    """Separa cada Portaria/Ato preservando a estrutura de parágrafos e tabelas."""
     padrao_ato = re.compile(
         r'((?:<p[^>]*>)?\s*(?:<strong>|<b>)?\s*(?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*[\d\w/-]+[^\n<]*.*?)(?=(?:<p[^>]*>)?\s*(?:<strong>|<b>)?\s*(?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*[\d\w/-]+|\Z)',
         re.DOTALL | re.IGNORECASE
@@ -233,18 +293,14 @@ def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
     
     for idx, bloco_html in enumerate(matches):
         bloco_html_limpo = bloco_html.strip()
+        bloco_html_limpo = re.sub(r'<p[^>]*>\s*Boletim de Serviço nº \d+.*?</p>', '', bloco_html_limpo, flags=re.IGNORECASE)
         
-        # Remove eventuais notas de rodapé/cabeçalho do BSe do corpo
-        bloco_html_limpo = re.sub(r'<p>\s*Boletim de Serviço nº \d+.*?</p>', '', bloco_html_limpo, flags=re.IGNORECASE)
-        
-        # Extrai nota de publicação se existir
         nota_publicacao = ""
         match_pub = re.search(r'(\(Publicada no DOU[^\)]+\))', bloco_html_limpo, re.IGNORECASE)
         if match_pub:
             nota_publicacao = match_pub.group(1)
             bloco_html_limpo = bloco_html_limpo.replace(nota_publicacao, "").strip()
 
-        # Título limpo para exibição no expander
         texto_puro_bloco = re.sub(r'<[^>]+>', '', bloco_html_limpo).strip()
         primeira_linha = texto_puro_bloco.split('\n')[0][:120] if texto_puro_bloco else f"Ato {idx+1}"
 
@@ -258,9 +314,8 @@ def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
     return atos
 
 
-# --- GERADOR DE PDF FORMATADO (FIEL À EDIÇÃO DO USUÁRIO E TABELAS) ---
+# --- GERADOR DE PDF FORMATADO (REFLETINDO FIELMENTE OS PARÁGRAFOS E TABELAS) ---
 def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_cargo: str, nota_pub: str = "") -> bytes:
-    """Gera o PDF individual formatado refletindo exatamente o HTML editado pelo usuário."""
     if not HAS_WEASYPRINT:
         raise Exception("Biblioteca 'WeasyPrint' não está disponível no ambiente.")
 
@@ -278,7 +333,6 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
         <style>
             @page {{
                 size: A4;
-                /* Margem superior reduzida para 1.2cm para puxar o cabeçalho para cima */
                 margin: 1.2cm 2cm 2.5cm 2cm;
                 @bottom-center {{
                     content: "Este texto não substitui o publicado no Boletim de Serviço Eletrônico.";
@@ -298,25 +352,21 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
                 color: #000000;
             }}
             
-            /* Suporte aos alinhamentos e formatações */
-            .ql-align-center {{ text-align: center !important; }}
-            .ql-align-right {{ text-align: right !important; }}
+            /* Alinhamentos e estilização exata dos parágrafos */
+            .ql-align-center {{ text-align: center !important; text-indent: 0 !important; }}
+            .ql-align-right {{ text-align: right !important; text-indent: 0 !important; }}
             .ql-align-justify {{ text-align: justify !important; }}
-            .ql-align-left {{ text-align: left !important; }}
+            .ql-align-left {{ text-align: left !important; text-indent: 0 !important; }}
             
             p {{
                 margin-top: 0px;
                 margin-bottom: 6px;
                 text-align: justify;
-                /* Prevenção de linhas isoladas no fim/início de página */
                 orphans: 3;
                 widows: 3;
             }}
             p.ql-align-justify {{
                 text-indent: 1.25cm;
-            }}
-            p.ql-align-center, p.ql-align-right {{
-                text-indent: 0;
             }}
             
             /* Estilização exata de Tabelas */
@@ -416,7 +466,7 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
 # --- INTERFACE PRINCIPAL ---
 st.markdown("""
 Envie o arquivo do **Boletim de Serviço Eletrônico (PDF)**. O sistema extrairá os Atos normativos
-mantendo a **fidelidade das tabelas, negritos e itálicos**, permitindo que você edite livremente antes de gerar o PDF.
+identificando **parágrafos, recuos, alinhamentos, tabelas, negritos e itálicos**, permitindo que você edite no editor rico antes de gerar o PDF.
 """)
 
 arquivo_bse = st.file_uploader("Selecione o Boletim de Serviço (PDF)", type=["pdf"], key="uploader_bse")
@@ -424,7 +474,7 @@ arquivo_bse = st.file_uploader("Selecione o Boletim de Serviço (PDF)", type=["p
 if arquivo_bse is not None:
     pdf_bytes = arquivo_bse.getvalue()
     
-    with st.spinner("⚡ Lendo e analisando o Boletim de Serviço (extraindo formatação e tabelas)..."):
+    with st.spinner("⚡ Lendo e analisando o Boletim de Serviço (identificando recuos, parágrafos e tabelas)..."):
         texto_boletim_html = extrair_texto_boletim_estruturado(pdf_bytes)
         autoridade = identificar_autoridade(texto_boletim_html)
         atos = extrair_atos_normativos_html(texto_boletim_html)
@@ -446,9 +496,8 @@ if arquivo_bse is not None:
         for ato in atos:
             expander_title = f"📄 {ato['titulo']}"
             
-            # ATOS RECOLHIDOS POR PADRÃO (expanded=False)
             with st.expander(expander_title, expanded=False):
-                st.markdown("**Editor de Texto Rico (Preserva Negritos, Itálicos, Tabelas e Alinhamentos)**")
+                st.markdown("**Editor de Texto Rico (Parágrafos, Tabelas, Negrito, Itálico e Alinhamento)**")
                 
                 if HAS_QUILL:
                     conteudo_editado_html = st_quill(
