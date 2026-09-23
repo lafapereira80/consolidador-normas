@@ -112,7 +112,7 @@ QUILL_TOOLBAR = [
 ]
 
 
-# --- FUNÇÕES DE EXTRAÇÃO DE TEXTO E BUSCA DA AUTORIDADE ---
+# --- FUNÇÕES DE EXTRAÇÃO AVANÇADA (TEXTO FORMATADO E TABELAS EXATAS) ---
 def obter_caminho_brasao() -> Optional[str]:
     candidatos = [
         "brasao.png",
@@ -124,68 +124,143 @@ def obter_caminho_brasao() -> Optional[str]:
             return os.path.abspath(c)
     return None
 
-def extrair_texto_boletim(pdf_bytes: bytes) -> str:
+def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
+    """Extrai o texto preservando a exatidão das tabelas e a formatação (negrito/itálico)."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    texto_completo = []
+    html_paginas = []
+    
     for page in doc:
-        texto_completo.append(page.get_text())
-    return "\n".join(texto_completo)
+        tabelas_bbox = []
+        html_tabelas = {}
+        
+        # 1. Identifica e extrai tabelas com estrutura exata
+        try:
+            tab_finder = page.find_tables()
+            for tabela in tab_finder.tables:
+                rect = fitz.Rect(tabela.bbox)
+                tabelas_bbox.append(rect)
+                
+                linhas = tabela.extract()
+                if not linhas:
+                    continue
+                    
+                tab_html = '<table border="1" style="border-collapse: collapse; width: 100%; margin: 12px 0;">'
+                for idx_r, linha in enumerate(linhas):
+                    tab_html += '<tr>'
+                    tag = 'th' if idx_r == 0 else 'td'
+                    for celula in linha:
+                        texto_cel = str(celula).strip() if celula is not None else ''
+                        texto_cel = texto_cel.replace('\n', '<br/>')
+                        tab_html += f'<{tag} style="border: 1px solid #000; padding: 5px 8px;">{texto_cel}</{tag}>'
+                    tab_html += '</tr>'
+                tab_html += '</table>'
+                
+                html_tabelas[rect.y0] = (rect, tab_html)
+        except Exception:
+            pass
 
-def identificar_autoridade(texto: str) -> Dict[str, str]:
-    padrao = re.search(r'([A-Z\s]{5,50})\n\s*(Procurador-Geral de Justiça Militar)', texto, re.IGNORECASE)
+        # 2. Extrai blocos de texto preservando negrito/itálico e ignorando áreas de tabelas já processadas
+        blocks = page.get_text("dict", sort=True).get("blocks", [])
+        elementos = []
+        
+        for b in blocks:
+            if b.get("type") != 0:  # Apenas blocos de texto
+                continue
+            bloco_rect = fitz.Rect(b.get("bbox", (0, 0, 0, 0)))
+            
+            # Se o bloco está dentro de alguma tabela, ignora
+            if any(bloco_rect.intersects(tb) for tb in tabelas_bbox):
+                continue
+            
+            bloco_html = ""
+            for line in b.get("lines", []):
+                linha_str = ""
+                for span in line.get("spans", []):
+                    txt = span.get("text", "")
+                    if not txt:
+                        continue
+                    
+                    txt_esc = txt.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    flags = span.get("flags", 0)
+                    font_name = str(span.get("font", "")).lower()
+                    
+                    is_bold = bool(flags & 2**4) or "bold" in font_name or "black" in font_name
+                    is_italic = bool(flags & 2**1) or "italic" in font_name or "oblique" in font_name
+                    
+                    if is_bold:
+                        txt_esc = f"<strong>{txt_esc}</strong>"
+                    if is_italic:
+                        txt_esc = f"<em>{txt_esc}</em>"
+                        
+                    linha_str += txt_esc
+                
+                if linha_str.strip():
+                    bloco_html += linha_str + " "
+            
+            if bloco_html.strip():
+                elementos.append((bloco_rect.y0, f"<p>{bloco_html.strip()}</p>"))
+        
+        # Junta tabelas e blocos em ordem de leitura vertical
+        for y0, (rect, tab_html) in html_tabelas.items():
+            elementos.append((y0, tab_html))
+            
+        elementos.sort(key=lambda x: x[0])
+        
+        for _, html_elem in elementos:
+            html_paginas.append(html_elem)
+            
+    return "\n".join(html_paginas)
+
+def identificar_autoridade(texto_html: str) -> Dict[str, str]:
+    """Identifica o signatário no documento extraído."""
+    texto_puro = re.sub(r'<[^>]+>', '', texto_html)
+    padrao = re.search(r'([A-Z\s]{5,50})\n\s*(Procurador-Geral de Justiça Militar)', texto_puro, re.IGNORECASE)
     if padrao:
         nome = padrao.group(1).strip()
         cargo = padrao.group(2).strip()
         return {"nome": nome, "cargo": cargo}
     return {"nome": "JAIME DE CASSIO MIRANDA", "cargo": "Procurador-Geral de Justiça Militar"}
 
-def extrair_atos_normativos(texto: str) -> List[Dict[str, str]]:
-    texto_limpo = re.sub(r'\r\n', '\n', texto)
-    
+def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
+    """Separa cada Portaria/Ato mantendo integralmente o HTML formatado e as tabelas."""
     padrao_ato = re.compile(
-        r'((?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*[\d\w/-]+[^\n]*\n)(.*?)(?=(?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*[\d\w/-]+|\Z)',
+        r'((?:<p[^>]*>)?\s*(?:<strong>|<b>)?\s*(?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*[\d\w/-]+[^\n<]*.*?)(?=(?:<p[^>]*>)?\s*(?:<strong>|<b>)?\s*(?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*[\d\w/-]+|\Z)',
         re.DOTALL | re.IGNORECASE
     )
     
-    matches = padrao_ato.findall(texto_limpo)
+    matches = padrao_ato.findall(texto_html)
     atos = []
     
-    for idx, (titulo, corpo) in enumerate(matches):
-        titulo_limpo = titulo.strip()
-        corpo_limpo = corpo.strip()
+    for idx, bloco_html in enumerate(matches):
+        bloco_html_limpo = bloco_html.strip()
         
-        corpo_limpo = re.sub(r'Boletim de Serviço nº \d+.*?\n', '', corpo_limpo, flags=re.IGNORECASE)
+        # Remove eventuais notas de rodapé/cabeçalho do BSe do corpo
+        bloco_html_limpo = re.sub(r'<p>\s*Boletim de Serviço nº \d+.*?</p>', '', bloco_html_limpo, flags=re.IGNORECASE)
         
+        # Extrai nota de publicação se existir
         nota_publicacao = ""
-        match_pub = re.search(r'(\(Publicada no DOU[^\)]+\))', corpo_limpo, re.IGNORECASE)
+        match_pub = re.search(r'(\(Publicada no DOU[^\)]+\))', bloco_html_limpo, re.IGNORECASE)
         if match_pub:
             nota_publicacao = match_pub.group(1)
-            corpo_limpo = corpo_limpo.replace(nota_publicacao, "").strip()
+            bloco_html_limpo = bloco_html_limpo.replace(nota_publicacao, "").strip()
+
+        # Título limpo para exibição no expander
+        texto_puro_bloco = re.sub(r'<[^>]+>', '', bloco_html_limpo).strip()
+        primeira_linha = texto_puro_bloco.split('\n')[0][:120] if texto_puro_bloco else f"Ato {idx+1}"
 
         atos.append({
             "id": idx + 1,
-            "titulo": titulo_limpo,
-            "corpo": corpo_limpo,
+            "titulo": primeira_linha,
+            "corpo_html": bloco_html_limpo,
             "nota_publicacao": nota_publicacao
         })
         
     return atos
 
-def texto_para_html_inicial(titulo: str, corpo: str) -> str:
-    linhas = [l.strip() for l in corpo.split('\n') if l.strip()]
-    paragraphs = [f'<p class="ql-align-center"><strong>{titulo}</strong></p>']
-    
-    for linha in linhas:
-        if linha.isupper() and len(linha) < 100:
-            paragraphs.append(f'<p class="ql-align-center"><strong>{linha}</strong></p>')
-        else:
-            paragraphs.append(f'<p class="ql-align-justify">{linha}</p>')
-            
-    return "".join(paragraphs)
 
-
-# --- GERADOR DE PDF FORMATADO (FIEL À EDIÇÃO DO USUÁRIO) ---
+# --- GERADOR DE PDF FORMATADO (FIEL À EDIÇÃO DO USUÁRIO E TABELAS) ---
 def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_cargo: str, nota_pub: str = "") -> bytes:
+    """Gera o PDF individual formatado refletindo exatamente o HTML editado pelo usuário."""
     if not HAS_WEASYPRINT:
         raise Exception("Biblioteca 'WeasyPrint' não está disponível no ambiente.")
 
@@ -203,7 +278,7 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
         <style>
             @page {{
                 size: A4;
-                /* Reduzida margem superior de 2cm para 1.2cm para puxar o texto para cima */
+                /* Margem superior reduzida para 1.2cm para puxar o cabeçalho para cima */
                 margin: 1.2cm 2cm 2.5cm 2cm;
                 @bottom-center {{
                     content: "Este texto não substitui o publicado no Boletim de Serviço Eletrônico.";
@@ -223,7 +298,7 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
                 color: #000000;
             }}
             
-            /* Suporte completo aos alinhamentos do Quill */
+            /* Suporte aos alinhamentos e formatações */
             .ql-align-center {{ text-align: center !important; }}
             .ql-align-right {{ text-align: right !important; }}
             .ql-align-justify {{ text-align: justify !important; }}
@@ -233,7 +308,7 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
                 margin-top: 0px;
                 margin-bottom: 6px;
                 text-align: justify;
-                /* Evita linhas solitárias no final ou início de páginas (Viúvas e Órfãs) */
+                /* Prevenção de linhas isoladas no fim/início de página */
                 orphans: 3;
                 widows: 3;
             }}
@@ -242,6 +317,30 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
             }}
             p.ql-align-center, p.ql-align-right {{
                 text-indent: 0;
+            }}
+            
+            /* Estilização exata de Tabelas */
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin: 12px 0;
+                font-size: 10pt;
+                page-break-inside: auto;
+            }}
+            tr {{
+                page-break-inside: avoid;
+                page-break-after: auto;
+            }}
+            th, td {{
+                border: 1px solid #000000;
+                padding: 5px 8px;
+                text-align: left;
+                vertical-align: top;
+            }}
+            th {{
+                background-color: #f2f2f2;
+                font-weight: bold;
+                text-align: center;
             }}
             
             .header-brasao {{
@@ -260,7 +359,6 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
                 margin-bottom: 20px;
             }}
             
-            /* Mantém a assinatura unida e evita que quebre de forma indesejada */
             .assinatura-container {{
                 margin-top: 40px;
                 text-align: center;
@@ -318,7 +416,7 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
 # --- INTERFACE PRINCIPAL ---
 st.markdown("""
 Envie o arquivo do **Boletim de Serviço Eletrônico (PDF)**. O sistema extrairá os Atos normativos
-e permitirá que você abra individualmente cada um em um **editor de texto rico** (com negrito, itálico, sublinhado e alinhamento) antes de gerar o PDF.
+mantendo a **fidelidade das tabelas, negritos e itálicos**, permitindo que você edite livremente antes de gerar o PDF.
 """)
 
 arquivo_bse = st.file_uploader("Selecione o Boletim de Serviço (PDF)", type=["pdf"], key="uploader_bse")
@@ -326,10 +424,10 @@ arquivo_bse = st.file_uploader("Selecione o Boletim de Serviço (PDF)", type=["p
 if arquivo_bse is not None:
     pdf_bytes = arquivo_bse.getvalue()
     
-    with st.spinner("⚡ Lendo e analisando o Boletim de Serviço..."):
-        texto_boletim = extrair_texto_boletim(pdf_bytes)
-        autoridade = identificar_autoridade(texto_boletim)
-        atos = extrair_atos_normativos(texto_boletim)
+    with st.spinner("⚡ Lendo e analisando o Boletim de Serviço (extraindo formatação e tabelas)..."):
+        texto_boletim_html = extrair_texto_boletim_estruturado(pdf_bytes)
+        autoridade = identificar_autoridade(texto_boletim_html)
+        atos = extrair_atos_normativos_html(texto_boletim_html)
 
     st.success(f"✅ Análise concluída! Identificados **{len(atos)}** atos normativos no Boletim de Serviço.")
 
@@ -348,21 +446,20 @@ if arquivo_bse is not None:
         for ato in atos:
             expander_title = f"📄 {ato['titulo']}"
             
+            # ATOS RECOLHIDOS POR PADRÃO (expanded=False)
             with st.expander(expander_title, expanded=False):
-                st.markdown("**Editor de Texto Rico (Negrito, Itálico, Sublinhado, Alinhamentos e Formatação)**")
-                
-                html_inicial = texto_para_html_inicial(ato['titulo'], ato['corpo'])
+                st.markdown("**Editor de Texto Rico (Preserva Negritos, Itálicos, Tabelas e Alinhamentos)**")
                 
                 if HAS_QUILL:
                     conteudo_editado_html = st_quill(
-                        value=html_inicial,
+                        value=ato['corpo_html'],
                         html=True,
                         toolbar=QUILL_TOOLBAR,
                         key=f"quill_editor_{ato['id']}"
                     )
                 else:
                     st.warning("⚠️ Biblioteca 'streamlit-quill' não encontrada. Exibindo área de texto simples.")
-                    conteudo_editado_html = st.text_area("Conteúdo", value=ato['corpo'], height=350, key=f"ta_{ato['id']}")
+                    conteudo_editado_html = st.text_area("Conteúdo", value=ato['corpo_html'], height=350, key=f"ta_{ato['id']}")
 
                 st.markdown("**Nota de Publicação (DOU)**")
                 nota_editada = st.text_input("Nota de Publicação", value=ato['nota_publicacao'], key=f"nota_{ato['id']}")
