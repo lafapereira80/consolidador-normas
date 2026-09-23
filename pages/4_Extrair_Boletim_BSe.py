@@ -7,6 +7,12 @@ import base64
 from typing import List, Dict, Optional
 
 try:
+    from streamlit_quill import st_quill
+    HAS_QUILL = True
+except ImportError:
+    HAS_QUILL = False
+
+try:
     from weasyprint import HTML
     HAS_WEASYPRINT = True
 except ImportError:
@@ -96,6 +102,16 @@ with col_logout:
 st.markdown("---")
 
 
+# --- CONFIGURAÇÃO DA BARRA DE FERRAMENTAS DO EDITOR RICO ---
+QUILL_TOOLBAR = [
+    ["bold", "italic", "underline", "strike"],
+    [{"align": []}],  # Alinhamentos: Esquerda, Centro, Direita, Justificado
+    [{"color": []}, {"background": []}],
+    [{"list": "ordered"}, {"list": "bullet"}],
+    ["clean"],
+]
+
+
 # --- FUNÇÕES DE EXTRAÇÃO DE TEXTO E BUSCA DA AUTORIDADE ---
 def obter_caminho_brasao() -> Optional[str]:
     """Localiza o arquivo brasao.png na raiz do projeto."""
@@ -160,10 +176,23 @@ def extrair_atos_normativos(texto: str) -> List[Dict[str, str]]:
         
     return atos
 
+def texto_para_html_inicial(titulo: str, corpo: str) -> str:
+    """Converte o texto simples extraído do PDF em HTML estruturado inicial para o Quill."""
+    linhas = [l.strip() for l in corpo.split('\n') if l.strip()]
+    paragraphs = [f'<p class="ql-align-center"><strong>{titulo}</strong></p>']
+    
+    for linha in linhas:
+        if linha.isupper() and len(linha) < 100:
+            paragraphs.append(f'<p class="ql-align-center"><strong>{linha}</strong></p>')
+        else:
+            paragraphs.append(f'<p class="ql-align-justify">{linha}</p>')
+            
+    return "".join(paragraphs)
 
-# --- GERADOR DE PDF FORMATADO (PADRÃO SEI / MPM COM BRASÃO) ---
-def gerar_pdf_padrao_sei(titulo: str, corpo: str, autoridade_nome: str, autoridade_cargo: str, nota_pub: str = "") -> bytes:
-    """Gera o PDF individual formatado conforme as especificações visuais do MPM/SEI."""
+
+# --- GERADOR DE PDF FORMATADO (FIEL À EDIÇÃO DO USUÁRIO) ---
+def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_cargo: str, nota_pub: str = "") -> bytes:
+    """Gera o PDF individual formatado refletindo exatamente o HTML editado pelo usuário."""
     if not HAS_WEASYPRINT:
         raise Exception("Biblioteca 'WeasyPrint' não está disponível no ambiente.")
 
@@ -172,16 +201,6 @@ def gerar_pdf_padrao_sei(titulo: str, corpo: str, autoridade_nome: str, autorida
     if caminho_brasao and os.path.exists(caminho_brasao):
         with open(caminho_brasao, "rb") as img_f:
             brasao_base64 = base64.b64encode(img_f.read()).decode("utf-8")
-
-    linhas_corpo = [l.strip() for l in corpo.split('\n') if l.strip()]
-    html_corpo = ""
-    for linha in linhas_corpo:
-        if linha.startswith("Art.") or linha.startswith("Parágrafo") or linha.startswith("§"):
-            html_corpo += f'<p class="artigo">{linha}</p>'
-        elif linha.isupper() and len(linha) < 100:
-            html_corpo += f'<p class="preambulo"><strong>{linha}</strong></p>'
-        else:
-            html_corpo += f'<p class="paragrafo">{linha}</p>'
 
     html_template = f"""
     <!DOCTYPE html>
@@ -208,8 +227,26 @@ def gerar_pdf_padrao_sei(titulo: str, corpo: str, autoridade_nome: str, autorida
                 font-size: 11pt;
                 line-height: 1.35;
                 color: #000000;
+            }}
+            
+            /* Suporte completo aos alinhamentos do Quill */
+            .ql-align-center {{ text-align: center !important; }}
+            .ql-align-right {{ text-align: right !important; }}
+            .ql-align-justify {{ text-align: justify !important; }}
+            .ql-align-left {{ text-align: left !important; }}
+            
+            p {{
+                margin-top: 0px;
+                margin-bottom: 6px;
                 text-align: justify;
             }}
+            p.ql-align-justify {{
+                text-indent: 1.25cm;
+            }}
+            p.ql-align-center, p.ql-align-right {{
+                text-indent: 0;
+            }}
+            
             .header-brasao {{
                 text-align: center;
                 margin-bottom: 12px;
@@ -224,27 +261,6 @@ def gerar_pdf_padrao_sei(titulo: str, corpo: str, autoridade_nome: str, autorida
                 font-size: 11pt;
                 text-transform: uppercase;
                 margin-bottom: 20px;
-            }}
-            .titulo-ato {{
-                text-align: center;
-                font-weight: bold;
-                font-size: 11pt;
-                margin-top: 15px;
-                margin-bottom: 18px;
-            }}
-            .paragrafo {{
-                text-indent: 1.25cm;
-                margin-bottom: 6px;
-                margin-top: 0px;
-            }}
-            .artigo {{
-                text-indent: 1.25cm;
-                margin-bottom: 6px;
-                margin-top: 6px;
-            }}
-            .preambulo {{
-                margin-bottom: 12px;
-                text-indent: 0;
             }}
             .assinatura-container {{
                 margin-top: 40px;
@@ -278,10 +294,8 @@ def gerar_pdf_padrao_sei(titulo: str, corpo: str, autoridade_nome: str, autorida
             PROCURADORIA-GERAL DE JUSTIÇA MILITAR
         </div>
 
-        <div class="titulo-ato">{titulo}</div>
-
-        <div class="conteudo">
-            {html_corpo}
+        <div class="conteudo-editado">
+            {html_conteudo}
         </div>
 
         <div class="assinatura-container">
@@ -302,8 +316,8 @@ def gerar_pdf_padrao_sei(titulo: str, corpo: str, autoridade_nome: str, autorida
 
 # --- INTERFACE PRINCIPAL ---
 st.markdown("""
-Envie o arquivo do **Boletim de Serviço Eletrônico (PDF)**. O sistema extrairá todos os Atos normativos encontrados
-e disponibilizará um editor de texto completo para revisão antes da exportação em PDF.
+Envie o arquivo do **Boletim de Serviço Eletrônico (PDF)**. O sistema extrairá os Atos normativos
+e permitirá que você abra individualmente cada um em um **editor de texto rico** (com negrito, itálico, sublinhado e alinhamento) antes de gerar o PDF.
 """)
 
 arquivo_bse = st.file_uploader("Selecione o Boletim de Serviço (PDF)", type=["pdf"], key="uploader_bse")
@@ -325,45 +339,52 @@ if arquivo_bse is not None:
         cargo_autoridade = st.text_input("Cargo", value=autoridade["cargo"])
 
     st.markdown("---")
-    st.markdown("### 📜 Atos Encontrados para Edição e Exportação")
+    st.markdown("### 📜 Atos Encontrados (Clique para expandir e editar)")
 
     if not atos:
         st.warning("Nenhum ato normativo no padrão reconhecido foi identificado automaticamente.")
     else:
         for ato in atos:
             expander_title = f"📄 {ato['titulo']}"
-            with st.expander(expander_title, expanded=True):
-                st.markdown("**Título do Ato**")
-                titulo_editado = st.text_input("Título", value=ato['titulo'], key=f"tit_{ato['id']}", label_visibility="collapsed")
+            
+            # ATOS FECHADOS POR PADRÃO (expanded=False)
+            with st.expander(expander_title, expanded=False):
+                st.markdown("**Editor de Texto Rico (Negrito, Itálico, Sublinhado, Alinhamentos e Formatação)**")
                 
-                st.markdown("**Texto Completo do Ato (Caixa de Edição / Ajuste Manual)**")
-                corpo_editado = st.text_area(
-                    "Conteúdo do Ato",
-                    value=ato['corpo'],
-                    height=350,
-                    key=f"corp_{ato['id']}",
-                    label_visibility="collapsed"
-                )
+                # Prepara o HTML inicial a partir do título e corpo do ato
+                html_inicial = texto_para_html_inicial(ato['titulo'], ato['corpo'])
                 
+                if HAS_QUILL:
+                    conteudo_editado_html = st_quill(
+                        value=html_inicial,
+                        html=True,
+                        toolbar=QUILL_TOOLBAR,
+                        key=f"quill_editor_{ato['id']}"
+                    )
+                else:
+                    st.warning("⚠️ Biblioteca 'streamlit-quill' não encontrada. Exibindo área de texto simples.")
+                    conteudo_editado_html = st.text_area("Conteúdo", value=ato['corpo'], height=350, key=f"ta_{ato['id']}")
+
                 st.markdown("**Nota de Publicação (DOU)**")
-                nota_editada = st.text_input("Nota de Publicação", value=ato['nota_publicacao'], key=f"nota_{ato['id']}", label_visibility="collapsed")
+                nota_editada = st.text_input("Nota de Publicação", value=ato['nota_publicacao'], key=f"nota_{ato['id']}")
 
                 st.markdown("<br/>", unsafe_allow_html=True)
                 
-                # Gerador e Download Individual
-                try:
-                    pdf_individual = gerar_pdf_padrao_sei(
-                        titulo_editado, corpo_editado, nome_autoridade, cargo_autoridade, nota_editada
-                    )
-                    nome_arquivo_pdf = f"{titulo_editado.replace('/', '_').replace(' ', '_')}.pdf"
-                    
-                    st.download_button(
-                        label="📄 Gerar e Baixar este Ato em PDF Formatado",
-                        data=pdf_individual,
-                        file_name=nome_arquivo_pdf,
-                        mime="application/pdf",
-                        type="primary",
-                        key=f"btn_dl_{ato['id']}"
-                    )
-                except Exception as e:
-                    st.error(f"Erro ao gerar PDF do ato: {e}")
+                # Gerador e Download Individual Fiel ao Texto Editado
+                if conteudo_editado_html:
+                    try:
+                        pdf_individual = gerar_pdf_fiel_sei(
+                            conteudo_editado_html, nome_autoridade, cargo_autoridade, nota_editada
+                        )
+                        nome_arquivo_pdf = f"{ato['titulo'].replace('/', '_').replace(' ', '_')}.pdf"
+                        
+                        st.download_button(
+                            label="📄 Gerar e Baixar este Ato em PDF Formatado",
+                            data=pdf_individual,
+                            file_name=nome_arquivo_pdf,
+                            mime="application/pdf",
+                            type="primary",
+                            key=f"btn_dl_{ato['id']}"
+                        )
+                    except Exception as e:
+                        st.error(f"Erro ao gerar PDF do ato: {e}")
