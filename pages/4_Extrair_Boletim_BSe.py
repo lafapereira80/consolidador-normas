@@ -1,0 +1,395 @@
+import streamlit as st
+import fitz  # PyMuPDF
+import re
+import os
+import io
+import base64
+from typing import List, Dict, Optional
+
+try:
+    from weasyprint import HTML
+    HAS_WEASYPRINT = True
+except ImportError:
+    HAS_WEASYPRINT = False
+
+st.set_page_config(page_title="Extrair do Boletim de Serviço", page_icon="📋", layout="wide", initial_sidebar_state="collapsed")
+
+# --- PROTEÇÃO DE ACESSO ---
+if "autenticado" not in st.session_state or not st.session_state.autenticado:
+    st.warning("⚠️ Acesso negado. Você precisa fazer login na página principal para acessar esta área.")
+    st.page_link("app.py", label="Ir para a Tela de Login", icon="🔑")
+    st.stop()
+
+# --- ESTILIZAÇÃO E CABEÇALHO ---
+st.markdown("""
+<style>
+    [data-testid="stSidebar"] { display: none !important; }
+    [data-testid="collapsedControl"] { display: none !important; }
+    .main-header {
+        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+        padding: 20px 20px;
+        border-radius: 12px;
+        color: white;
+        text-align: center;
+        margin-bottom: 25px;
+    }
+    .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.2rem; margin-bottom: 0px; }
+</style>
+<div class="main-header">
+    <h1>📋 Extração de Atos do Boletim de Serviço (BSe)</h1>
+</div>
+""", unsafe_allow_html=True)
+
+# --- MENU DE NAVEGAÇÃO SUPERIOR FIXO ---
+col_home, col_ext, col_cons, col_hist, col_usr, col_logout = st.columns([1.2, 1.5, 1.5, 1.2, 1.2, 1])
+
+with col_home:
+    try:
+        st.page_link("app.py", label="Início", icon="🏠")
+    except Exception:
+        st.markdown('🏠 **Início**')
+
+with col_ext:
+    st.markdown("📋 **Extrair BSe**")
+
+with col_cons:
+    cons_path = "pages/3_Consolidar_Norma.py"
+    if os.path.exists("pages"):
+        for f in os.listdir("pages"):
+            if "consolidar" in f.lower() and f.endswith(".py"):
+                cons_path = f"pages/{f}"
+                break
+    try:
+        st.page_link(cons_path, label="⚙️ Consolidar Norma", icon="➡️")
+    except Exception:
+        st.markdown(f'<a href="{cons_path.replace("pages/", "").replace(".py", "")}" target="_top" style="display:block;text-align:center;background:#f0f2f6;border:1px solid #d0d4dc;color:#31333F !important;padding:0.5rem;border-radius:0.5rem;text-decoration:none;font-weight:500;">➡️ ⚙️ Consolidar</a>', unsafe_allow_html=True)
+
+with col_hist:
+    hist_path = "pages/1_Historico.py"
+    if os.path.exists("pages"):
+        for f in os.listdir("pages"):
+            if "historico" in f.lower() and f.endswith(".py"):
+                hist_path = f"pages/{f}"
+                break
+    try:
+        st.page_link(hist_path, label="🗄️ Histórico", icon="➡️")
+    except Exception:
+        st.markdown(f'<a href="{hist_path.replace("pages/", "").replace(".py", "")}" target="_top" style="display:block;text-align:center;background:#f0f2f6;border:1px solid #d0d4dc;color:#31333F !important;padding:0.5rem;border-radius:0.5rem;text-decoration:none;font-weight:500;">➡️ 🗄️ Histórico</a>', unsafe_allow_html=True)
+
+with col_usr:
+    usr_path = "pages/usuarios.py"
+    if os.path.exists("pages"):
+        for f in os.listdir("pages"):
+            if "usuario" in f.lower() and f.endswith(".py"):
+                usr_path = f"pages/{f}"
+                break
+    try:
+        st.page_link(usr_path, label="👥 Usuários", icon="➡️")
+    except Exception:
+        st.markdown(f'<a href="{usr_path.replace("pages/", "").replace(".py", "")}" target="_top" style="display:block;text-align:center;background:#f0f2f6;border:1px solid #d0d4dc;color:#31333F !important;padding:0.5rem;border-radius:0.5rem;text-decoration:none;font-weight:500;">➡️ 👥 Usuários</a>', unsafe_allow_html=True)
+
+with col_logout:
+    if st.button("Sair", key="btn_sair_bse", type="secondary", use_container_width=True):
+        st.session_state.autenticado = False
+        st.rerun()
+
+st.markdown("---")
+
+
+# --- FUNÇÕES DE EXTRAÇÃO DE TEXTO E BUSCA DA AUTORIDADE ---
+def obter_caminho_brasao() -> Optional[str]:
+    """Localiza o arquivo brasao.png na raiz do projeto."""
+    candidatos = [
+        "brasao.png",
+        os.path.join(os.path.dirname(__file__), "..", "brasao.png"),
+        os.path.join(os.path.dirname(__file__), "brasao.png")
+    ]
+    for c in candidatos:
+        if os.path.exists(c):
+            return os.path.abspath(c)
+    return None
+
+def extrair_texto_boletim(pdf_bytes: bytes) -> str:
+    """Extrai todo o texto do PDF do Boletim de Serviço."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    texto_completo = []
+    for page in doc:
+        texto_completo.append(page.get_text())
+    return "\n".join(texto_completo)
+
+def identificar_autoridade(texto: str) -> Dict[str, str]:
+    """Localiza o nome e o cargo do Procurador-Geral de Justiça Militar no Boletim."""
+    # Procura por linhas típicas de cabeçalho do Boletim de Serviço
+    padrao = re.search(r'([A-Z\s]{5,50})\n\s*(Procurador-Geral de Justiça Militar)', texto, re.IGNORECASE)
+    if padrao:
+        nome = padrao.group(1).strip()
+        cargo = padrao.group(2).strip()
+        return {"nome": nome, "cargo": cargo}
+    
+    # Fallback caso não encontre regex exata
+    return {"nome": "JAIME DE CASSIO MIRANDA", "cargo": "Procurador-Geral de Justiça Militar"}
+
+def extrair_atos_normativos(texto: str) -> List[Dict[str, str]]:
+    """Identifica e separa cada Portaria/Ato normativo do Boletim."""
+    # Padronização de quebras de linha para busca
+    texto_limpo = re.sub(r'\r\n', '\n', texto)
+    
+    # Expressão regular para capturar Portarias e seus corpos
+    padrao_ato = re.compile(
+        r'((?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*[\d\w/-]+[^\n]*\n)(.*?)(?=(?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*[\d\w/-]+|\Z)',
+        re.DOTALL | re.IGNORECASE
+    )
+    
+    matches = padrao_ato.findall(texto_limpo)
+    atos = []
+    
+    for idx, (titulo, corpo) in enumerate(matches):
+        titulo_limpo = titulo.strip()
+        corpo_limpo = corpo.strip()
+        
+        # Remove eventuais cabeçalhos de página repetidos
+        corpo_limpo = re.sub(r'Boletim de Serviço nº \d+.*?\n', '', corpo_limpo, flags=re.IGNORECASE)
+        
+        # Identifica notas de publicação (ex: "(Publicada no DOU nº...)")
+        nota_publicacao = ""
+        match_pub = re.search(r'(\(Publicada no DOU[^\)]+\))', corpo_limpo, re.IGNORECASE)
+        if match_pub:
+            nota_publicacao = match_pub.group(1)
+            corpo_limpo = corpo_limpo.replace(nota_publicacao, "").strip()
+
+        atos.append({
+            "id": idx + 1,
+            "titulo": titulo_limpo,
+            "corpo": corpo_limpo,
+            "nota_publicacao": nota_publicacao
+        })
+        
+    return atos
+
+
+# --- GERADOR DE PDF FORMATADO (PADRÃO SEI / MPM COM BRASÃO) ---
+def gerar_pdf_padrao_sei(titulo: str, corpo: str, autoridade_nome: str, autoridade_cargo: str, nota_pub: str = "") -> bytes:
+    """Gera o PDF individual formatado conforme as especificações visuais do MPM/SEI."""
+    if not HAS_WEASYPRINT:
+        raise Exception("Biblioteca 'WeasyPrint' não está disponível no ambiente.")
+
+    # Carrega e codifica a imagem do Brasão da República
+    brasao_base64 = ""
+    caminho_brasao = obter_caminho_brasao()
+    if caminho_brasao and os.path.exists(caminho_brasao):
+        with open(caminho_brasao, "rb") as img_f:
+            brasao_base64 = base64.b64encode(img_f.read()).decode("utf-8")
+
+    # Formata parágrafos do corpo do ato
+    linhas_corpo = [l.strip() for l in corpo.split('\n') if l.strip()]
+    html_corpo = ""
+    for linha in linhas_corpo:
+        if linha.startswith("Art.") or linha.startswith("Parágrafo") or linha.startswith("§"):
+            html_corpo += f'<p class="artigo">{linha}</p>'
+        elif linha.isupper() and len(linha) < 100:
+            html_corpo += f'<p class="preambulo"><strong>{linha}</strong></p>'
+        else:
+            html_corpo += f'<p class="paragrafo">{linha}</p>'
+
+    html_template = f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            @page {{
+                size: A4;
+                margin: 2cm 2cm 2.5cm 2cm;
+                @bottom-center {{
+                    content: "Este texto não substitui o publicado no Boletim de Serviço Eletrônico.";
+                    font-family: 'Times New Roman', serif;
+                    font-size: 8pt;
+                    font-style: italic;
+                    color: #555555;
+                    border-top: 1px solid #cccccc;
+                    width: 100%;
+                    padding-top: 4px;
+                }}
+            }}
+            body {{
+                font-family: 'Times New Roman', Times, serif;
+                font-size: 11pt;
+                line-height: 1.35;
+                color: #000000;
+                text-align: justify;
+            }}
+            .header-brasao {{
+                text-align: center;
+                margin-bottom: 12px;
+            }}
+            .header-brasao img {{
+                width: 60pt;
+                height: 60pt;
+            }}
+            .header-texto {{
+                text-align: center;
+                font-weight: bold;
+                font-size: 11pt;
+                text-transform: uppercase;
+                margin-bottom: 20px;
+            }}
+            .titulo-ato {{
+                text-align: center;
+                font-weight: bold;
+                font-size: 11pt;
+                margin-top: 15px;
+                margin-bottom: 18px;
+            }}
+            .paragrafo {{
+                text-indent: 1.25cm;
+                margin-bottom: 6px;
+                margin-top: 0px;
+            }}
+            .artigo {{
+                text-indent: 1.25cm;
+                margin-bottom: 6px;
+                margin-top: 6px;
+            }}
+            .preambulo {{
+                margin-bottom: 12px;
+                text-indent: 0;
+            }}
+            .assinatura-container {{
+                margin-top: 40px;
+                text-align: center;
+                page-break-inside: avoid;
+            }}
+            .assinatura-nome {{
+                font-weight: bold;
+                font-size: 11pt;
+                text-transform: uppercase;
+                margin-bottom: 2px;
+            }}
+            .assinatura-cargo {{
+                font-size: 11pt;
+            }}
+            .nota-publicacao {{
+                font-size: 9pt;
+                font-style: italic;
+                margin-top: 25px;
+                text-align: left;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="header-brasao">
+            {"<img src='data:image/png;base64," + brasao_base64 + "'/>" if brasao_base64 else ""}
+        </div>
+        <div class="header-texto">
+            MINISTÉRIO PÚBLICO DA UNIÃO<br/>
+            MINISTÉRIO PÚBLICO MILITAR<br/>
+            PROCURADORIA-GERAL DE JUSTIÇA MILITAR
+        </div>
+
+        <div class="titulo-ato">{titulo}</div>
+
+        <div class="conteudo">
+            {html_corpo}
+        </div>
+
+        <div class="assinatura-container">
+            <div class="assinatura-nome">{autoridade_nome}</div>
+            <div class="assinatura-cargo">{autoridade_cargo}</div>
+        </div>
+
+        {f'<div class="nota-publicacao">{nota_pub}</div>' if nota_pub else ''}
+    </body>
+    </html>
+    """
+
+    buffer = io.BytesIO()
+    HTML(string=html_template).write_pdf(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# --- INTERFACE PRINCIPAL ---
+st.markdown("""
+Envie o arquivo do **Boletim de Serviço Eletrônico (PDF)**. O sistema fará a varredura completa do documento,
+identificará a autoridade signatária do BSe (Procurador-Geral de Justiça Militar) e apresentará a lista
+dos Atos normativos encontrados para seleção e exportação em PDF formatado.
+""")
+
+arquivo_bse = st.file_uploader("Selecione o Boletim de Serviço (PDF)", type=["pdf"], key="uploader_bse")
+
+if arquivo_bse is not None:
+    pdf_bytes = arquivo_bse.getvalue()
+    
+    with st.spinner("⚡ Lendo e analisando o Boletim de Serviço..."):
+        texto_boletim = extrair_texto_boletim(pdf_bytes)
+        autoridade = identificar_autoridade(texto_boletim)
+        atos = extrair_atos_normativos(texto_boletim)
+
+    st.success(f"✅ Análise concluída! Identificados **{len(atos)}** atos normativos no Boletim de Serviço.")
+
+    col_aut1, col_aut2 = st.columns(2)
+    with col_aut1:
+        nome_autoridade = st.text_input("Signatário Identificado (Nome)", value=autoridade["nome"])
+    with col_aut2:
+        cargo_autoridade = st.text_input("Cargo", value=autoridade["cargo"])
+
+    st.markdown("---")
+    st.markdown("### 📜 Atos Encontrados")
+
+    if not atos:
+        st.warning("Nenhum ato normativo no padrão reconhecido foi identificado automaticamente.")
+    else:
+        # Opção de Seleção Múltipla
+        selecionados = []
+        c_sel_todos, _ = st.columns([2, 4])
+        with c_sel_todos:
+            marcar_todos = st.checkbox("Marcar / Desmarcar Todos", value=True)
+
+        for ato in atos:
+            expander_title = f"{ato['titulo']}"
+            with st.expander(expander_title, expanded=False):
+                chk = st.checkbox(f"Selecionar para exportação", value=marcar_todos, key=f"chk_ato_{ato['id']}")
+                if chk:
+                    selecionados.append(ato)
+                
+                # Editor de conteúdo do ato
+                ato['titulo'] = st.text_input("Título", value=ato['titulo'], key=f"tit_{ato['id']}")
+                ato['corpo'] = st.text_area("Texto do Ato", value=ato['corpo'], height=250, key=f"corp_{ato['id']}")
+                ato['nota_publicacao'] = st.text_input("Nota de Publicação", value=ato['nota_publicacao'], key=f"nota_{ato['id']}")
+
+                # Botão de Download Individual
+                try:
+                    pdf_individual = gerar_pdf_padrao_sei(
+                        ato['titulo'], ato['corpo'], nome_autoridade, cargo_autoridade, ato['nota_publicacao']
+                    )
+                    nome_arquivo_pdf = f"{ato['titulo'].replace('/', '_').replace(' ', '_')}.pdf"
+                    st.download_button(
+                        label="📄 Baixar este Ato em PDF",
+                        data=pdf_individual,
+                        file_name=nome_arquivo_pdf,
+                        mime="application/pdf",
+                        key=f"btn_dl_{ato['id']}"
+                    )
+                except Exception as e:
+                    st.error(f"Erro ao gerar PDF individual: {e}")
+
+        # Exportação em Lote
+        if selecionados:
+            st.markdown("---")
+            st.markdown(f"#### 📦 Exportação em Lote ({len(selecionados)} ato(s) selecionado(s))")
+            
+            for ato_sel in selecionados:
+                try:
+                    pdf_bytes_sel = gerar_pdf_padrao_sei(
+                        ato_sel['titulo'], ato_sel['corpo'], nome_autoridade, cargo_autoridade, ato_sel['nota_publicacao']
+                    )
+                    nome_arq = f"{ato_sel['titulo'].replace('/', '_').replace(' ', '_')}.pdf"
+                    st.download_button(
+                        label=f"⬇️ Baixar PDF: {ato_sel['titulo']}",
+                        data=pdf_bytes_sel,
+                        file_name=nome_arq,
+                        mime="application/pdf",
+                        key=f"btn_lote_{ato_sel['id']}"
+                    )
+                except Exception as e:
+                    st.error(f"Erro ao gerar {ato_sel['titulo']}: {e}")
