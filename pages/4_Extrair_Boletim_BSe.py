@@ -101,16 +101,14 @@ with col_logout:
 
 st.markdown("---")
 
-
 # --- BARRA DE FERRAMENTAS COMPLETA DO EDITOR RICO ---
 QUILL_TOOLBAR = [
     ["bold", "italic", "underline", "strike"],
-    [{"align": []}],  # Controles de Parágrafo: Esquerda, Centro, Direita, Justificado
+    [{"align": []}],  
     [{"color": []}, {"background": []}],
     [{"list": "ordered"}, {"list": "bullet"}],
     ["clean"],
 ]
-
 
 def obter_caminho_brasao() -> Optional[str]:
     candidatos = [
@@ -123,10 +121,9 @@ def obter_caminho_brasao() -> Optional[str]:
             return os.path.abspath(c)
     return None
 
-
 # --- EXTRAÇÃO ESTRUTURADA DE BLOCOS, PARÁGRAFOS E TABELAS ---
 def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
-    """Extrai o texto por blocos lógicos preservando integridade de parágrafos, alinhamento, recuo e tabelas."""
+    """Extrai o texto preservando integridade de parágrafos e detecção avançada de tabelas."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     html_paginas = []
     
@@ -135,33 +132,49 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
         tabelas_bbox = []
         html_tabelas = {}
         
-        # 1. Extração exata de tabelas
+        # 1. Extração robusta de tabelas (Trata PDFs antigos sem bordas)
+        tabelas_encontradas = []
         try:
-            tab_finder = page.find_tables()
-            for tabela in tab_finder.tables:
-                rect = fitz.Rect(tabela.bbox)
-                tabelas_bbox.append(rect)
-                
-                linhas = tabela.extract()
-                if not linhas:
-                    continue
-                    
-                tab_html = '<table border="1" style="border-collapse: collapse; width: 100%; margin: 12px 0;">'
-                for idx_r, linha in enumerate(linhas):
-                    tab_html += '<tr>'
-                    tag = 'th' if idx_r == 0 else 'td'
-                    for celula in linha:
-                        texto_cel = str(celula).strip() if celula is not None else ''
-                        texto_cel = texto_cel.replace('\n', '<br/>')
-                        tab_html += f'<{tag} style="border: 1px solid #000; padding: 5px 8px;">{texto_cel}</{tag}>'
-                    tab_html += '</tr>'
-                tab_html += '</table>'
-                
-                html_tabelas[rect.y0] = (rect, tab_html)
-        except Exception:
-            pass
+            # Tenta estratégia baseada em linhas (para tabelas desenhadas)
+            tf_lines = page.find_tables(strategy="lines")
+            if tf_lines.tables:
+                tabelas_encontradas = tf_lines.tables
+            else:
+                # Fallback: Tenta estratégia de alinhamento de texto (para tabelas invisíveis/antigas)
+                tf_text = page.find_tables(strategy="text")
+                if tf_text.tables:
+                    tabelas_encontradas = tf_text.tables
+        except TypeError:
+            # Fallback para versões mais antigas do PyMuPDF
+            tf_default = page.find_tables()
+            if tf_default.tables:
+                tabelas_encontradas = tf_default.tables
+        except Exception as e:
+            print(f"Aviso de leitura de tabela: {e}")
 
-        # 2. Leitura por Blocos do PyMuPDF (evita quebrar parágrafos no meio da frase)
+        for tabela in tabelas_encontradas:
+            rect = fitz.Rect(tabela.bbox)
+            tabelas_bbox.append(rect)
+            
+            linhas = tabela.extract()
+            if not linhas:
+                continue
+                
+            tab_html = '<table border="1" style="border-collapse: collapse; width: 100%; margin: 15px 0; font-size: 10pt;">'
+            for idx_r, linha in enumerate(linhas):
+                tab_html += '<tr>'
+                tag = 'th' if idx_r == 0 else 'td'
+                bg = ' background-color: #f2f2f2;' if idx_r == 0 else ''
+                for celula in linha:
+                    texto_cel = str(celula).strip() if celula is not None else ''
+                    texto_cel = texto_cel.replace('\n', '<br/>')
+                    tab_html += f'<{tag} style="border: 1px solid #000; padding: 6px 8px;{bg}">{texto_cel}</{tag}>'
+                tab_html += '</tr>'
+            tab_html += '</table>'
+            
+            html_tabelas[rect.y0] = (rect, tab_html)
+
+        # 2. Leitura por Blocos do PyMuPDF
         blocks = page.get_text("dict", sort=True).get("blocks", [])
         elementos = []
         
@@ -169,17 +182,31 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
         for b in blocks:
             if b.get("type") == 0:
                 b_rect = fitz.Rect(b.get("bbox", (0, 0, 0, 0)))
-                if not any(b_rect.intersects(tb) for tb in tabelas_bbox):
-                    if b_rect.x0 < x0_min:
-                        x0_min = b_rect.x0
+                # Ignora blocos que fazem parte de uma tabela para não duplicar texto
+                in_table = False
+                for tb in tabelas_bbox:
+                    if b_rect.intersect(tb).get_area() > (b_rect.get_area() * 0.4):
+                        in_table = True
+                        break
+                if not in_table and b_rect.x0 < x0_min:
+                    x0_min = b_rect.x0
+                    
         if x0_min == page_width:
             x0_min = 50.0
 
         for b in blocks:
             if b.get("type") != 0:
                 continue
+                
             bloco_rect = fitz.Rect(b.get("bbox", (0, 0, 0, 0)))
-            if any(bloco_rect.intersects(tb) for tb in tabelas_bbox):
+            
+            # Validação de interseção com tabelas (proteção contra quebra de layout)
+            in_table = False
+            for tb in tabelas_bbox:
+                if bloco_rect.intersect(tb).get_area() > (bloco_rect.get_area() * 0.4):
+                    in_table = True
+                    break
+            if in_table:
                 continue
             
             linhas_bloco = []
@@ -208,7 +235,6 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
             if not linhas_bloco:
                 continue
 
-            # Determina alinhamento e recuo do parágrafo inteiro
             primeira_linha_box = linhas_bloco[0][0].get("bbox", (0, 0, 0, 0))
             lx0, ly0, lx1, ly1 = primeira_linha_box
             line_center = (lx0 + lx1) / 2.0
@@ -235,7 +261,7 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
             p_html = f'<p class="{align_class}"{indent_style}>{texto_bloco}</p>'
             elementos.append((bloco_rect.y0, p_html))
 
-        # Reordena verticalmente parágrafos e tabelas
+        # Reordena verticalmente parágrafos e tabelas extraídas
         for y0, (rect, tab_html) in html_tabelas.items():
             elementos.append((y0, tab_html))
 
@@ -245,9 +271,7 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
 
     return "\n".join(html_paginas)
 
-
 def identificar_autoridade(texto_html: str) -> Dict[str, str]:
-    """Identifica o signatário do BSe."""
     texto_puro = re.sub(r'<[^>]+>', '', texto_html)
     padrao = re.search(r'([A-Z\s]{5,50})\n\s*(Procurador-Geral de Justiça Militar)', texto_puro, re.IGNORECASE)
     if padrao:
@@ -256,9 +280,7 @@ def identificar_autoridade(texto_html: str) -> Dict[str, str]:
         return {"nome": nome, "cargo": cargo}
     return {"nome": "JAIME DE CASSIO MIRANDA", "cargo": "Procurador-Geral de Justiça Militar"}
 
-
 def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
-    """Separa cada Portaria/Ato mantendo integralmente a estrutura de parágrafos e tabelas."""
     padrao_ato = re.compile(
         r'((?:<p[^>]*>)?\s*(?:<strong>|<b>)?\s*(?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*[\d\w/-]+[^\n<]*.*?)(?=(?:<p[^>]*>)?\s*(?:<strong>|<b>)?\s*(?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*[\d\w/-]+|\Z)',
         re.DOTALL | re.IGNORECASE
@@ -289,8 +311,7 @@ def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
         
     return atos
 
-
-# --- GERADOR DE PDF FORMATADO (REFLETINDO PARÁGRAFOS, RECUOS E TABELAS) ---
+# --- GERADOR DE PDF FORMATADO ---
 def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_cargo: str, nota_pub: str = "") -> bytes:
     if not HAS_WEASYPRINT:
         raise Exception("Biblioteca 'WeasyPrint' não está disponível no ambiente.")
@@ -328,85 +349,27 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
                 color: #000000;
             }}
             
-            /* Alinhamentos e estilização exata dos parágrafos */
             .ql-align-center {{ text-align: center !important; text-indent: 0 !important; }}
             .ql-align-right {{ text-align: right !important; text-indent: 0 !important; }}
             .ql-align-justify {{ text-align: justify !important; }}
             .ql-align-left {{ text-align: left !important; text-indent: 0 !important; }}
             
-            p {{
-                margin-top: 0px;
-                margin-bottom: 6px;
-                text-align: justify;
-                orphans: 3;
-                widows: 3;
-            }}
-            p.ql-align-justify {{
-                text-indent: 1.25cm;
-            }}
+            p {{ margin-top: 0px; margin-bottom: 6px; text-align: justify; orphans: 3; widows: 3; }}
+            p.ql-align-justify {{ text-indent: 1.25cm; }}
             
-            /* Estilização exata de Tabelas */
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin: 12px 0;
-                font-size: 10pt;
-                page-break-inside: auto;
-            }}
-            tr {{
-                page-break-inside: avoid;
-                page-break-after: auto;
-            }}
-            th, td {{
-                border: 1px solid #000000;
-                padding: 5px 8px;
-                text-align: left;
-                vertical-align: top;
-            }}
-            th {{
-                background-color: #f2f2f2;
-                font-weight: bold;
-                text-align: center;
-            }}
+            table {{ width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 10pt; page-break-inside: auto; }}
+            tr {{ page-break-inside: avoid; page-break-after: auto; }}
+            th, td {{ border: 1px solid #000000; padding: 6px 8px; text-align: left; vertical-align: top; }}
+            th {{ background-color: #f2f2f2; font-weight: bold; text-align: center; }}
             
-            .header-brasao {{
-                text-align: center;
-                margin-bottom: 12px;
-            }}
-            .header-brasao img {{
-                width: 60pt;
-                height: 60pt;
-            }}
-            .header-texto {{
-                text-align: center;
-                font-weight: bold;
-                font-size: 11pt;
-                text-transform: uppercase;
-                margin-bottom: 20px;
-            }}
+            .header-brasao {{ text-align: center; margin-bottom: 12px; }}
+            .header-brasao img {{ width: 60pt; height: 60pt; }}
+            .header-texto {{ text-align: center; font-weight: bold; font-size: 11pt; text-transform: uppercase; margin-bottom: 20px; }}
             
-            .assinatura-container {{
-                margin-top: 40px;
-                text-align: center;
-                page-break-inside: avoid;
-                break-inside: avoid;
-            }}
-            .assinatura-nome {{
-                font-weight: bold;
-                font-size: 11pt;
-                text-transform: uppercase;
-                margin-bottom: 2px;
-            }}
-            .assinatura-cargo {{
-                font-size: 11pt;
-            }}
-            .nota-publicacao {{
-                font-size: 9pt;
-                font-style: italic;
-                margin-top: 25px;
-                text-align: left;
-                page-break-inside: avoid;
-            }}
+            .assinatura-container {{ margin-top: 40px; text-align: center; page-break-inside: avoid; }}
+            .assinatura-nome {{ font-weight: bold; font-size: 11pt; text-transform: uppercase; margin-bottom: 2px; }}
+            .assinatura-cargo {{ font-size: 11pt; }}
+            .nota-publicacao {{ font-size: 9pt; font-style: italic; margin-top: 25px; text-align: left; page-break-inside: avoid; }}
         </style>
     </head>
     <body>
@@ -432,17 +395,15 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
     </body>
     </html>
     """
-
     buffer = io.BytesIO()
     HTML(string=html_template).write_pdf(buffer)
     buffer.seek(0)
     return buffer.getvalue()
 
-
 # --- INTERFACE PRINCIPAL ---
 st.markdown("""
-Envie o arquivo do **Boletim de Serviço Eletrônico (PDF)**. O sistema extrairá os Atos normativos
-identificando **parágrafos, recuos, alinhamentos (esquerda, centro, direita, justificado), tabelas, negritos e itálicos**, permitindo edição completa no editor rico antes de gerar o PDF.
+Envie o arquivo do **Boletim de Serviço Eletrônico (PDF)**. O sistema extrairá os Atos normativos identificando
+**parágrafos, alinhamentos e tabelas**, permitindo edição antes de gerar o PDF.
 """)
 
 arquivo_bse = st.file_uploader("Selecione o Boletim de Serviço (PDF)", type=["pdf"], key="uploader_bse")
@@ -450,7 +411,7 @@ arquivo_bse = st.file_uploader("Selecione o Boletim de Serviço (PDF)", type=["p
 if arquivo_bse is not None:
     pdf_bytes = arquivo_bse.getvalue()
     
-    with st.spinner("⚡ Lendo e analisando o Boletim de Serviço (identificando recuos, parágrafos e tabelas)..."):
+    with st.spinner("⚡ Lendo e analisando o Boletim de Serviço (processando tabelas sem bordas e parágrafos)..."):
         texto_boletim_html = extrair_texto_boletim_estruturado(pdf_bytes)
         autoridade = identificar_autoridade(texto_boletim_html)
         atos = extrair_atos_normativos_html(texto_boletim_html)
@@ -470,13 +431,22 @@ if arquivo_bse is not None:
         st.warning("Nenhum ato normativo no padrão reconhecido foi identificado automaticamente.")
     else:
         for ato in atos:
-            expander_title = f"📄 {ato['titulo']}"
-            
-            # ATOS RECOLHIDOS POR PADRÃO (expanded=False)
-            with st.expander(expander_title, expanded=False):
-                st.markdown("**Editor de Texto Rico (Ajuste de Parágrafos, Alinhamentos, Tabelas, Negrito e Itálico)**")
+            with st.expander(f"📄 {ato['titulo']}", expanded=False):
                 
-                if HAS_QUILL:
+                tem_tabela = "<table" in ato['corpo_html'].lower()
+                if tem_tabela:
+                    st.warning("⚠️ **Tabela Detectada neste Ato!** O editor visual pode desconfigurar tabelas extraídas. O modo 'Código-Fonte HTML' foi selecionado por padrão para proteger a formatação.")
+                
+                # Permite trocar entre o Editor Visual e o Editor de HTML puro
+                modo_edicao = st.radio(
+                    "Modo de Edição:",
+                    ["Visual (Texto Rico)", "Código-Fonte HTML (Preserva Tabelas)"],
+                    key=f"modo_{ato['id']}",
+                    horizontal=True,
+                    index=1 if tem_tabela else 0
+                )
+                
+                if modo_edicao == "Visual (Texto Rico)" and HAS_QUILL:
                     conteudo_editado_html = st_quill(
                         value=ato['corpo_html'],
                         html=True,
@@ -484,8 +454,13 @@ if arquivo_bse is not None:
                         key=f"quill_editor_{ato['id']}"
                     )
                 else:
-                    st.warning("⚠️ Biblioteca 'streamlit-quill' não encontrada. Exibindo área de texto simples.")
-                    conteudo_editado_html = st.text_area("Conteúdo", value=ato['corpo_html'], height=350, key=f"ta_{ato['id']}")
+                    if not HAS_QUILL and modo_edicao == "Visual (Texto Rico)":
+                        st.warning("Biblioteca 'streamlit-quill' não encontrada. Exibindo código-fonte.")
+                    
+                    conteudo_editado_html = st.text_area("Edite o HTML diretamente", value=ato['corpo_html'], height=350, key=f"ta_{ato['id']}")
+                    
+                    with st.expander("👁️ Pré-visualização da Impressão (HTML Renderezado)"):
+                        st.markdown(conteudo_editado_html, unsafe_allow_html=True)
 
                 st.markdown("**Nota de Publicação (DOU)**")
                 nota_editada = st.text_input("Nota de Publicação", value=ato['nota_publicacao'], key=f"nota_{ato['id']}")
@@ -497,12 +472,10 @@ if arquivo_bse is not None:
                         pdf_individual = gerar_pdf_fiel_sei(
                             conteudo_editado_html, nome_autoridade, cargo_autoridade, nota_editada
                         )
-                        nome_arquivo_pdf = f"{ato['titulo'].replace('/', '_').replace(' ', '_')}.pdf"
-                        
                         st.download_button(
                             label="📄 Gerar e Baixar este Ato em PDF Formatado",
                             data=pdf_individual,
-                            file_name=nome_arquivo_pdf,
+                            file_name=f"{ato['titulo'].replace('/', '_').replace(' ', '_')}.pdf",
                             mime="application/pdf",
                             type="primary",
                             key=f"btn_dl_{ato['id']}"
