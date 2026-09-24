@@ -222,7 +222,6 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
     return "\n".join(html_paginas)
 
 def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
-    # Tenta resgatar os nomes no cabeçalho do documento (Usado em Boletins Padrão 2016+)
     texto_topo = re.sub(r'<[^>]+>', '\n', texto_html[:5000])
     linhas_topo = [l.strip() for l in texto_topo.split('\n') if l.strip()]
     
@@ -242,13 +241,20 @@ def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
     
     def is_inicio_ato(elem_html: str) -> bool:
         texto_puro = re.sub(r'<[^>]+>', '', elem_html).strip()
-        match = re.search(r'(Portaria|RESOLUÇÃO|ATO)\s+n[º°o\.]?\s*\d+', texto_puro, re.IGNORECASE)
-        if not match: return False
-        start_idx = match.start()
-        if start_idx < 5: return True
-        prefixo = texto_puro[:start_idx].strip().upper()
-        prefixos_permitidos = ["ATOS", "PROCURADORIA", "DIRETORIA", "GABINETE", "MINISTÉRIO", "MPM"]
-        return len(prefixo) < 150 and any(p in prefixo for p in prefixos_permitidos)
+        # Padrão 2016+: Portaria nº 123
+        match_padrao = re.search(r'(Portaria|RESOLUÇÃO|ATO)\s+n[º°o\.]?\s*\d+', texto_puro, re.IGNORECASE)
+        # Padrão 2015: Apenas "Nº 194" isolado
+        match_isolado = re.match(r'^N[º°o\.]?\s*\d+$', texto_puro, re.IGNORECASE)
+        
+        if match_padrao:
+            start_idx = match_padrao.start()
+            if start_idx < 5: return True
+            prefixo = texto_puro[:start_idx].strip().upper()
+            prefixos_permitidos = ["ATOS", "PROCURADORIA", "DIRETORIA", "GABINETE", "MINISTÉRIO", "MPM"]
+            return len(prefixo) < 150 and any(p in prefixo for p in prefixos_permitidos)
+        elif match_isolado:
+            return True
+        return False
 
     for elem in elementos:
         if not elem.strip(): continue
@@ -264,6 +270,8 @@ def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
     for idx, corpo in enumerate(atos):
         corpo_limpo = corpo.strip()
         corpo_limpo = re.sub(r'<p[^>]*>\s*Boletim de Serviço nº \d+.*?</p>', '', corpo_limpo, flags=re.IGNORECASE)
+        # Limpar indicadores de grupo antigos que ficavam soltos (ex: "Portarias/DG, de 17 de abril de 2015")
+        corpo_limpo = re.sub(r'<p[^>]*>\s*Portarias?/(?:DG|PGJM).*?</p>', '', corpo_limpo, flags=re.IGNORECASE)
         
         nota_publicacao = ""
         match_pub = re.search(r'(\(Publicada no DOU[^\)]+\))', corpo_limpo, re.IGNORECASE)
@@ -273,20 +281,40 @@ def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
 
         texto_puro = re.sub(r'<[^>]+>', '', corpo_limpo).strip()
         match_titulo = re.search(r'((?:Portaria|RESOLUÇÃO|ATO)\s+n[º°o\.]?\s*\d+.*?)(?:\n|$)', texto_puro, re.IGNORECASE)
-        primeira_linha = match_titulo.group(1).strip()[:120] if match_titulo else f"Ato {idx+1}"
+        match_numero = re.search(r'^(N[º°o\.]?\s*\d+)(?:\n|$)', texto_puro, re.IGNORECASE)
+        
+        if match_titulo:
+            primeira_linha = match_titulo.group(1).strip()[:120]
+        elif match_numero:
+            primeira_linha = match_numero.group(1).strip()[:120]
+        else:
+            primeira_linha = f"Ato {idx+1}"
 
-        # Verifica pelo título e usa a memória do cabeçalho global 
-        if "/PGJM" in primeira_linha.upper():
+        cargo_autoridade = ""
+        nome_autoridade = ""
+        
+        # Inteligência Contextual (Essencial para atos de 2015 que começam direto no texto)
+        texto_inicio = texto_puro[:500].upper()
+        if "PROCURADOR-GERAL" in texto_inicio and "RESOLVE" in texto_inicio:
             cargo_autoridade = "Procurador-Geral de Justiça Militar"
             nome_autoridade = autoridade_pgjm
-        elif "/DG" in primeira_linha.upper():
+            if not match_titulo and match_numero:
+                primeira_linha = f"Portaria {primeira_linha}/PGJM"
+        elif "DIRETOR-GERAL" in texto_inicio and "RESOLVE" in texto_inicio:
             cargo_autoridade = "Diretor-Geral do Ministério Público Militar"
             nome_autoridade = autoridade_dg
+            if not match_titulo and match_numero:
+                primeira_linha = f"Portaria {primeira_linha}/DG"
         else:
-            cargo_autoridade = ""
-            nome_autoridade = ""
-            
-        # Fallback (para boletins antigos de 2009 com '(a)')
+            # Fallback Padrão 2016+ (onde a sigla já vem escrita no título)
+            if "/PGJM" in primeira_linha.upper():
+                cargo_autoridade = "Procurador-Geral de Justiça Militar"
+                nome_autoridade = autoridade_pgjm
+            elif "/DG" in primeira_linha.upper():
+                cargo_autoridade = "Diretor-Geral do Ministério Público Militar"
+                nome_autoridade = autoridade_dg
+                
+        # Fallback Antigo (para boletins de 2009 com '(a)')
         match_assinatura = re.search(r'\(a\)\s*([A-ZÁÉÍÓÚÂÊÔÃÕÇ\s]+)', texto_puro)
         if match_assinatura:
             nome_extraido = match_assinatura.group(1).strip().split('\n')[0].strip()
@@ -304,7 +332,7 @@ def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
         
     return atos_formatados
 
-# --- CACHE CENTRAL (Corrige travamentos e perda de dados dos inputs) ---
+# --- CACHE CENTRAL (Impede travamentos ao digitar na interface) ---
 @st.cache_data(show_spinner=False)
 def processar_boletim_pdf(pdf_bytes: bytes) -> List[Dict]:
     texto_boletim_html = extrair_texto_boletim_estruturado(pdf_bytes)
@@ -374,7 +402,6 @@ arquivo_bse = st.file_uploader("Selecione o Boletim de Serviço (PDF)", type=["p
 
 if arquivo_bse is not None:
     with st.spinner("⚡ Analisando o Boletim de Serviço (processando tabelas, parágrafos e assinaturas)..."):
-        # A nova função de cache impede que a tela recarregue o arquivo pesado enquanto você digita no input!
         atos = processar_boletim_pdf(arquivo_bse.getvalue())
 
     st.success(f"✅ Análise concluída! Identificados **{len(atos)}** atos normativos no Boletim de Serviço.")
