@@ -123,7 +123,6 @@ def obter_caminho_brasao() -> Optional[str]:
 
 # --- EXTRAÇÃO ESTRUTURADA DE BLOCOS, PARÁGRAFOS E TABELAS ---
 def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
-    """Extrai o texto preservando integridade de parágrafos e detecção avançada de tabelas."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     html_paginas = []
     
@@ -131,28 +130,37 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
         page_width = page.rect.width
         tabelas_bbox = []
         html_tabelas = {}
+        tabelas_validas = []
         
-        # 1. Extração robusta de tabelas (Trata PDFs antigos sem bordas)
-        tabelas_encontradas = []
         try:
-            # Tenta estratégia baseada em linhas (para tabelas desenhadas)
+            # 1. Estratégia principal: Tabelas com bordas visíveis
             tf_lines = page.find_tables(strategy="lines")
             if tf_lines.tables:
-                tabelas_encontradas = tf_lines.tables
-            else:
-                # Fallback: Tenta estratégia de alinhamento de texto (para tabelas invisíveis/antigas)
-                tf_text = page.find_tables(strategy="text")
-                if tf_text.tables:
-                    tabelas_encontradas = tf_text.tables
+                tabelas_validas.extend(tf_lines.tables)
+                
+            # 2. Estratégia secundária: Tabelas alinhadas (texto sem bordas)
+            tf_text = page.find_tables(strategy="text")
+            if tf_text.tables:
+                for tb in tf_text.tables:
+                    # Filtro Crítico Anti-Falso-Positivo:
+                    # Uma tabela sem bordas VÁLIDA precisa ter mais de 1 coluna E mais de 1 linha.
+                    if tb.col_count > 1 and tb.row_count > 1:
+                        rect_text = fitz.Rect(tb.bbox)
+                        sobrepoe = False
+                        for t_val in tabelas_validas:
+                            if rect_text.intersect(fitz.Rect(t_val.bbox)).get_area() > 0:
+                                sobrepoe = True
+                                break
+                        if not sobrepoe:
+                            tabelas_validas.append(tb)
         except TypeError:
-            # Fallback para versões mais antigas do PyMuPDF
             tf_default = page.find_tables()
             if tf_default.tables:
-                tabelas_encontradas = tf_default.tables
+                tabelas_validas.extend(tf_default.tables)
         except Exception as e:
             print(f"Aviso de leitura de tabela: {e}")
 
-        for tabela in tabelas_encontradas:
+        for tabela in tabelas_validas:
             rect = fitz.Rect(tabela.bbox)
             tabelas_bbox.append(rect)
             
@@ -174,7 +182,6 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
             
             html_tabelas[rect.y0] = (rect, tab_html)
 
-        # 2. Leitura por Blocos do PyMuPDF
         blocks = page.get_text("dict", sort=True).get("blocks", [])
         elementos = []
         
@@ -182,7 +189,6 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
         for b in blocks:
             if b.get("type") == 0:
                 b_rect = fitz.Rect(b.get("bbox", (0, 0, 0, 0)))
-                # Ignora blocos que fazem parte de uma tabela para não duplicar texto
                 in_table = False
                 for tb in tabelas_bbox:
                     if b_rect.intersect(tb).get_area() > (b_rect.get_area() * 0.4):
@@ -200,7 +206,6 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
                 
             bloco_rect = fitz.Rect(b.get("bbox", (0, 0, 0, 0)))
             
-            # Validação de interseção com tabelas (proteção contra quebra de layout)
             in_table = False
             for tb in tabelas_bbox:
                 if bloco_rect.intersect(tb).get_area() > (bloco_rect.get_area() * 0.4):
@@ -261,7 +266,6 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
             p_html = f'<p class="{align_class}"{indent_style}>{texto_bloco}</p>'
             elementos.append((bloco_rect.y0, p_html))
 
-        # Reordena verticalmente parágrafos e tabelas extraídas
         for y0, (rect, tab_html) in html_tabelas.items():
             elementos.append((y0, tab_html))
 
@@ -271,18 +275,10 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
 
     return "\n".join(html_paginas)
 
-def identificar_autoridade(texto_html: str) -> Dict[str, str]:
-    texto_puro = re.sub(r'<[^>]+>', '', texto_html)
-    padrao = re.search(r'([A-Z\s]{5,50})\n\s*(Procurador-Geral de Justiça Militar)', texto_puro, re.IGNORECASE)
-    if padrao:
-        nome = padrao.group(1).strip()
-        cargo = padrao.group(2).strip()
-        return {"nome": nome, "cargo": cargo}
-    return {"nome": "JAIME DE CASSIO MIRANDA", "cargo": "Procurador-Geral de Justiça Militar"}
-
 def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
+    # Regex tolerante: Foca em "Portaria nº \d+" e captura até o próximo, evitando quebrar por ponto, vírgula ou espaço antes da barra.
     padrao_ato = re.compile(
-        r'((?:<p[^>]*>)?\s*(?:<strong>|<b>)?\s*(?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*[\d\w/-]+[^\n<]*.*?)(?=(?:<p[^>]*>)?\s*(?:<strong>|<b>)?\s*(?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*[\d\w/-]+|\Z)',
+        r'((?:<p[^>]*>)?\s*(?:<strong>|<b>)?\s*(?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*\d+[^\n<]*.*?)(?=(?:<p[^>]*>)?\s*(?:<strong>|<b>)?\s*(?:Portaria|RESOLUÇÃO|ATO)\s+nº?\s*\d+|\Z)',
         re.DOTALL | re.IGNORECASE
     )
     
@@ -302,11 +298,24 @@ def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
         texto_puro_bloco = re.sub(r'<[^>]+>', '', bloco_html_limpo).strip()
         primeira_linha = texto_puro_bloco.split('\n')[0][:120] if texto_puro_bloco else f"Ato {idx+1}"
 
+        cargo_autoridade = ""
+        if "/PGJM" in primeira_linha.upper():
+            cargo_autoridade = "Procurador-Geral de Justiça Militar"
+        elif "/DG" in primeira_linha.upper():
+            cargo_autoridade = "Diretor-Geral do Ministério Público Militar"
+            
+        nome_autoridade = ""
+        match_assinatura = re.search(r'\(a\)\s*([A-ZÁÉÍÓÚÂÊÔÃÕÇ\s]+)', texto_puro_bloco)
+        if match_assinatura:
+            nome_autoridade = match_assinatura.group(1).strip().split('\n')[0].strip()
+
         atos.append({
             "id": idx + 1,
             "titulo": primeira_linha,
             "corpo_html": bloco_html_limpo,
-            "nota_publicacao": nota_publicacao
+            "nota_publicacao": nota_publicacao,
+            "nome_autoridade": nome_autoridade,
+            "cargo_autoridade": cargo_autoridade
         })
         
     return atos
@@ -411,19 +420,11 @@ arquivo_bse = st.file_uploader("Selecione o Boletim de Serviço (PDF)", type=["p
 if arquivo_bse is not None:
     pdf_bytes = arquivo_bse.getvalue()
     
-    with st.spinner("⚡ Lendo e analisando o Boletim de Serviço (processando tabelas sem bordas e parágrafos)..."):
+    with st.spinner("⚡ Lendo e analisando o Boletim de Serviço (processando tabelas, parágrafos e assinaturas)..."):
         texto_boletim_html = extrair_texto_boletim_estruturado(pdf_bytes)
-        autoridade = identificar_autoridade(texto_boletim_html)
         atos = extrair_atos_normativos_html(texto_boletim_html)
 
     st.success(f"✅ Análise concluída! Identificados **{len(atos)}** atos normativos no Boletim de Serviço.")
-
-    col_aut1, col_aut2 = st.columns(2)
-    with col_aut1:
-        nome_autoridade = st.text_input("Signatário Identificado (Nome)", value=autoridade["nome"])
-    with col_aut2:
-        cargo_autoridade = st.text_input("Cargo", value=autoridade["cargo"])
-
     st.markdown("---")
     st.markdown("### 📜 Atos Encontrados (Clique para expandir e editar)")
 
@@ -437,7 +438,6 @@ if arquivo_bse is not None:
                 if tem_tabela:
                     st.warning("⚠️ **Tabela Detectada neste Ato!** O editor visual pode desconfigurar tabelas extraídas. O modo 'Código-Fonte HTML' foi selecionado por padrão para proteger a formatação.")
                 
-                # Permite trocar entre o Editor Visual e o Editor de HTML puro
                 modo_edicao = st.radio(
                     "Modo de Edição:",
                     ["Visual (Texto Rico)", "Código-Fonte HTML (Preserva Tabelas)"],
@@ -462,15 +462,21 @@ if arquivo_bse is not None:
                     with st.expander("👁️ Pré-visualização da Impressão (HTML Renderezado)"):
                         st.markdown(conteudo_editado_html, unsafe_allow_html=True)
 
-                st.markdown("**Nota de Publicação (DOU)**")
-                nota_editada = st.text_input("Nota de Publicação", value=ato['nota_publicacao'], key=f"nota_{ato['id']}")
+                st.markdown("#### Dados da Assinatura e Publicação")
+                col_nome, col_cargo = st.columns(2)
+                with col_nome:
+                    nome_editado = st.text_input("Signatário (Nome)", value=ato["nome_autoridade"], key=f"nome_{ato['id']}", placeholder="Digite o nome da autoridade")
+                with col_cargo:
+                    cargo_editado = st.text_input("Cargo", value=ato["cargo_autoridade"], key=f"cargo_{ato['id']}")
+                
+                nota_editada = st.text_input("Nota de Publicação (Opcional)", value=ato['nota_publicacao'], key=f"nota_{ato['id']}")
 
                 st.markdown("<br/>", unsafe_allow_html=True)
                 
                 if conteudo_editado_html:
                     try:
                         pdf_individual = gerar_pdf_fiel_sei(
-                            conteudo_editado_html, nome_autoridade, cargo_autoridade, nota_editada
+                            conteudo_editado_html, nome_editado, cargo_editado, nota_editada
                         )
                         st.download_button(
                             label="📄 Gerar e Baixar este Ato em PDF Formatado",
