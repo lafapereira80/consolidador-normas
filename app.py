@@ -34,6 +34,7 @@ except ImportError:
     OpenAI = None
 
 from auth_utils import gerar_hash_senha, verificar_senha
+from menu_utils import renderizar_cabecalho, renderizar_menu
 
 st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide", initial_sidebar_state="collapsed")
 
@@ -109,103 +110,17 @@ if not st.session_state.autenticado:
 
 # APÓS LOGIN: CONTEÚDO DA PÁGINA IDENTIFICAR E CRUZAR
 
-st.markdown("""
-<style>
-    [data-testid="stSidebar"] { display: none !important; }
-    [data-testid="collapsedControl"] { display: none !important; }
-    .main-header {
-        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-        padding: 20px 20px;
-        border-radius: 12px;
-        color: white;
-        text-align: center;
-        margin-bottom: 25px;
-    }
-    .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.2rem; margin-bottom: 0px; }
+renderizar_cabecalho("🔎 Identificação e Cruzamento de Atos", css_extra="""
     .card-achado {
         border: 1px solid #d0d4dc; border-radius: 10px; padding: 14px 18px;
         margin-bottom: 10px; background: #f8faff;
     }
     .card-achado.correlacionado { border-left: 5px solid #1e9c4f; }
     .card-achado.pendente { border-left: 5px solid #d98c00; }
-</style>
-<div class="main-header">
-    <h1>🔎 Identificação e Cruzamento de Atos</h1>
-</div>
-""", unsafe_allow_html=True)
-
-# --- MENU DE NAVEGAÇÃO SUPERIOR FIXO ---
-col_home, col_ext, col_cons, col_hist, col_usr, col_logout = st.columns([1.2, 1.5, 1.5, 1.2, 1.2, 1])
-
-with col_home:
-    st.markdown("🏠 **Início**")
-
-with col_ext:
-    ext_path = "pages/4_Extrair_Boletim_BSe.py"
-    if os.path.exists("pages"):
-        for f in os.listdir("pages"):
-            if ("extrair" in f.lower() or "boletim" in f.lower()) and f.endswith(".py"):
-                ext_path = f"pages/{f}"
-                break
-    try:
-        st.page_link(ext_path, label="📋 Extrair BSe", icon="➡️")
-    except Exception:
-        st.markdown(f'<a href="{ext_path.replace("pages/", "").replace(".py", "")}" target="_top" style="display:block;text-align:center;background:#f0f2f6;border:1px solid #d0d4dc;color:#31333F !important;padding:0.5rem;border-radius:0.5rem;text-decoration:none;font-weight:500;">➡️ 📋 Extrair BSe</a>', unsafe_allow_html=True)
-
-with col_cons:
-    cons_path = "pages/3_Consolidar_Norma.py"
-    if os.path.exists("pages"):
-        for f in os.listdir("pages"):
-            if "consolidar" in f.lower() and f.endswith(".py"):
-                cons_path = f"pages/{f}"
-                break
-    try:
-        st.page_link(cons_path, label="⚙️ Consolidar Norma", icon="➡️")
-    except Exception:
-        st.markdown(f'<a href="{cons_path.replace("pages/", "").replace(".py", "")}" target="_top" style="display:block;text-align:center;background:#f0f2f6;border:1px solid #d0d4dc;color:#31333F !important;padding:0.5rem;border-radius:0.5rem;text-decoration:none;font-weight:500;">➡️ ⚙️ Consolidar</a>', unsafe_allow_html=True)
-
-with col_hist:
-    hist_path = "pages/1_Historico.py"
-    if os.path.exists("pages"):
-        for f in os.listdir("pages"):
-            if "historico" in f.lower() and f.endswith(".py"):
-                hist_path = f"pages/{f}"
-                break
-    try:
-        st.page_link(hist_path, label="🗄️ Histórico", icon="➡️")
-    except Exception:
-        st.markdown(f'<a href="{hist_path.replace("pages/", "").replace(".py", "")}" target="_top" style="display:block;text-align:center;background:#f0f2f6;border:1px solid #d0d4dc;color:#31333F !important;padding:0.5rem;border-radius:0.5rem;text-decoration:none;font-weight:500;">➡️ 🗄️ Histórico</a>', unsafe_allow_html=True)
-
-with col_usr:
-    usr_path = "pages/usuarios.py"
-    if os.path.exists("pages"):
-        for f in os.listdir("pages"):
-            if "usuario" in f.lower() and f.endswith(".py"):
-                usr_path = f"pages/{f}"
-                break
-    try:
-        st.page_link(usr_path, label="👥 Usuários", icon="➡️")
-    except Exception:
-        st.markdown(f'<a href="{usr_path.replace("pages/", "").replace(".py", "")}" target="_top" style="display:block;text-align:center;background:#f0f2f6;border:1px solid #d0d4dc;color:#31333F !important;padding:0.5rem;border-radius:0.5rem;text-decoration:none;font-weight:500;">➡️ 👥 Usuários</a>', unsafe_allow_html=True)
-
-with col_logout:
-    if st.button("Sair", key="btn_sair_ident", type="secondary", use_container_width=True):
-        st.session_state.autenticado = False
-        st.rerun()
-
-st.markdown("---")
+""")
+renderizar_menu("inicio")
 
 # ----------------- CONEXÃO COM BANCO -----------------
-@st.cache_resource
-def init_supabase() -> Optional[Client]:
-    try:
-        url = st.secrets["supabase"]["url"]
-        key = st.secrets["supabase"]["key"]
-        return create_client(url, key)
-    except Exception:
-        return None
-
-supabase = init_supabase()
 if not supabase:
     st.error("⚠️ Não foi possível conectar ao Supabase.")
     st.stop()
@@ -277,7 +192,7 @@ conteúdo integral do documento. Regras obrigatórias:
    - 'e_documento_alterador': true se o documento altera, acrescenta ou revoga (total ou parcialmente)
      qualquer outro ato; caso contrário false.
    - 'atos_referenciados': uma entrada para CADA ato distinto afetado, contendo:
-       - 'tipo_operacao': exatamente um destre: "altera", "acrescenta", "revoga_parcial",
+       - 'tipo_operacao': exatamente um destes: "altera", "acrescenta", "revoga_parcial",
          "revoga_integral".
        - 'tipo_ato_afetado': espécie do ato afetado (ex.: "PORTARIA").
        - 'numero_ato_afetado': número do ato afetado tal como citado no texto (ex.: "10/PGJ").
@@ -421,7 +336,7 @@ def _chamar_groq(chave, itens, response_schema, modelos):
 def _chamar_openrouter(chave, itens, response_schema, modelos):
     if OpenAI is None:
         raise Exception("Biblioteca 'openai' não instalada no servidor.")
-    client = OpenAI(api_key=chave, base_url="[https://openrouter.ai/api/v1](https://openrouter.ai/api/v1)")
+    client = OpenAI(api_key=chave, base_url="https://openrouter.ai/api/v1")
     mensagens = _montar_mensagens_openai_like(itens, response_schema)
     ultimo_erro = None
     for modelo in modelos:
