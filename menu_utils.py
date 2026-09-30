@@ -11,6 +11,7 @@ ITENS_MENU = [
     ("consolidar", "pages/3_Consolidar_Norma.py", ("consolidar",), "Consolidar Norma", "⚙️"),
     ("historico", "pages/1_Historico.py", ("historico",), "Histórico", "🗄️"),
     ("usuarios", "pages/usuarios.py", ("usuario",), "Usuários", "👥"),
+    ("diagnostico", "pages/diagnostico.py", ("diagnostico",), "Diagnóstico", "🩺"),
 ]
 
 CSS_BASE = """
@@ -79,8 +80,8 @@ def renderizar_cabecalho(titulo_h1, css_extra=""):
 
 def renderizar_menu(ativa):
     """Menu superior padronizado. `ativa` é a chave da página atual."""
-    colunas = st.columns([1.6, 1.3, 1.6, 1.3, 1.3, 0.9])
-    for col, (chave, padrao, palavras, rotulo, icone) in zip(colunas[:5], ITENS_MENU):
+    colunas = st.columns([1.6, 1.3, 1.6, 1.3, 1.3, 1.3, 0.9])
+    for col, (chave, padrao, palavras, rotulo, icone) in zip(colunas[:len(ITENS_MENU)], ITENS_MENU):
         with col:
             if chave == ativa:
                 st.markdown(f'<div class="menu-ativo">{icone} {rotulo}</div>', unsafe_allow_html=True)
@@ -94,7 +95,7 @@ def renderizar_menu(ativa):
                     f'<a class="menu-fallback" href="/{href}" target="_top">{icone} {rotulo}</a>',
                     unsafe_allow_html=True,
                 )
-    with colunas[5]:
+    with colunas[len(ITENS_MENU)]:
         if st.button("🚪 Sair", key=f"btn_sair_{ativa}", type="secondary", use_container_width=True):
             st.session_state.autenticado = False
             try:
