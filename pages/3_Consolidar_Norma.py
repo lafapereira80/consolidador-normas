@@ -49,13 +49,12 @@ try:
 except ImportError:
     HAS_WEASYPRINT = False
 
-# PROTEÇÃO DE ACESSO
-if "autenticado" not in st.session_state or not st.session_state.autenticado:
-    st.warning("⚠️ Acesso negado. Você precisa fazer login na página principal para acessar esta área.")
-    st.page_link("app.py", label="Ir para a Tela de Login", icon="🔒")
-    st.stop()
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from menu_utils import configurar_pagina, exigir_login, renderizar_cabecalho, renderizar_menu
 
-st.set_page_config(page_title="Consolidar Norma", page_icon="⚙️", layout="wide", initial_sidebar_state="collapsed")
+configurar_pagina("Consolidar Norma", "⚙️")
+exigir_login()
 
 # =====================================================================
 # INICIALIZAÇÃO DO SUPABASE (CORREÇÃO)
@@ -76,73 +75,8 @@ if not supabase:
 
 # =====================================================================
 
-st.markdown("""
-<style>
-    [data-testid="stSidebar"] { display: none !important; }
-    [data-testid="collapsedControl"] { display: none !important; }
-    .main-header {
-        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-        padding: 20px 20px;
-        border-radius: 12px;
-        color: white;
-        text-align: center;
-        margin-bottom: 25px;
-    }
-    .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.2rem; margin-bottom: 0px; }
-</style>
-<div class="main-header">
-    <h1>⚙️ Consolidação de Normas (Autopilot)</h1>
-</div>
-""", unsafe_allow_html=True)
-
-# --- MENU DE NAVEGAÇÃO SUPERIOR FIXO ---
-col_home, col_ident, col_hist, col_usr, col_logout = st.columns([1.5, 1.5, 1.5, 1.5, 1])
-
-with col_home:
-    st.page_link("app.py", label="Início (Identificar)", icon="⬅️")
-
-with col_ident:
-    ident_path = "pages/2_Identificar_Cruzar.py"
-    if os.path.exists("pages"):
-        for f in os.listdir("pages"):
-            if "identificar" in f.lower() and f.endswith(".py"):
-                ident_path = f"pages/{f}"
-                break
-    try:
-        st.page_link(ident_path, label="Identificar Ato", icon="➡️")
-    except:
-        st.markdown(f'<a href="{ident_path.replace("pages/", "").replace(".py", "")}" target="_top" style="display:block;text-align:center;background:#f0f2f6;border:1px solid #d0d4dc;color:#31333F !important;padding:0.5rem;border-radius:0.5rem;text-decoration:none;font-weight:500;">➡️ 🔎 Identificar</a>', unsafe_allow_html=True)
-
-with col_hist:
-    hist_path = "pages/1_Historico.py"
-    if os.path.exists("pages"):
-        for f in os.listdir("pages"):
-            if "historico" in f.lower() and f.endswith(".py"):
-                hist_path = f"pages/{f}"
-                break
-    try:
-        st.page_link(hist_path, label="🗄️ Histórico", icon="➡️")
-    except:
-        st.markdown(f'<a href="{hist_path.replace("pages/", "").replace(".py", "")}" target="_top" style="display:block;text-align:center;background:#f0f2f6;border:1px solid #d0d4dc;color:#31333F !important;padding:0.5rem;border-radius:0.5rem;text-decoration:none;font-weight:500;">➡️ 🗄️ Histórico</a>', unsafe_allow_html=True)
-
-with col_usr:
-    usr_path = "pages/usuarios.py"
-    if os.path.exists("pages"):
-        for f in os.listdir("pages"):
-            if "usuario" in f.lower() and f.endswith(".py"):
-                usr_path = f"pages/{f}"
-                break
-    try:
-        st.page_link(usr_path, label="👥 Usuários", icon="➡️")
-    except:
-        st.markdown(f'<a href="{usr_path.replace("pages/", "").replace(".py", "")}" target="_top" style="display:block;text-align:center;background:#f0f2f6;border:1px solid #d0d4dc;color:#31333F !important;padding:0.5rem;border-radius:0.5rem;text-decoration:none;font-weight:500;">➡️ 👥 Usuários</a>', unsafe_allow_html=True)
-
-with col_logout:
-    if st.button("Sair", key="btn_sair_cons", type="secondary", use_container_width=True):
-        st.session_state.autenticado = False
-        st.rerun()
-
-st.markdown("---")
+renderizar_cabecalho("⚙️ Consolidação de Normas (Autopilot)")
+renderizar_menu("consolidar")
 
 # ----------------- HUB MULTI-IA (mesmo do app.py) -----------------
 PROVEDORES_IA = {

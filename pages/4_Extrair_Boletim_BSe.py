@@ -18,79 +18,14 @@ try:
 except ImportError:
     HAS_WEASYPRINT = False
 
-st.set_page_config(page_title="Extrair do Boletim de Serviço", page_icon="📋", layout="wide", initial_sidebar_state="collapsed")
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from menu_utils import configurar_pagina, exigir_login, renderizar_cabecalho, renderizar_menu
 
-# --- PROTEÇÃO DE ACESSO ---
-if "autenticado" not in st.session_state or not st.session_state.autenticado:
-    st.warning("⚠️ Acesso negado. Você precisa fazer login na página principal para acessar esta área.")
-    st.page_link("app.py", label="Ir para a Tela de Login", icon="🔑")
-    st.stop()
-
-# --- ESTILIZAÇÃO E CABEÇALHO ---
-st.markdown("""
-<style>
-    [data-testid="stSidebar"] { display: none !important; }
-    [data-testid="collapsedControl"] { display: none !important; }
-    .main-header {
-        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-        padding: 20px 20px;
-        border-radius: 12px;
-        color: white;
-        text-align: center;
-        margin-bottom: 25px;
-    }
-    .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.2rem; margin-bottom: 0px; }
-</style>
-<div class="main-header">
-    <h1>📋 Extração de Atos do Boletim de Serviço (BSe)</h1>
-</div>
-""", unsafe_allow_html=True)
-
-# --- MENU DE NAVEGAÇÃO SUPERIOR FIXO ---
-col_home, col_ext, col_cons, col_hist, col_usr, col_logout = st.columns([1.2, 1.5, 1.5, 1.2, 1.2, 1])
-
-with col_home:
-    try: st.page_link("app.py", label="Início", icon="🏠")
-    except Exception: st.markdown('🏠 **Início**')
-
-with col_ext: st.markdown("📋 **Extrair BSe**")
-
-with col_cons:
-    cons_path = "pages/3_Consolidar_Norma.py"
-    if os.path.exists("pages"):
-        for f in os.listdir("pages"):
-            if "consolidar" in f.lower() and f.endswith(".py"):
-                cons_path = f"pages/{f}"
-                break
-    try: st.page_link(cons_path, label="⚙️ Consolidar Norma", icon="➡️")
-    except Exception: st.markdown(f'<a href="{cons_path.replace("pages/", "").replace(".py", "")}" target="_top" style="display:block;text-align:center;background:#f0f2f6;border:1px solid #d0d4dc;color:#31333F !important;padding:0.5rem;border-radius:0.5rem;text-decoration:none;font-weight:500;">➡️ ⚙️ Consolidar</a>', unsafe_allow_html=True)
-
-with col_hist:
-    hist_path = "pages/1_Historico.py"
-    if os.path.exists("pages"):
-        for f in os.listdir("pages"):
-            if "historico" in f.lower() and f.endswith(".py"):
-                hist_path = f"pages/{f}"
-                break
-    try: st.page_link(hist_path, label="🗄️ Histórico", icon="➡️")
-    except Exception: st.markdown(f'<a href="{hist_path.replace("pages/", "").replace(".py", "")}" target="_top" style="display:block;text-align:center;background:#f0f2f6;border:1px solid #d0d4dc;color:#31333F !important;padding:0.5rem;border-radius:0.5rem;text-decoration:none;font-weight:500;">➡️ 🗄️ Histórico</a>', unsafe_allow_html=True)
-
-with col_usr:
-    usr_path = "pages/usuarios.py"
-    if os.path.exists("pages"):
-        for f in os.listdir("pages"):
-            if "usuario" in f.lower() and f.endswith(".py"):
-                usr_path = f"pages/{f}"
-                break
-    try: st.page_link(usr_path, label="👥 Usuários", icon="➡️")
-    except Exception: st.markdown(f'<a href="{usr_path.replace("pages/", "").replace(".py", "")}" target="_top" style="display:block;text-align:center;background:#f0f2f6;border:1px solid #d0d4dc;color:#31333F !important;padding:0.5rem;border-radius:0.5rem;text-decoration:none;font-weight:500;">➡️ 👥 Usuários</a>', unsafe_allow_html=True)
-
-with col_logout:
-    if st.button("Sair", key="btn_sair_bse", type="secondary", use_container_width=True):
-        st.session_state.autenticado = False
-        st.rerun()
-
-st.markdown("---")
+configurar_pagina("Extrair do Boletim de Serviço", "📋")
+exigir_login()
+renderizar_cabecalho("📋 Extração de Atos do Boletim de Serviço (BSe)")
+renderizar_menu("bse")
 
 # --- BARRA DE FERRAMENTAS DO EDITOR RICO ---
 QUILL_TOOLBAR = [
