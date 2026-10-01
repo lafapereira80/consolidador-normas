@@ -13,9 +13,9 @@ renderizar_cabecalho("🩺 Diagnóstico do Sistema")
 renderizar_menu("diagnostico")
 
 PROVEDORES = {
-    "Google Gemini": ("gemini", "GEMINI_API_KEY", ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]),
-    "Groq": ("groq", "GROQ_API_KEY", ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"]),
-    "OpenRouter": ("openrouter", "OPENROUTER_API_KEY", ["deepseek/deepseek-v4-flash", "qwen/qwen3.5-plus", "meta-llama/llama-4-maverick"]),
+    "Google Gemini": ("gemini", "GEMINI_API_KEY", ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]),
+    "Groq": ("groq", "GROQ_API_KEY", ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]),
+    "OpenRouter": ("openrouter", "OPENROUTER_API_KEY", ["deepseek/deepseek-v4-flash", "qwen/qwen3.5-plus-20260420", "meta-llama/llama-4-maverick"]),
     "Mistral AI": ("mistral", "MISTRAL_API_KEY", ["mistral-small-latest", "open-mistral-nemo"]),
 }
 PROMPT = 'Responda somente com o JSON {"ok": true}'
@@ -35,14 +35,17 @@ def testar_modelo(motor, chave, modelo):
     if motor == "gemini":
         from google import genai
         from google.genai import types
-        r = genai.Client(api_key=chave).models.generate_content(
+        client = genai.Client(api_key=chave)  # mantém a referência viva durante a chamada
+        r = client.models.generate_content(
             model=modelo, contents=PROMPT,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 thinking_config=types.ThinkingConfig(thinking_level="low"),
             ),
         )
-        return r.text
+        texto = r.text
+        client.close() if hasattr(client, "close") else None
+        return texto
     if motor == "groq":
         from groq import Groq
         r = Groq(api_key=chave).chat.completions.create(

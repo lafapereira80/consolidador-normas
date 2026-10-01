@@ -88,12 +88,12 @@ PROVEDORES_IA = {
     },
     "Groq (Llama / GPT-OSS)": {
         "motor": "groq",
-        "modelos": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"],
+        "modelos": ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
         "secret": "GROQ_API_KEY",
     },
     "OpenRouter (Qwen / DeepSeek / Llama)": {
         "motor": "openrouter",
-        "modelos": ["deepseek/deepseek-v4-flash", "qwen/qwen3.5-plus", "meta-llama/llama-4-maverick"],
+        "modelos": ["deepseek/deepseek-v4-flash", "qwen/qwen3.5-plus-20260420", "meta-llama/llama-4-maverick"],
         "secret": "OPENROUTER_API_KEY",
     },
     "Mistral AI (Small / Nemo)": {
@@ -463,7 +463,7 @@ def _chamar_openrouter(chave, itens, response_schema, modelos):
                         time.sleep(tempo_espera)
                         continue
                     break
-                elif "404" in erro_str or "NOT_FOUND" in erro_str or isinstance(e, (ValidationError, json.JSONDecodeError)) or "JSON" in erro_str.upper() or "não retornou" in str(e):
+                elif "404" in erro_str or "NOT_FOUND" in erro_str or "NOT A VALID MODEL" in erro_str or "400" in erro_str or isinstance(e, (ValidationError, json.JSONDecodeError)) or "JSON" in erro_str.upper() or "não retornou" in str(e):
                     st.toast(f"⚠️ {modelo} indisponível/formato inválido. Pulando...", icon="⏭️")
                     break
                 else:
