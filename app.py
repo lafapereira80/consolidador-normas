@@ -353,7 +353,7 @@ def _chamar_openrouter(chave, itens, response_schema, modelos):
                         time.sleep(min(tentativa * 3, 10))
                         continue
                     break
-                elif "404" in erro_str or "NOT_FOUND" in erro_str or "NOT A VALID MODEL" in erro_str or "400" in erro_str or isinstance(e, (ValidationError, json.JSONDecodeError)):
+                elif "404" in erro_str or "NOT_FOUND" in erro_str or "NOT A VALID MODEL" in erro_str or "400" in erro_str or "402" in erro_str or "CREDITS" in erro_str or isinstance(e, (ValidationError, json.JSONDecodeError)):
                     break
                 else:
                     raise e
