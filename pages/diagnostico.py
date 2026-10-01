@@ -44,7 +44,8 @@ def testar_modelo(motor, chave, modelo):
             ),
         )
         texto = r.text
-        client.close() if hasattr(client, "close") else None
+        if hasattr(client, "close"):
+            client.close()
         return texto
     if motor == "groq":
         from groq import Groq
@@ -56,7 +57,7 @@ def testar_modelo(motor, chave, modelo):
         from openai import OpenAI
         r = OpenAI(api_key=chave, base_url="https://openrouter.ai/api/v1").chat.completions.create(
             model=modelo, messages=[{"role": "user", "content": PROMPT}],
-            response_format={"type": "json_object"})
+            response_format={"type": "json_object"}, max_tokens=200)
         return r.choices[0].message.content
     if motor == "mistral":
         try:

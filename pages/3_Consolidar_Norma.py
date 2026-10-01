@@ -463,7 +463,7 @@ def _chamar_openrouter(chave, itens, response_schema, modelos):
                         time.sleep(tempo_espera)
                         continue
                     break
-                elif "404" in erro_str or "NOT_FOUND" in erro_str or "NOT A VALID MODEL" in erro_str or "400" in erro_str or isinstance(e, (ValidationError, json.JSONDecodeError)) or "JSON" in erro_str.upper() or "não retornou" in str(e):
+                elif "404" in erro_str or "NOT_FOUND" in erro_str or "NOT A VALID MODEL" in erro_str or "400" in erro_str or "402" in erro_str or "CREDITS" in erro_str or isinstance(e, (ValidationError, json.JSONDecodeError)) or "JSON" in erro_str.upper() or "não retornou" in str(e):
                     st.toast(f"⚠️ {modelo} indisponível/formato inválido. Pulando...", icon="⏭️")
                     break
                 else:
