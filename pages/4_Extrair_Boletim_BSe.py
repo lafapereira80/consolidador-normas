@@ -64,7 +64,7 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
                         linhas = tb.extract()
                         if not linhas: continue
                         texto_tabela = " ".join([str(c) for linha in linhas for c in linha if c])
-                        if re.search(r'(Portaria|RESOLUÇÃO|ATO)\s+n[º°o\.]?\s*\d+', texto_tabela, re.IGNORECASE): continue
+                        if re.search(r'(Portaria|RESOLUÇÃO|ATO)\s+n\.?[º°o]?\s*\d+', texto_tabela, re.IGNORECASE): continue 
                         if re.search(r'(Art\.\s*\d+|§\s*\d+|Parágrafo único)', texto_tabela, re.IGNORECASE): continue
                         if any(len(str(c)) > 250 for linha in linhas for c in linha if c): continue
                             
