@@ -177,9 +177,9 @@ def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
     def is_inicio_ato(elem_html: str) -> bool:
         texto_puro = re.sub(r'<[^>]+>', '', elem_html).strip()
         # Padrão 2016+: Portaria nº 123
-        match_padrao = re.search(r'(Portaria|RESOLUÇÃO|ATO)\s+n[º°o\.]?\s*\d+', texto_puro, re.IGNORECASE)
+        match_padrao = re.search(r'(Portaria|RESOLUÇÃO|ATO)\s+n\.?[º°o]?\s*\d+', texto_puro, re.IGNORECASE)
         # Padrão 2015: Apenas "Nº 194" isolado
-        match_isolado = re.match(r'^N[º°o\.]?\s*\d+$', texto_puro, re.IGNORECASE)
+        match_isolado = re.match(r'^N\.?[º°o]?\s*\d+$', texto_puro, re.IGNORECASE)
         
         if match_padrao:
             start_idx = match_padrao.start()
@@ -215,8 +215,8 @@ def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
             corpo_limpo = corpo_limpo.replace(nota_publicacao, "").strip()
 
         texto_puro = re.sub(r'<[^>]+>', '', corpo_limpo).strip()
-        match_titulo = re.search(r'((?:Portaria|RESOLUÇÃO|ATO)\s+n[º°o\.]?\s*\d+.*?)(?:\n|$)', texto_puro, re.IGNORECASE)
-        match_numero = re.search(r'^(N[º°o\.]?\s*\d+)(?:\n|$)', texto_puro, re.IGNORECASE)
+        match_titulo = re.search(r'((?:Portaria|RESOLUÇÃO|ATO)\s+n\.?[º°o]?\s*\d+.*?)(?:\n|$)', texto_puro, re.IGNORECASE)
+        match_numero = re.search(r'^(N\.?[º°o]?\s*\d+)(?:\n|$)', texto_puro, re.IGNORECASE)
         
         if match_titulo:
             primeira_linha = match_titulo.group(1).strip()[:120]
