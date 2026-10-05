@@ -64,7 +64,7 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
                         linhas = tb.extract()
                         if not linhas: continue
                         texto_tabela = " ".join([str(c) for linha in linhas for c in linha if c])
-                        if re.search(r'(Portaria|RESOLUÇÃO|ATO)\s+n\.?[º°o]?\s*\d+', texto_tabela, re.IGNORECASE): continue 
+                        if re.search(r'(Portaria|RESOLUÇÃO|ATO)(?:\s+[A-Z0-9/-]+)?\s+n[.\s]*[º°oO0]?[.\s]*\d+', texto_tabela, re.IGNORECASE): continue 
                         if re.search(r'(Art\.\s*\d+|§\s*\d+|Parágrafo único)', texto_tabela, re.IGNORECASE): continue
                         if any(len(str(c)) > 250 for linha in linhas for c in linha if c): continue
                             
@@ -176,10 +176,9 @@ def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
     
     def is_inicio_ato(elem_html: str) -> bool:
         texto_puro = re.sub(r'<[^>]+>', '', elem_html).strip()
-        # Padrão 2016+: Portaria nº 123
-        match_padrao = re.search(r'(Portaria|RESOLUÇÃO|ATO)\s+n\.?[º°o]?\s*\d+', texto_puro, re.IGNORECASE)
-        # Padrão 2015: Apenas "Nº 194" isolado
-        match_isolado = re.match(r'^N\.?[º°o]?\s*\d+$', texto_puro, re.IGNORECASE)
+        # Regex flexível para capturar espaços invisíveis, acrônimos intermediários e variações entre o "n", o ponto e o símbolo ordinal
+        match_padrao = re.search(r'(Portaria|RESOLUÇÃO|ATO)(?:\s+[A-Z0-9/-]+)?\s+n[.\s]*[º°oO0]?[.\s]*\d+', texto_puro, re.IGNORECASE)
+        match_isolado = re.search(r'(?:^|\n)\s*(N[.\s]*[º°oO0]?[.\s]*\d+)\s*(?:\n|$)', texto_puro, re.IGNORECASE)
         
         if match_padrao:
             start_idx = match_padrao.start()
@@ -205,7 +204,6 @@ def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
     for idx, corpo in enumerate(atos):
         corpo_limpo = corpo.strip()
         corpo_limpo = re.sub(r'<p[^>]*>\s*Boletim de Serviço nº \d+.*?</p>', '', corpo_limpo, flags=re.IGNORECASE)
-        # Limpar indicadores de grupo antigos que ficavam soltos (ex: "Portarias/DG, de 17 de abril de 2015")
         corpo_limpo = re.sub(r'<p[^>]*>\s*Portarias?/(?:DG|PGJM).*?</p>', '', corpo_limpo, flags=re.IGNORECASE)
         
         nota_publicacao = ""
@@ -215,33 +213,39 @@ def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
             corpo_limpo = corpo_limpo.replace(nota_publicacao, "").strip()
 
         texto_puro = re.sub(r'<[^>]+>', '', corpo_limpo).strip()
-        match_titulo = re.search(r'((?:Portaria|RESOLUÇÃO|ATO)\s+n\.?[º°o]?\s*\d+.*?)(?:\n|$)', texto_puro, re.IGNORECASE)
-        match_numero = re.search(r'^(N\.?[º°o]?\s*\d+)(?:\n|$)', texto_puro, re.IGNORECASE)
         
-        if match_titulo:
-            primeira_linha = match_titulo.group(1).strip()[:120]
-        elif match_numero:
+        # Busca restrita aos primeiros 300 caracteres para evitar pegar menções de outras portarias no meio do texto
+        texto_inicio = texto_puro[:300]
+        
+        match_titulo = re.search(r'((?:Portaria|RESOLUÇÃO|ATO)(?:\s+[A-Z0-9/-]+)?\s+n[.\s]*[º°oO0]?[.\s]*\d+.*?)(?:\n|$)', texto_inicio, re.IGNORECASE)
+        match_numero = re.search(r'(?:^|\n)\s*(N[.\s]*[º°oO0]?[.\s]*\d+)(?:\n|$)', texto_inicio, re.IGNORECASE)
+        
+        idx_titulo = match_titulo.start() if match_titulo else 9999
+        idx_numero = match_numero.start() if match_numero else 9999
+        
+        # O padrão que ocorrer primeiro no início do texto será adotado como título
+        if match_numero and idx_numero <= idx_titulo:
             primeira_linha = match_numero.group(1).strip()[:120]
+        elif match_titulo:
+            primeira_linha = match_titulo.group(1).strip()[:120]
         else:
             primeira_linha = f"Ato {idx+1}"
 
         cargo_autoridade = ""
         nome_autoridade = ""
         
-        # Inteligência Contextual (Essencial para atos de 2015 que começam direto no texto)
-        texto_inicio = texto_puro[:500].upper()
-        if "PROCURADOR-GERAL" in texto_inicio and "RESOLVE" in texto_inicio:
+        texto_inicio_upper = texto_puro[:500].upper()
+        if "PROCURADOR-GERAL" in texto_inicio_upper and "RESOLVE" in texto_inicio_upper:
             cargo_autoridade = "Procurador-Geral de Justiça Militar"
             nome_autoridade = autoridade_pgjm
             if not match_titulo and match_numero:
                 primeira_linha = f"Portaria {primeira_linha}/PGJM"
-        elif "DIRETOR-GERAL" in texto_inicio and "RESOLVE" in texto_inicio:
+        elif "DIRETOR-GERAL" in texto_inicio_upper and "RESOLVE" in texto_inicio_upper:
             cargo_autoridade = "Diretor-Geral do Ministério Público Militar"
             nome_autoridade = autoridade_dg
             if not match_titulo and match_numero:
                 primeira_linha = f"Portaria {primeira_linha}/DG"
         else:
-            # Fallback Padrão 2016+ (onde a sigla já vem escrita no título)
             if "/PGJM" in primeira_linha.upper():
                 cargo_autoridade = "Procurador-Geral de Justiça Militar"
                 nome_autoridade = autoridade_pgjm
@@ -249,7 +253,6 @@ def extrair_atos_normativos_html(texto_html: str) -> List[Dict[str, str]]:
                 cargo_autoridade = "Diretor-Geral do Ministério Público Militar"
                 nome_autoridade = autoridade_dg
                 
-        # Fallback Antigo (para boletins de 2009 com '(a)')
         match_assinatura = re.search(r'\(a\)\s*([A-ZÁÉÍÓÚÂÊÔÃÕÇ\s]+)', texto_puro)
         if match_assinatura:
             nome_extraido = match_assinatura.group(1).strip().split('\n')[0].strip()
