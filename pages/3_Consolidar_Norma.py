@@ -1,4 +1,4 @@
-# pages/3_Consolidar_Norma.py (com correção do erro supabase não definido)
+# pages/3_Consolidar_Norma.py (com correção do erro supabase não definido e truncamento LLM)
 import streamlit as st
 import tempfile
 import io
@@ -253,7 +253,7 @@ Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasi
 QUALQUER espécie normativa: Leis, Decretos, Resoluções, Portarias, Enunciados, Instruções Normativas etc.
 Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatórias:
 
-1. FIDELIDADE ABSOLUTA: transcreva com exatidão o conteúdo de cada dispositivo, preservando formatação (<b>, <i>, quebras <br/>).
+1. FIDELIDADE ABSOLUTA E PROIBIÇÃO DE RESUMOS (ANTI-TRUNCAMENTO): transcreva com exatidão o conteúdo de cada dispositivo, preservando formatação (<b>, <i>, quebras <br/>). É TERMINANTEMENTE PROIBIDO omitir, resumir, pular artigos, pular anexos ou agrupar textos. NUNCA utilize expressões como "(Página X)" ou reticências ("...") para encurtar o texto. Mesmo em revogações integrais, você DEVE transcrever 100% dos Artigos e Anexos originais (do primeiro ao último) no JSON. A omissão de qualquer trecho invalida o documento.
 2. SEPARAÇÃO ESTRUTURAL OBRIGATÓRIA:
    - 'ementa': Resumo descritivo do objeto da norma.
    - 'preambulo': Autoridade expedidora e os Considerandos.
@@ -305,8 +305,8 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
 
 6. REGRAS ESPECÍFICAS PARA DISPOSITIVOS COM TABELA (is_tabela=True)
    (conforme definido no sistema original)
-7. ANEXOS E CONTEÚDO PÓS-ASSINATURA: OBRIGATÓRIO ler e transcrever TODO o conteúdo após a assinatura.
-8. REVOGAÇÃO INTEGRAL: todos os dispositivos do ato revogado devem ser integralmente taxados.
+7. ANEXOS E CONTEÚDO PÓS-ASSINATURA: OBRIGATÓRIO ler e transcrever TODO o conteúdo após a assinatura integralmente.
+8. REVOGAÇÃO INTEGRAL: todos os dispositivos do ato revogado devem ser integralmente taxados. Nenhum artigo, parágrafo, inciso ou anexo do ato original pode ser deixado de fora da sua resposta.
 """
 
 def _prompt_schema_json(response_schema):
@@ -441,7 +441,7 @@ def _chamar_groq(chave, itens, response_schema, modelos):
 
 def _chamar_openrouter(chave, itens, response_schema, modelos):
     if OpenAI is None: raise Exception("Biblioteca 'openai' não instalada no servidor.")
-    client = OpenAI(api_key=chave, base_url="https://openrouter.ai/api/v1")
+    client = OpenAI(api_key=chave, base_url="[https://openrouter.ai/api/v1](https://openrouter.ai/api/v1)")
     mensagens = _montar_mensagens_openai_like(itens, response_schema)
     ultimo_erro = None
     for modelo in modelos:
@@ -816,6 +816,7 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
         quando alterada.
         Se o ato for de revogação integral, aplique a taxação completa em todos os dispositivos, anexos e tabelas,
         conforme item 8.
+        REGRA VITAL DE INTEGRIDADE: Você NÃO PODE resumir, pular ou omitir nenhum trecho do documento base. Reproduza fielmente todos os artigos, parágrafos, incisos e os Anexos inteiros. A presença de resumos como "(Página X)" anulará o processo.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
@@ -996,16 +997,10 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
         eh_capitulo_ou_anexo = "capitulo" in t or "anexo" in t
         texto_puro = re.sub(r'<[^>]+>', '', t_prin or '')
         if eh_capitulo_ou_anexo and len(texto_puro) <= 150:
-            # Título curto (ex.: "CAPÍTULO I", "ANEXO I"): mantém o destaque
-            # centralizado/negrito/maiúsculo de sempre.
             html += f"<div class='capitulo'>{t_prin}</div>"
             if not item.get("is_tabela"):
                 continue
         elif eh_capitulo_ou_anexo:
-            # Bloco longo (ex.: corpo inteiro de um Anexo, não só o título):
-            # força tudo em negrito/maiúsculo/centralizado deixava o texto
-            # ilegível. Só a 1ª linha é o título; o resto vira parágrafo
-            # normal, preservando negrito/itálico/riscado originais.
             partes_bloco = (t_prin or "").split("<br/>")
             if partes_bloco:
                 html += f"<div class='capitulo'>{partes_bloco[0].strip()}</div>"
@@ -1107,17 +1102,12 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
         eh_capitulo_ou_anexo = "capitulo" in t or "anexo" in t
         texto_puro = re.sub(r'<[^>]+>', '', t_prin or '')
         if eh_capitulo_ou_anexo and len(texto_puro) <= 150:
-            # Título curto: mantém o destaque centralizado/negrito de sempre.
             if "anexo" in t: doc.add_page_break()
             p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             _render_docx_p(p, t_prin, bold_all=True)
             if not item.get("is_tabela"):
                 continue
         elif eh_capitulo_ou_anexo:
-            # Bloco longo: só a 1ª linha é o título (centralizado/negrito); o
-            # resto vira parágrafo normal, preservando negrito/itálico/riscado
-            # originais (bold_all=True apagava essas tags e forçava tudo em
-            # negrito, deixando o corpo do Anexo desformatado).
             if "anexo" in t: doc.add_page_break()
             partes_bloco = (t_prin or "").split("<br/>")
             if partes_bloco:
