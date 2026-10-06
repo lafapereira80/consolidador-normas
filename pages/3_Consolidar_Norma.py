@@ -803,7 +803,7 @@ def _consultar_estado_e_historico(nome_padrao):
 # extensas isso estoura o limite de saída do modelo (ou do provedor de fallback), e a IA resumia/omitia o miolo
 # do ato. Agora o texto do ato base é segmentado de forma determinística (sem IA), a IA só decide o EFEITO do
 # ato alterador (revogação integral ou alterações pontuais) e o texto original nunca passa pela saída da IA.
-LIMITE_LEGADO_CHARS = 20000          # até este tamanho do ato base, mantém o fluxo original (uma chamada)
+LIMITE_LEGADO_CHARS = 0              # tamanho mínimo do ato base para usar o fluxo determinístico (0 = sempre que o texto for segmentável); só cai no fluxo antigo (uma chamada de IA) se a segmentação falhar ou o PDF for escaneado
 TAM_LOTE_CHARS = 16000               # tamanho máximo (texto) de cada lote de dispositivos enviado à IA
 MAX_DISP_LOTE = 25
 LIMITE_CHARS_ALTERADORA_LOTE = 90000
@@ -897,15 +897,16 @@ def segmentar_dispositivos(texto, assinatura_nome=None, assinatura_cargo=None):
     # remove a assinatura (nome + cargo) do corpo
     if assinatura_nome:
         nn = _norm_txt(assinatura_nome); cn = _norm_txt(assinatura_cargo or "")
+        rem = set()
         for k, (tp, v) in enumerate(itens):
             if tp != 't': continue
             p = _plano(v)
             if nn in _norm_txt(p) and len(p) <= len(assinatura_nome) + len(assinatura_cargo or "") + 25:
-                rem = [k]
+                rem.add(k)
                 if cn and cn not in _norm_txt(p) and k + 1 < len(itens) and itens[k+1][0] == 't' and _norm_txt(_plano(itens[k+1][1])) == cn:
-                    rem.append(k + 1)
-                itens = [x for n_, x in enumerate(itens) if n_ not in rem]
-                break
+                    rem.add(k + 1)
+        itens = [x for n_, x in enumerate(itens) if n_ not in rem]
+    itens = [x for x in itens if not (x[0] == 't' and re.match(r'^(Este texto n[ãa]o substitui|Nota: Este documento possui)', _plano(x[1]), re.IGNORECASE))]
     disps = []
     cur = None; fechado = False
     def novo(tipo, linha=None):
