@@ -1,4 +1,4 @@
-# pages/3_Consolidar_Norma.py (com correção do erro supabase não definido e truncamento LLM)
+# pages/3_Consolidar_Norma.py (com correção do erro supabase não definido)
 import streamlit as st
 import tempfile
 import io
@@ -8,6 +8,7 @@ import re
 import time
 import copy
 import hashlib
+import unicodedata
 import base64
 import traceback
 from html.parser import HTMLParser
@@ -253,7 +254,7 @@ Você é um Especialista Sênior em Técnica Legislativa do Poder Público brasi
 QUALQUER espécie normativa: Leis, Decretos, Resoluções, Portarias, Enunciados, Instruções Normativas etc.
 Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatórias:
 
-1. FIDELIDADE ABSOLUTA E PROIBIÇÃO DE RESUMOS (ANTI-TRUNCAMENTO): transcreva com exatidão o conteúdo de cada dispositivo, preservando formatação (<b>, <i>, quebras <br/>). É TERMINANTEMENTE PROIBIDO omitir, resumir, pular artigos, pular anexos ou agrupar textos. NUNCA utilize expressões como "(Página X)" ou reticências ("...") para encurtar o texto. Mesmo em revogações integrais, você DEVE transcrever 100% dos Artigos e Anexos originais (do primeiro ao último) no JSON. A omissão de qualquer trecho invalida o documento.
+1. FIDELIDADE ABSOLUTA: transcreva com exatidão o conteúdo de cada dispositivo, preservando formatação (<b>, <i>, quebras <br/>).
 2. SEPARAÇÃO ESTRUTURAL OBRIGATÓRIA:
    - 'ementa': Resumo descritivo do objeto da norma.
    - 'preambulo': Autoridade expedidora e os Considerandos.
@@ -305,8 +306,8 @@ Nunca assuma que o documento é necessariamente uma Portaria. Regras obrigatóri
 
 6. REGRAS ESPECÍFICAS PARA DISPOSITIVOS COM TABELA (is_tabela=True)
    (conforme definido no sistema original)
-7. ANEXOS E CONTEÚDO PÓS-ASSINATURA: OBRIGATÓRIO ler e transcrever TODO o conteúdo após a assinatura integralmente.
-8. REVOGAÇÃO INTEGRAL: todos os dispositivos do ato revogado devem ser integralmente taxados. Nenhum artigo, parágrafo, inciso ou anexo do ato original pode ser deixado de fora da sua resposta.
+7. ANEXOS E CONTEÚDO PÓS-ASSINATURA: OBRIGATÓRIO ler e transcrever TODO o conteúdo após a assinatura.
+8. REVOGAÇÃO INTEGRAL: todos os dispositivos do ato revogado devem ser integralmente taxados.
 """
 
 def _prompt_schema_json(response_schema):
@@ -441,7 +442,7 @@ def _chamar_groq(chave, itens, response_schema, modelos):
 
 def _chamar_openrouter(chave, itens, response_schema, modelos):
     if OpenAI is None: raise Exception("Biblioteca 'openai' não instalada no servidor.")
-    client = OpenAI(api_key=chave, base_url="[https://openrouter.ai/api/v1](https://openrouter.ai/api/v1)")
+    client = OpenAI(api_key=chave, base_url="https://openrouter.ai/api/v1")
     mensagens = _montar_mensagens_openai_like(itens, response_schema)
     ultimo_erro = None
     for modelo in modelos:
@@ -554,6 +555,8 @@ def converter_para_iso(data_str):
 def extrair_conteudo_cache(file_bytes, nome_arquivo, dpi_ocr=1.5, max_paginas_ocr=None):
     return extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr, max_paginas_ocr)
 
+_RE_RODAPE_SEI = re.compile(r'\(\d+\)\s*SEI\s+[\d./-]+\s*/\s*pg\.\s*\d+', re.IGNORECASE)
+
 def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_paginas_ocr=None):
     if nome_arquivo.lower().endswith(".docx"): return [f"ARQUIVO DOCX: {nome_arquivo}"]
     try:
@@ -565,21 +568,41 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_pagin
             page_text = page.get_text()
             if re.search(r'ANEXO\s+[IVXLC]+', page_text, re.IGNORECASE):
                 html_text += "[ANEXO]\n"
+            blocks = page.get_text("dict", sort=True).get("blocks", [])
+            # Rodapé de sistema (ex.: "- Portaria PGJM 7 (1022365) SEI ... / pg. 2"): era misturado ao texto e
+            # às células das tabelas. Agora é descartado e usado como limite inferior da busca de tabelas.
+            rodape_y0 = None
+            for b in blocks:
+                if b.get('type') != 0: continue
+                for l in b.get("lines", []):
+                    txt_l = "".join(s.get("text", "") for s in l.get("spans", []))
+                    if _RE_RODAPE_SEI.search(txt_l):
+                        y = l.get("bbox", (0, 0, 0, 0))[1]
+                        rodape_y0 = y if rodape_y0 is None else min(rodape_y0, y)
             tabelas_bbox = []
+            tabelas_itens = []  # (y0, texto) — inseridas na posição real da página
             try:
-                tab_finder = page.find_tables()
+                try:
+                    if rodape_y0 is not None:
+                        tab_finder = page.find_tables(clip=fitz.Rect(page.rect.x0, page.rect.y0, page.rect.x1, rodape_y0))
+                    else:
+                        tab_finder = page.find_tables()
+                except TypeError:
+                    tab_finder = page.find_tables()
                 for tabela in tab_finder.tables:
                     linhas = tabela.extract()
                     if not linhas: continue
                     caracteres_uteis += sum(len(str(c or "")) for linha in linhas for c in linha)
-                    tabelas_bbox.append(fitz.Rect(tabela.bbox))
-                    html_text += "[TABELA]\n"
+                    rect_tab = fitz.Rect(tabela.bbox)
+                    tabelas_bbox.append(rect_tab)
+                    txt_tab = "[TABELA]\n"
                     for linha in linhas:
-                        html_text += " | ".join((str(c).strip() if c is not None else "") for c in linha) + "\n"
-                    html_text += "[/TABELA]\n<br/>\n"
+                        txt_tab += " | ".join((str(c).strip() if c is not None else "") for c in linha) + "\n"
+                    txt_tab += "[/TABELA]\n<br/>\n"
+                    tabelas_itens.append((rect_tab.y0, txt_tab))
             except Exception:
                 pass
-            blocks = page.get_text("dict", sort=True).get("blocks", [])
+            itens_texto = []
             for b in blocks:
                 if b.get('type') != 0: continue
                 bloco_rect = fitz.Rect(b.get("bbox", (0, 0, 0, 0)))
@@ -587,6 +610,9 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_pagin
                     continue
                 bloco_linhas = ""
                 for l in b.get("lines", []):
+                    txt_l = "".join(s.get("text", "") for s in l.get("spans", []))
+                    if _RE_RODAPE_SEI.search(txt_l):
+                        continue
                     linha_span = ""
                     for s in l.get("spans", []):
                         texto = s.get("text", "")
@@ -597,7 +623,16 @@ def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_pagin
                         if flags & 2**1: texto = f"<i>{texto}</i>"
                         linha_span += texto
                     if linha_span.strip(): bloco_linhas += linha_span + " "
-                if bloco_linhas.strip(): html_text += bloco_linhas.strip() + "<br/>\n"
+                if bloco_linhas.strip():
+                    itens_texto.append((bloco_rect.y0, bloco_linhas.strip() + "<br/>\n"))
+            tabelas_itens.sort(key=lambda x: x[0])
+            ti = 0
+            for y0, txt in itens_texto:
+                while ti < len(tabelas_itens) and tabelas_itens[ti][0] <= y0:
+                    html_text += tabelas_itens[ti][1]; ti += 1
+                html_text += txt
+            while ti < len(tabelas_itens):
+                html_text += tabelas_itens[ti][1]; ti += 1
             html_text += "<br/>\n"
         if caracteres_uteis < 30 * max(doc.page_count, 1):
             partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO. Leia o conteúdo visualmente, inclusive tabelas:"]
@@ -672,7 +707,7 @@ def corrigir_posicionamento_tabela(consolidacao: dict):
             continue
         txt_alt = disp.get("texto_principal_alterada") or ""
         txt_pos_alt = disp.get("texto_pos_tabela_alterada") or ""
-        if "redação dada pelo" in txt_pos_alt.lower() or "nova redação" in txt_pos_alt.lower():
+        if "redação dada pelo" in txt_pos_alt.lower() or "nova redação" in txt_pos_alt.lower() or "revogado pelo" in txt_pos_alt.lower():
             continue
         nova_redacao = None
         texto_antigo = txt_alt
@@ -760,11 +795,430 @@ def _consultar_estado_e_historico(nome_padrao):
     except Exception:
         return None, []
 
+# =====================================================================
+# PROCESSAMENTO EM LOTES (normas extensas) — CORREÇÃO DO TRUNCAMENTO
+# =====================================================================
+# Causa do erro original: o ato base inteiro + o ato alterador inteiro eram enviados numa ÚNICA chamada e a IA
+# precisava devolver, num único JSON, TODOS os dispositivos em duas versões (alterada e consolidada). Em normas
+# extensas isso estoura o limite de saída do modelo (ou do provedor de fallback), e a IA resumia/omitia o miolo
+# do ato. Agora o texto do ato base é segmentado de forma determinística (sem IA), a IA só decide o EFEITO do
+# ato alterador (revogação integral ou alterações pontuais) e o texto original nunca passa pela saída da IA.
+LIMITE_LEGADO_CHARS = 20000          # até este tamanho do ato base, mantém o fluxo original (uma chamada)
+TAM_LOTE_CHARS = 16000               # tamanho máximo (texto) de cada lote de dispositivos enviado à IA
+MAX_DISP_LOTE = 25
+LIMITE_CHARS_ALTERADORA_LOTE = 90000
+LIMITE_CHARS_PLANO = 25000
+LIMITE_EDICAO_DETALHADA = 40
+
+class CabecalhoNorma(BaseModel):
+    norma_base: MetadadosNorma
+    cabecalho_complemento: str; orgaos_emissores: str; titulo_portaria: str; ementa: str; preambulo: str
+    assinatura_nome: str; assinatura_cargo: str
+
+class PlanoAlteracao(BaseModel):
+    metadados: MetadadosNorma
+    revogacao_integral: bool = Field(description="True somente se o ato alterador revoga o ato base COMO UM TODO (inclusive por cláusula 'revogadas as disposições em contrário, em especial <ato base>').")
+    citacao_revogacao: str = Field(default="", description="Se revogacao_integral=True: citação exata no formato 'Art. 3 da PORTARIA Nº 5/PGJM, de 17 de janeiro de 2025' (artigo do ato alterador que revoga o ato base).")
+
+class AlteracaoLote(BaseModel):
+    idx: int = Field(description="Número [IDX n] do dispositivo do lote que foi afetado.")
+    dispositivo_atualizado: Dispositivo
+    dispositivos_novos_apos: List[Dispositivo] = Field(default_factory=list, description="Dispositivos ACRESCENTADOS pelo ato alterador imediatamente após este.")
+
+class ResultadoLote(BaseModel):
+    alteracoes: List[AlteracaoLote]
+
+_RE_ART = re.compile(r'^Art\.\s*\d+', re.IGNORECASE)
+_RE_PAR = re.compile(r'^(Par[áa]grafo\s+[ÚUúu]nico|§\s*\d+)')
+_RE_INC = re.compile(r'^[IVXLC]+\s*[–—-]\s*\S')
+_RE_ALI = re.compile(r'^[a-z](\.\d+)?\)\s')
+_RE_CAP = re.compile(r'^(T[ÍI]TULO|CAP[ÍI]TULO|LIVRO|PARTE|SUBSE[ÇC][ÃA]O|SE[ÇC][ÃA]O)\s+([IVXLC]+|\d+|[ÚU]NIC[AO])\b', re.IGNORECASE)
+_RE_ANEXO = re.compile(r'^ANEXO\s+([IVXLC]+|\d+|[ÚU]NICO)\s*$', re.IGNORECASE)
+_RE_SUMARIO = re.compile(r'^SUM[ÁA]RIO$', re.IGNORECASE)
+
+def _plano(h):
+    return re.sub(r'\s+', ' ', unescape(re.sub(r'<[^>]+>', '', h or ''))).strip()
+
+def _norm_txt(s):
+    return ''.join(c for c in unicodedata.normalize('NFKD', s or '') if not unicodedata.combining(c)).lower().strip()
+
+def _texto_unico(partes):
+    if isinstance(partes, list) and len(partes) == 1 and isinstance(partes[0], str) and partes[0].startswith("CONTEÚDO DO ARQUIVO"):
+        return partes[0]
+    return None
+
+def _limpar_html_linha(l):
+    l = re.sub(r'<b>\s*-\s*</b>', '-', l)
+    l = re.sub(r'</b>(\s*)<b>', r'\1', l)
+    l = re.sub(r'<i>\s*</i>|<b>\s*</b>', '', l)
+    return l.strip()
+
+def _parsear_tabela(linhas_tab):
+    rows = []
+    for ln in linhas_tab:
+        if " | " in ln or ln.strip() == "|" or ln.startswith(" |") or ln.endswith(" |"):
+            rows.append([c.strip() for c in ln.split(" | ")])
+        elif rows and ln.strip():
+            rows[-1][-1] = (rows[-1][-1] + "<br/>" + ln.strip()) if rows[-1][-1] else ln.strip()
+        elif ln.strip():
+            rows.append([ln.strip()])
+    if not rows: return []
+    n = max(len(r) for r in rows)
+    return [r + [""] * (n - len(r)) for r in rows]
+
+def segmentar_dispositivos(texto, assinatura_nome=None, assinatura_cargo=None):
+    """Segmenta deterministicamente o texto extraído do ato em dispositivos (um por Artigo, mais títulos,
+    capítulos, seções, anexos, tabelas). Retorna None se não reconhecer a estrutura (aí vale o fluxo antigo)."""
+    if not texto: return None
+    bruto = texto.split("\n")
+    itens = []   # ('t', linha) ou ('tab', [linhas])
+    i = 0
+    while i < len(bruto):
+        l = bruto[i].rstrip()
+        if l.strip() == "[TABELA]":
+            blk = []; i += 1
+            while i < len(bruto) and bruto[i].strip() != "[/TABELA]":
+                blk.append(bruto[i]); i += 1
+            itens.append(('tab', blk)); i += 1; continue
+        i += 1
+        s = l.strip()
+        if not s or re.match(r'^=== P[ÁA]GINA \d+ ===$', s) or s in ("[ANEXO]", "<br/>") or s.startswith("CONTEÚDO DO ARQUIVO"):
+            continue
+        if s.endswith("<br/>"): s = s[:-5].strip()
+        if not s or _RE_RODAPE_SEI.search(s): continue
+        itens.append(('t', _limpar_html_linha(s)))
+    # corte da assinatura eletrônica final
+    for k, (tp, v) in enumerate(itens):
+        if tp == 't' and _plano(v).lower().startswith("documento assinado eletronicamente"):
+            itens = itens[:k]; break
+    ini = next((k for k, (tp, v) in enumerate(itens) if tp == 't' and re.match(r'^Art\.\s*1\s*[º°o]?(\s|\.|$)', _plano(v))), None)
+    if ini is None: return None
+    itens = itens[ini:]
+    # remove a assinatura (nome + cargo) do corpo
+    if assinatura_nome:
+        nn = _norm_txt(assinatura_nome); cn = _norm_txt(assinatura_cargo or "")
+        for k, (tp, v) in enumerate(itens):
+            if tp != 't': continue
+            p = _plano(v)
+            if nn in _norm_txt(p) and len(p) <= len(assinatura_nome) + len(assinatura_cargo or "") + 25:
+                rem = [k]
+                if cn and cn not in _norm_txt(p) and k + 1 < len(itens) and itens[k+1][0] == 't' and _norm_txt(_plano(itens[k+1][1])) == cn:
+                    rem.append(k + 1)
+                itens = [x for n_, x in enumerate(itens) if n_ not in rem]
+                break
+    disps = []
+    cur = None; fechado = False
+    def novo(tipo, linha=None):
+        d = {"tipo": tipo, "linhas": [linha] if linha is not None else [], "tabela": None}
+        disps.append(d); return d
+    k = 0
+    while k < len(itens):
+        tp, v = itens[k]
+        if tp == 'tab':
+            rows = _parsear_tabela(v)
+            if rows:
+                if cur and cur["tipo"] == "anexo" and cur["tabela"] is None and not fechado:
+                    cur["tabela"] = rows
+                else:
+                    cur = novo("tabela"); cur["tabela"] = rows
+                fechado = True
+            k += 1; continue
+        p = _plano(v)
+        if _RE_SUMARIO.match(p):
+            j = next((x for x in range(k + 1, len(itens)) if itens[x][0] == 't' and _RE_ANEXO.match(_plano(itens[x][1]))), None)
+            if j is not None:
+                cur = novo("sumario", v)
+                for x in range(k + 1, j):
+                    if itens[x][0] == 't': cur["linhas"].append(itens[x][1])
+                fechado = True; k = j; continue
+        estrutural = bool(_RE_ART.match(p) or _RE_PAR.match(p) or _RE_INC.match(p) or _RE_ALI.match(p) or (_RE_CAP.match(p) and len(p) <= 150) or _RE_ANEXO.match(p))
+        if _RE_ART.match(p):
+            cur = novo("artigo", v); fechado = False
+        elif _RE_CAP.match(p) and len(p) <= 150:
+            cur = novo("capitulo", v); fechado = False
+        elif _RE_ANEXO.match(p):
+            cur = novo("anexo", v); fechado = False
+        elif _RE_PAR.match(p) or _RE_INC.match(p) or _RE_ALI.match(p):
+            if cur and cur["tipo"] in ("artigo", "paragrafo", "inciso", "alinea") and not fechado:
+                cur["linhas"].append(v)
+            else:
+                cur = novo("paragrafo" if _RE_PAR.match(p) else ("inciso" if _RE_INC.match(p) else "alinea"), v); fechado = False
+        else:
+            if cur and not fechado and cur["tipo"] in ("capitulo", "anexo") and len(cur["linhas"]) < 4:
+                cur["linhas"].append(v)
+            elif cur and not fechado and cur["tipo"] in ("artigo", "paragrafo", "inciso", "alinea", "texto"):
+                ult = _plano(cur["linhas"][-1])
+                if ult.endswith(('.', ';', ':')) and not _plano(v)[:1].islower():
+                    cur["linhas"].append(v)
+                else:
+                    cur["linhas"][-1] = cur["linhas"][-1] + " " + v
+            else:
+                cur = novo("texto", v); fechado = False
+        k += 1
+    for d in disps:
+        d["texto"] = "<br/>".join(d["linhas"])
+    return disps
+
+def _riscar_html(texto):
+    partes = [p.strip() for p in re.split(r'<br\s*/?>', texto or '') if p.strip()]
+    return "<br/>".join(f'<strike><font color="red">{p}</font></strike>' for p in partes)
+
+def _riscar_tabela(rows):
+    return [[_riscar_html(c) if (c or '').strip() else "" for c in r] for r in (rows or [])]
+
+def _normalizar_citacao(c):
+    c = (c or "").strip().strip('()').strip()
+    c = re.sub(r'^(Revogad[oa]s?|Alterad[oa]s?)\s+pel[oa]s?\s+', '', c, flags=re.IGNORECASE)
+    c = re.sub(r'^(Art\.\s*\d+(?:-[A-Za-z]+)?)\s*[º°]', r'\1', c)
+    return c.rstrip('.;, ')
+
+def _identificador(d_tipo, primeira_linha_html):
+    p = _plano(primeira_linha_html)
+    if d_tipo == "artigo":
+        m = re.match(r'^(Art\.\s*\d+(?:-[A-Za-z]+)?\s*[º°]?\.?)', p)
+        return m.group(1).strip() if m else p[:12]
+    if d_tipo in ("capitulo", "anexo", "sumario"):
+        return p
+    m = _RE_PAR.match(p) or re.match(r'^([IVXLC]+\s*[–—-])', p) or re.match(r'^([a-z](?:\.\d+)?\))', p)
+    return m.group(1) if m else ""
+
+def _seg_para_dispositivo(d):
+    tab = d.get("tabela")
+    return {
+        "tipo": d["tipo"], "texto_principal_alterada": d["texto"], "texto_principal_consolidada": d["texto"],
+        "is_tabela": bool(tab), "tabela_alterada": tab if tab else None, "tabela_consolidada": tab if tab else None,
+        "texto_pos_tabela_alterada": None, "texto_pos_tabela_consolidada": None, "nota_remissiva": "",
+    }
+
+def _aplicar_revogacao_integral(estado, citacao):
+    """Revogação integral aplicada de forma DETERMINÍSTICA (sem IA): nenhum texto do ato base é reescrito."""
+    cit = _normalizar_citacao(citacao)
+    nota = f"Revogado pelo {cit}"
+    for d in estado:
+        cons_txt = d.get("texto_principal_consolidada") or ""
+        if "revogado pelo" in _plano(cons_txt).lower() and not (d.get("tabela_consolidada")):
+            continue
+        tab_cons = d.get("tabela_consolidada") or []
+        tab_alt = d.get("tabela_alterada") or []
+        virgem = (d.get("texto_principal_alterada") or "") == cons_txt and tab_alt == tab_cons
+        eh_tab = bool(d.get("is_tabela") or tab_cons or tab_alt)
+        primeira = re.split(r'<br\s*/?>', cons_txt)[0] if cons_txt else ""
+        ident = _identificador(d.get("tipo", ""), primeira) if cons_txt else ""
+        # --- versão ALTERADA ---
+        if virgem:
+            alt_txt = _riscar_html(cons_txt)
+        else:
+            alt_old = d.get("texto_principal_alterada") or ""
+            partes = re.split(r'(<br\s*/?>\s*<br\s*/?>)', alt_old)
+            if len(partes) >= 3 and '<strike' not in partes[-1].lower() and partes[-1].strip():
+                partes[-1] = _riscar_html(partes[-1]); alt_txt = "".join(partes)
+            else:
+                alt_txt = (alt_old + "<br/><br/>" if alt_old.strip() else "") + _riscar_html(cons_txt)
+        if eh_tab:
+            d["texto_principal_alterada"] = alt_txt
+            d["tabela_alterada"] = _riscar_tabela(tab_cons or tab_alt)
+            d["texto_pos_tabela_alterada"] = f"({nota});"
+            d["texto_principal_consolidada"] = f"{ident} ({nota})." if ident else ""
+            d["tabela_consolidada"] = []
+            d["texto_pos_tabela_consolidada"] = ""
+            d["is_tabela"] = True
+            d["nota_remissiva"] = ""
+        else:
+            if virgem and d.get("tipo") in ("artigo", "paragrafo", "inciso", "alinea") and alt_txt:
+                # cada parágrafo/inciso/alínea é um dispositivo próprio: a nota de revogação acompanha cada linha taxada
+                alt_txt = "<br/>".join(f"{ln} ({nota});" for ln in alt_txt.split("<br/>"))
+                d["texto_principal_alterada"] = alt_txt
+            else:
+                d["texto_principal_alterada"] = f"{alt_txt} ({nota});" if alt_txt else f"({nota});"
+            d["texto_principal_consolidada"] = f"{ident} ({nota})." if ident else f"({nota})."
+            d["nota_remissiva"] = nota
+    return estado
+
+def _chars_estado(estado):
+    tot = 0
+    for d in (estado or {}).get("dispositivos", []) or []:
+        tot += len(_plano(d.get("texto_principal_alterada") or ""))
+        for tb in (d.get("tabela_alterada") or d.get("tabela_consolidada") or []):
+            tot += sum(len(_plano(c)) for c in tb)
+    return tot
+
+def _chars_seg(seg):
+    tot = 0
+    for d in seg:
+        tot += len(_plano(d["texto"]))
+        for r in (d.get("tabela") or []): tot += sum(len(_plano(c)) for c in r)
+    return tot
+
+def _estado_incompleto(estado, seg):
+    """Detecta estado salvo no banco que NÃO contém o ato base completo (resultado de execuções truncadas)."""
+    if not isinstance(estado, dict) or not (estado.get("dispositivos")): return True
+    return _chars_estado(estado) < 0.7 * _chars_seg(seg)
+
+def _montar_lotes(estado):
+    lotes, atual, tam = [], [], 0
+    for i, d in enumerate(estado):
+        t = len(d.get("texto_principal_consolidada") or "") + (len(d.get("texto_principal_alterada") or "") if (d.get("texto_principal_alterada") or "") != (d.get("texto_principal_consolidada") or "") else 0) + sum(len(str(c)) for r in (d.get("tabela_consolidada") or []) for c in r)
+        if atual and (tam + t > TAM_LOTE_CHARS or len(atual) >= MAX_DISP_LOTE):
+            lotes.append(atual); atual, tam = [], 0
+        atual.append(i); tam += t
+    if atual: lotes.append(atual)
+    return lotes
+
+def _dump_lote(estado, indices):
+    out = []
+    for i in indices:
+        d = estado[i]
+        s = f"[IDX {i}] tipo={d.get('tipo')}\nCONSOLIDADA_ATUAL: {d.get('texto_principal_consolidada') or ''}"
+        if (d.get('texto_principal_alterada') or '') != (d.get('texto_principal_consolidada') or ''):
+            s += f"\nALTERADA_ATUAL: {d.get('texto_principal_alterada') or ''}"
+        if d.get('tabela_consolidada'):
+            s += f"\nTABELA_CONSOLIDADA_ATUAL: {json.dumps(d['tabela_consolidada'], ensure_ascii=False)}"
+        if d.get('tabela_alterada') and d.get('tabela_alterada') != d.get('tabela_consolidada'):
+            s += f"\nTABELA_ALTERADA_ATUAL: {json.dumps(d['tabela_alterada'], ensure_ascii=False)}"
+        out.append(s)
+    return "\n\n".join(out)
+
+def _conteudo_alteradora(itens, limite=LIMITE_CHARS_ALTERADORA_LOTE):
+    saida, usado = [], 0
+    for it in itens:
+        if isinstance(it, str):
+            if usado >= limite: continue
+            restante = limite - usado
+            saida.append(it if len(it) <= restante else it[:restante] + "\n[... texto do ato alterador truncado por tamanho ...]")
+            usado += len(it)
+        else:
+            saida.append(it)
+    return saida
+
+def _chamar_lote(key, provedor, thinking_level, nome_alt, itens_alt, estado, indices, n_lote, total_lotes, memoria):
+    prompt = f"""
+LOTE {n_lote} DE {total_lotes}. Os dispositivos abaixo estão numerados com [IDX n] e representam o ESTADO ATUAL do ato base
+(texto vigente 'CONSOLIDADA_ATUAL' e, se houver, o histórico 'ALTERADA_ATUAL').
+Aplique o ato alterador/revogador ({nome_alt}) SOMENTE aos dispositivos deste lote.
+Devolva em 'alteracoes' APENAS os dispositivos efetivamente alterados, revogados parcialmente ou que recebam dispositivos
+ACRESCENTADOS (estes em 'dispositivos_novos_apos', logo após o IDX correspondente). Dispositivos não afetados NÃO devem ser devolvidos.
+Em 'dispositivo_atualizado' devolva o dispositivo COMPLETO (todos os campos), com TEXTO INTEGRAL, nunca resumido ou truncado,
+seguindo EXATAMENTE as regras 4, 6 e 8 do sistema (taxação em vermelho, notas citando o ARTIGO ESPECÍFICO do ato alterador).
+Se um dispositivo já possuía ALTERADA_ATUAL, preserve esse histórico e acrescente a nova marcação.
+{memoria}
+"""
+    conteudo = [f"ATO ALTERADOR/REVOGADOR ({nome_alt}):"] + _conteudo_alteradora(itens_alt)
+    conteudo.append("DISPOSITIVOS DO LOTE:\n" + _dump_lote(estado, indices))
+    conteudo.append(prompt)
+    resp = executar_com_fallback(key, conteudo, ResultadoLote, provedor, thinking_level)
+    return json.loads(resp.text).get("alteracoes", [])
+
+def _aplicar_alteracoes_pontuais(key, provedor, thinking_level, nome_alt, itens_alt, estado, memoria, mensagens):
+    lotes = _montar_lotes(estado)
+    resultados = {}
+    workers = 1 if thinking_level == "low" else 2
+    with ThreadPoolExecutor(max_workers=min(workers, len(lotes))) as ex:
+        futs = {}
+        for n, indices in enumerate(lotes, 1):
+            f = submit_com_contexto(ex, _chamar_lote, key, provedor, thinking_level, nome_alt, itens_alt, estado, indices, n, len(lotes), memoria)
+            futs[f] = (n, indices)
+        for f in as_completed(futs):
+            n, indices = futs[f]
+            try:
+                alts = f.result()
+            except Exception as e:
+                raise Exception(f"Falha no lote {n}/{len(lotes)} ao aplicar '{nome_alt}': {e}")
+            for a in alts:
+                idx = a.get("idx")
+                if isinstance(idx, int) and idx in indices:
+                    resultados[idx] = a
+    novo_estado, afetados = [], 0
+    for i, d in enumerate(estado):
+        a = resultados.get(i)
+        if not a:
+            novo_estado.append(d); continue
+        upd = a.get("dispositivo_atualizado") or {}
+        vazio = not _plano(upd.get("texto_principal_alterada")) and not _plano(upd.get("texto_principal_consolidada")) and not upd.get("tabela_alterada")
+        if vazio and (_plano(d.get("texto_principal_alterada")) or d.get("tabela_alterada")):
+            mensagens.append(("warning", f"⚠️ A IA devolveu o dispositivo {i+1} vazio ao aplicar '{nome_alt}'; o texto anterior foi preservado."))
+            novo_estado.append(d)
+        else:
+            if not upd.get("tipo"): upd["tipo"] = d.get("tipo")
+            novo_estado.append(upd); afetados += 1
+        for nd in (a.get("dispositivos_novos_apos") or []):
+            novo_estado.append(nd); afetados += 1
+    mensagens.append(("info", f"📚 '{nome_alt}': {afetados} dispositivo(s) alterado(s)/acrescentado(s) em {len(lotes)} lote(s); os demais foram preservados integralmente."))
+    return novo_estado
+
+def _processar_cascata_lotes(key, provedor, arquivo_base, alteradoras, textos_extraidos, memoria_aprendida, thinking_level, estado_json_atual, mensagens, texto_base):
+    low = "low"
+    if estado_json_atual:
+        cons = json.loads(estado_json_atual) if isinstance(estado_json_atual, str) else estado_json_atual
+        cons.setdefault("normas_alteradoras", []); cons.setdefault("arquivos_alteradores_identificados", [])
+        estado = cons.get("dispositivos") or []
+    else:
+        resp_cab = executar_com_fallback(key, [
+            "Extraia SOMENTE o cabeçalho da norma abaixo (metadados da norma base, cabeçalho complementar, órgãos emissores, título, ementa, "
+            "preâmbulo e assinatura). NÃO transcreva os dispositivos (artigos). Texto do início do ato:\n" + texto_base[:9000]
+        ], CabecalhoNorma, provedor, low)
+        cab = json.loads(resp_cab.text)
+        seg = segmentar_dispositivos(texto_base, cab.get("assinatura_nome"), cab.get("assinatura_cargo"))
+        if not seg:
+            raise Exception("Não foi possível segmentar os dispositivos do ato base.")
+        estado = [_seg_para_dispositivo(d) for d in seg]
+        cons = {
+            "arquivos_originais_identificados": [arquivo_base.get("nome_arquivo_upload")] if arquivo_base.get("nome_arquivo_upload") else [],
+            "arquivos_alteradores_identificados": [], "norma_base": cab["norma_base"], "normas_alteradoras": [],
+            "cabecalho_complemento": cab.get("cabecalho_complemento", ""), "orgaos_emissores": cab.get("orgaos_emissores", ""),
+            "titulo_portaria": cab.get("titulo_portaria", ""), "ementa": cab.get("ementa", ""), "preambulo": cab.get("preambulo", ""),
+            "assinatura_nome": cab.get("assinatura_nome", ""), "assinatura_cargo": cab.get("assinatura_cargo", ""),
+        }
+        mensagens.append(("info", f"📚 Ato base segmentado de forma determinística em {len(estado)} dispositivos (texto original preservado integralmente)."))
+    nome_base = (cons.get("norma_base") or {}).get("nome_padronizado") or arquivo_base.get("nome_padronizado_identificado", "")
+    for alt in alteradoras:
+        itens_alt = textos_extraidos[alt['nome_arquivo_upload']]
+        txt_alt = _texto_unico(itens_alt)
+        head = (txt_alt or "")[:LIMITE_CHARS_PLANO] if txt_alt else None
+        conteudo_plano = [f"ATO BASE ALVO: {nome_base}. Analise o ato alterador abaixo e identifique seus metadados e se ele REVOGA INTEGRALMENTE o ato base."]
+        conteudo_plano += [head] if head else _conteudo_alteradora(itens_alt, LIMITE_CHARS_PLANO)
+        resp_plano = executar_com_fallback(key, conteudo_plano, PlanoAlteracao, provedor, low)
+        plano = json.loads(resp_plano.text)
+        meta = plano["metadados"]
+        if meta.get("nome_padronizado") and not any(n.get("nome_padronizado") == meta["nome_padronizado"] for n in cons["normas_alteradoras"]):
+            cons["normas_alteradoras"].append(meta)
+        nome_alt = meta.get("nome_padronizado") or alt.get("nome_padronizado_identificado", "")
+        if plano.get("revogacao_integral"):
+            cit = _normalizar_citacao(plano.get("citacao_revogacao"))
+            if not cit.lower().startswith("art"):
+                m = next((re.match(r'^Art\.\s*(\d+)', _plano(l)) for l in (head or "").split("\n") if re.match(r'^Art\.\s*\d+', _plano(l)) and 'revog' in _plano(l).lower()), None)
+                cit = f"Art. {m.group(1) if m else '?'} da {nome_alt}"
+            estado = _aplicar_revogacao_integral(estado, cit)
+            mensagens.append(("info", f"📚 '{nome_alt}' revoga integralmente '{nome_base}': todos os {len(estado)} dispositivos foram taxados (Revogado pelo {cit})."))
+        else:
+            estado = _aplicar_alteracoes_pontuais(key, provedor, thinking_level, nome_alt, itens_alt, estado, memoria_aprendida, mensagens)
+        if alt.get("nome_arquivo_upload") and alt["nome_arquivo_upload"] not in cons["arquivos_alteradores_identificados"]:
+            cons["arquivos_alteradores_identificados"].append(alt["nome_arquivo_upload"])
+    cons["dispositivos"] = estado
+    return cons
+
+
 def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, textos_extraidos, memoria_aprendida, thinking_level="medium"):
     nome_padrao = arquivo_base.get('nome_padronizado_identificado', '')
     reconstruida = bool(arquivo_base.get('_reconstruida_do_banco'))
     estado_json_atual, ja_processadas = _consultar_estado_e_historico(nome_padrao)
     mensagens = []
+
+    # --- Normas extensas: segmentação determinística + processamento em lotes (evita truncamento da IA) ---
+    texto_base_lotes, seg_prelim = None, None
+    nome_base_up = arquivo_base.get('nome_arquivo_upload')
+    if nome_base_up and not reconstruida:
+        texto_base_lotes = _texto_unico(textos_extraidos.get(nome_base_up))
+        if texto_base_lotes and len(texto_base_lotes) > LIMITE_LEGADO_CHARS:
+            seg_prelim = segmentar_dispositivos(texto_base_lotes)
+            if seg_prelim and estado_json_atual:
+                try:
+                    estado_obj = json.loads(estado_json_atual)
+                except Exception:
+                    estado_obj = None
+                if _estado_incompleto(estado_obj, seg_prelim):
+                    mensagens.append(("warning", f"⚠️ O estado de '{nome_padrao}' salvo no banco está INCOMPLETO (não contém todo o texto do ato original). Ele foi ignorado e o ato foi reconstruído integralmente a partir do arquivo original enviado."))
+                    estado_json_atual = None
+                    ja_processadas = []
 
     if reconstruida:
         detalhe = f" com {len(ja_processadas)} derivação(ões) já aplicada(s) ({', '.join(ja_processadas)})" if ja_processadas else ""
@@ -786,6 +1240,18 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
         else:
             alteradoras_para_aplicar.append(alt)
     alteradoras_para_aplicar.sort(key=lambda x: x.get('data_oficial_iso') or '')
+
+    usar_lotes = seg_prelim is not None
+    if reconstruida and estado_json_atual:
+        try:
+            usar_lotes = _chars_estado(json.loads(estado_json_atual)) > LIMITE_LEGADO_CHARS
+        except Exception:
+            usar_lotes = False
+    if usar_lotes:
+        if not alteradoras_para_aplicar and estado_json_atual:
+            return json.loads(estado_json_atual), mensagens
+        resultado_lotes = _processar_cascata_lotes(key, provedor, arquivo_base, alteradoras_para_aplicar, textos_extraidos, memoria_aprendida, thinking_level, estado_json_atual, mensagens, texto_base_lotes)
+        return resultado_lotes, mensagens
 
     if not alteradoras_para_aplicar:
         if estado_json_atual:
@@ -816,7 +1282,6 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
         quando alterada.
         Se o ato for de revogação integral, aplique a taxação completa em todos os dispositivos, anexos e tabelas,
         conforme item 8.
-        REGRA VITAL DE INTEGRIDADE: Você NÃO PODE resumir, pular ou omitir nenhum trecho do documento base. Reproduza fielmente todos os artigos, parágrafos, incisos e os Anexos inteiros. A presença de resumos como "(Página X)" anulará o processo.
         {memoria_aprendida}
         """
         conteudo_loop.append(prompt_loop)
@@ -997,10 +1462,16 @@ def gerar_html_dinamico(consolidacao_dict, tipo_versao):
         eh_capitulo_ou_anexo = "capitulo" in t or "anexo" in t
         texto_puro = re.sub(r'<[^>]+>', '', t_prin or '')
         if eh_capitulo_ou_anexo and len(texto_puro) <= 150:
+            # Título curto (ex.: "CAPÍTULO I", "ANEXO I"): mantém o destaque
+            # centralizado/negrito/maiúsculo de sempre.
             html += f"<div class='capitulo'>{t_prin}</div>"
             if not item.get("is_tabela"):
                 continue
         elif eh_capitulo_ou_anexo:
+            # Bloco longo (ex.: corpo inteiro de um Anexo, não só o título):
+            # força tudo em negrito/maiúsculo/centralizado deixava o texto
+            # ilegível. Só a 1ª linha é o título; o resto vira parágrafo
+            # normal, preservando negrito/itálico/riscado originais.
             partes_bloco = (t_prin or "").split("<br/>")
             if partes_bloco:
                 html += f"<div class='capitulo'>{partes_bloco[0].strip()}</div>"
@@ -1041,7 +1512,7 @@ def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
     buffer.seek(0)
     return buffer.getvalue()
 
-def aplicar_html_no_docx(p, texto_html):
+def aplicar_html_no_docx(p, texto_html, negrito_forcado=False, tamanho=11):
     texto_html = texto_html.replace("&nbsp;", "\xa0")
     tokens = re.split(r'(<[^>]+>)', texto_html)
     is_bold = is_strike = is_red = is_italic = False
@@ -1061,8 +1532,8 @@ def aplicar_html_no_docx(p, texto_html):
         else:
             token = unescape(token)
             run = p.add_run(token)
-            run.font.name, run.font.size = 'Times New Roman', Pt(11)
-            if is_bold: run.bold = True
+            run.font.name, run.font.size = 'Times New Roman', Pt(tamanho)
+            if is_bold or negrito_forcado: run.bold = True
             if is_italic: run.italic = True
             if is_strike: run.font.strike = True
             if is_red: run.font.color.rgb = RGBColor(230, 0, 0)
@@ -1085,8 +1556,7 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
         for p_html in texto_html.split("<br/>"):
             if not p_html.strip(): continue
             if bold_all:
-                run = p_obj.add_run(re.sub(r'<[^>]+>', '', p_html).replace("&nbsp;", "\xa0"))
-                run.font.name, run.font.size, run.bold = 'Times New Roman', Pt(10), True
+                aplicar_html_no_docx(p_obj, p_html, negrito_forcado=True, tamanho=10)
             else: 
                 aplicar_html_no_docx(p_obj, p_html)
             p_obj.add_run("\n")
@@ -1102,18 +1572,22 @@ def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
         eh_capitulo_ou_anexo = "capitulo" in t or "anexo" in t
         texto_puro = re.sub(r'<[^>]+>', '', t_prin or '')
         if eh_capitulo_ou_anexo and len(texto_puro) <= 150:
+            # Título curto: mantém o destaque centralizado/negrito de sempre.
             if "anexo" in t: doc.add_page_break()
             p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             _render_docx_p(p, t_prin, bold_all=True)
             if not item.get("is_tabela"):
                 continue
         elif eh_capitulo_ou_anexo:
+            # Bloco longo: só a 1ª linha é o título (centralizado/negrito); o
+            # resto vira parágrafo normal, preservando negrito/itálico/riscado
+            # originais (bold_all=True apagava essas tags e forçava tudo em
+            # negrito, deixando o corpo do Anexo desformatado).
             if "anexo" in t: doc.add_page_break()
             partes_bloco = (t_prin or "").split("<br/>")
             if partes_bloco:
                 p_tit = doc.add_paragraph(); p_tit.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                r_tit = p_tit.add_run(re.sub(r'<[^>]+>', '', partes_bloco[0]).replace("&nbsp;", "\xa0"))
-                r_tit.font.name, r_tit.font.size, r_tit.bold = 'Times New Roman', Pt(10), True
+                aplicar_html_no_docx(p_tit, partes_bloco[0], negrito_forcado=True, tamanho=10)
                 corpo_restante = "<br/>".join(partes_bloco[1:]).strip()
                 if corpo_restante:
                     p_corpo = doc.add_paragraph(); p_corpo.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
@@ -1298,7 +1772,11 @@ if st.session_state.dados_processados:
             if preambulo_editado is not None: cons['preambulo'] = editor_para_pdf(preambulo_editado)
 
             st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos, Anexos)")
-            for j, disp in enumerate(cons.get("dispositivos", [])):
+            _n_disp = len(cons.get("dispositivos", []))
+            _editar_detalhado = True
+            if _n_disp > LIMITE_EDICAO_DETALHADA:
+                _editar_detalhado = st.checkbox(f"✏️ Habilitar edição detalhada dos {_n_disp} dispositivos (pode deixar a página lenta). As exportações já contêm o texto completo.", value=False, key=f"edit_det_{i}")
+            for j, disp in enumerate(cons.get("dispositivos", []) if _editar_detalhado else []):
                 st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
                 c_alt, c_cons = st.columns(2)
                 with c_alt:
