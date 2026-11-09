@@ -1,0 +1,23 @@
+{
+  "login_3_usuarios_simultaneos": true,
+  "usuario_exibido_maria": true,
+  "usuario_exibido_joao": true,
+  "paginas_independentes": true,
+  "presenca_maria_ve": {
+    "texto": "Equipe online agora:\nA\nadmin · Diagnóstico\nJS\njoao.souza · Consolidar",
+    "ve_joao": true,
+    "ve_admin": true
+  },
+  "estado_isolado_busca": true,
+  "joao_ve_acao_da_maria": {
+    "antes": "schedule Pendências (1)",
+    "depois": "schedule Pendências (0)"
+  },
+  "joao_nao_ve_item_usuarios": true,
+  "joao_url_direta_usuarios_bloqueada": true,
+  "admin_acessa_usuarios": true,
+  "f5_mantem_login_maria": true,
+  "joao_continua_logado_apos_logout_da_maria": true,
+  "maria_nao_volta_logada_apos_logout_e_F5": true,
+  "erros_javascript": []
+}

@@ -1,4 +1,4 @@
-# pages/3_Consolidar_Norma.py (com correção do erro supabase não definido)
+# pages/3_Consolidar_Norma.py - Consolidação de normas (Autopilot)
 import streamlit as st
 import tempfile
 import io
@@ -11,8 +11,7 @@ import hashlib
 import unicodedata
 import base64
 import traceback
-from html.parser import HTMLParser
-from html import unescape
+from html import escape, unescape
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
@@ -22,10 +21,6 @@ from google.genai import types
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional
 
-from supabase import create_client, Client
-import docx
-from docx.shared import Inches, Pt, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 import fitz  # PyMuPDF
 from streamlit_quill import st_quill
 
@@ -45,40 +40,48 @@ try:
 except ImportError:
     OpenAI = None
 
-try:
-    from weasyprint import HTML as WeasyHTML, CSS as WeasyCSS
-    HAS_WEASYPRINT = True
-except ImportError:
-    HAS_WEASYPRINT = False
-
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from menu_utils import configurar_pagina, exigir_login, renderizar_cabecalho, renderizar_menu
+from db_utils import obter_supabase, obter_repositorio, kpis_cache
+from repositorio import converter_para_iso
+import concorrencia as conc
+import ui_theme as ui
+import exportacao
+from exportacao import (QuillParser, editor_para_pdf, limpar_texto_ia, injetar_nota_remissiva, gerar_html_dinamico,
+                        gerar_pdf_dinamico, gerar_docx_dinamico, HAS_WEASYPRINT)
 
 configurar_pagina("Consolidar Norma", "⚙️")
 exigir_login()
 
-# =====================================================================
-# INICIALIZAÇÃO DO SUPABASE (CORREÇÃO)
-# =====================================================================
-@st.cache_resource
-def init_supabase() -> Optional[Client]:
-    try:
-        url = st.secrets["supabase"]["url"]
-        key = st.secrets["supabase"]["key"]
-        return create_client(url, key)
-    except Exception:
-        return None
-
-supabase = init_supabase()
-if not supabase:
-    st.error("⚠️ Não foi possível conectar ao Supabase.")
-    st.stop()
-
-# =====================================================================
-
-renderizar_cabecalho("⚙️ Consolidação de Normas (Autopilot)")
+supabase = obter_supabase()
+repo = obter_repositorio()
 renderizar_menu("consolidar")
+if not supabase:
+    st.error("Não foi possível conectar ao Supabase. Verifique os Secrets.", icon=":material/cloud_off:")
+    st.stop()
+renderizar_cabecalho("Consolidação de normas", "Envie um ato base e seus derivativos em PDF. O sistema aplica as alterações em ordem cronológica e gera as versões "
+                     "alterada e consolidada, com taxação das alterações e revogações.", etiqueta="Autopilot", icone_nome="merge")
+
+
+def _com_vaga(fn, *a, **kw):
+    """Toda chamada de IA passa por um semáforo GLOBAL (todos os usuários e abas compartilham a cota do provedor)."""
+    with conc.vaga_ia():
+        return fn(*a, **kw)
+
+
+# Acesso ao banco via repositório thread-safe (mesmos nomes usados pelo restante do código)
+def resgatar_memoria():
+    return repo.resgatar_memoria()
+
+
+def _localizar_base_no_banco(tipo_ref, numero_ref):
+    return repo.localizar_base(tipo_ref, numero_ref)
+
+
+def _consultar_estado_e_historico(nome_padrao):
+    return repo.consultar_estado_e_historico(nome_padrao)
+
 
 # ----------------- HUB MULTI-IA (mesmo do app.py) -----------------
 PROVEDORES_IA = {
@@ -126,86 +129,6 @@ def obter_chave_provedor(nome_provedor):
 # MOTOR DE PARSER HTML/XML (ÁRVORE SINTÁTICA AST)
 # =====================================================================
 
-class QuillParser(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.paragraphs = []
-        self.current_html = []
-        self.stack = []
-
-    def _close_all_tags(self):
-        res = ""
-        for tags in reversed(self.stack):
-            for t in reversed(tags):
-                tag_name = t.split()[0]
-                res += f"</{tag_name}>"
-        return res
-
-    def _open_all_tags(self):
-        res = ""
-        for tags in self.stack:
-            for t in tags:
-                res += f"<{t}>"
-        return res
-
-    def _break_paragraph(self):
-        if self.current_html:
-            p_text = "".join(self.current_html) + self._close_all_tags()
-            if re.sub(r'<[^>]+>', '', p_text).strip():
-                self.paragraphs.append(p_text.strip())
-        self.current_html = []
-        if self.stack:
-            self.current_html.append(self._open_all_tags())
-
-    def handle_starttag(self, tag, attrs):
-        if tag in ('p', 'br', 'div'):
-            self._break_paragraph()
-            return
-
-        attrs_dict = dict(attrs)
-        style = attrs_dict.get('style', '').lower().replace(' ', '')
-        cls = attrs_dict.get('class', '').lower()
-        cor = attrs_dict.get('color', '').lower()
-        
-        added_tags = []
-        if tag in ('b', 'strong') or 'font-weight:bold' in style or 'font-weight:700' in style:
-            added_tags.append("b")
-        if tag in ('i', 'em') or 'font-style:italic' in style:
-            added_tags.append("i")
-        if tag in ('s', 'strike', 'del') or 'text-decoration:line-through' in style or 'ql-strike' in cls:
-            added_tags.append("strike")
-        if ('color:rgb(230' in style or 'color:red' in style or 'color:#e6' in style or 'color:#f00' in style or 'color:#ff0000' in style) or (tag == 'font' and attrs_dict.get('color') in ('red', '#f00', '#ff0000')):
-            added_tags.append('font color="red"')
-        
-        if added_tags:
-            for t in added_tags:
-                self.current_html.append(f"<{t}>")
-            self.stack.append(added_tags)
-        else:
-            self.stack.append([])
-
-    def handle_endtag(self, tag):
-        if tag in ('p', 'br', 'div'):
-            return 
-        
-        if self.stack:
-            tags_to_close = self.stack.pop()
-            for t in reversed(tags_to_close):
-                tag_name = t.split()[0]
-                self.current_html.append(f"</{tag_name}>")
-
-    def handle_startendtag(self, tag, attrs):
-        if tag in ('br',):
-            self._break_paragraph()
-
-    def handle_data(self, data):
-        if not data: return
-        data = data.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\xa0', '&nbsp;')
-        self.current_html.append(data)
-
-    def get_paragraphs(self):
-        self._break_paragraph()
-        return self.paragraphs
 
 def ia_para_editor(texto):
     if not texto: return ""
@@ -235,15 +158,6 @@ def editor_rico(value, key):
         st.caption("⚠️ Editor visual indisponível no momento — editando o HTML diretamente.")
         return st.text_area("HTML", value=value, key=f"{key}_fallback", label_visibility="collapsed", height=150)
 
-def editor_para_pdf(texto):
-    if not texto: return ""
-    parser = QuillParser()
-    try:
-        parser.feed(texto)
-        return "<br/>".join(parser.get_paragraphs())
-    except Exception:
-        texto_limpo = re.sub(r'</?(span|div|p|ul|li|ol)[^>]*>', '', texto, flags=re.IGNORECASE)
-        return texto_limpo
 
 # =====================================================================
 # LÓGICA DE NEGÓCIO E INTELIGÊNCIA ARTIFICIAL
@@ -360,7 +274,7 @@ def _chamar_gemini(chave, itens, response_schema, thinking_level, modelos):
         cota_diaria_esgotada = False
         for tentativa in range(1, 4):
             try:
-                resp = client.models.generate_content(model=modelo, contents=contents, config=config)
+                resp = _com_vaga(client.models.generate_content, model=modelo, contents=contents, config=config)
                 _validar_resposta_gemini(resp)
                 dados = json.loads(resp.text)
                 return response_schema.model_validate(dados)
@@ -417,7 +331,7 @@ def _chamar_groq(chave, itens, response_schema, modelos):
     for modelo in modelos:
         for tentativa in range(1, 4):
             try:
-                resp = client.chat.completions.create(
+                resp = _com_vaga(client.chat.completions.create, 
                     model=modelo, messages=mensagens,
                     response_format={"type": "json_object"}, temperature=0.2,
                 )
@@ -448,7 +362,7 @@ def _chamar_openrouter(chave, itens, response_schema, modelos):
     for modelo in modelos:
         for tentativa in range(1, 4):
             try:
-                resp = client.chat.completions.create(
+                resp = _com_vaga(client.chat.completions.create, 
                     model=modelo, messages=mensagens,
                     response_format={"type": "json_object"}, temperature=0.2,
                 )
@@ -479,7 +393,7 @@ def _chamar_mistral(chave, itens, response_schema, modelos):
     for modelo in modelos:
         for tentativa in range(1, 4):
             try:
-                resp = client.chat.complete(
+                resp = _com_vaga(client.chat.complete, 
                     model=modelo, messages=mensagens,
                     response_format={"type": "json_object"}, temperature=0.2,
                 )
@@ -540,16 +454,6 @@ def executar_com_fallback(chave, itens, response_schema, provedor, thinking_leve
         def __init__(self, obj): self.text = obj.model_dump_json()
     return _RespCompat(resultado)
 
-def converter_para_iso(data_str):
-    if not data_str: return None
-    data_str = data_str.strip()
-    if re.match(r'^\d{4}-\d{2}-\d{2}$', data_str): return data_str
-    match_br = re.match(r'^(\d{2})/(\d{2})/(\d{4})$', data_str)
-    if match_br:
-        d, m, a = match_br.groups()
-        return f"{a}-{m}-{d}"
-    try: return datetime.strptime(data_str, "%d/%m/%Y").strftime("%Y-%m-%d")
-    except: return None
 
 @st.cache_data(show_spinner=False, max_entries=20)
 def extrair_conteudo_cache(file_bytes, nome_arquivo, dpi_ocr=1.5, max_paginas_ocr=None):
@@ -680,21 +584,7 @@ class AnaliseGlobal(BaseModel):
 # FUNÇÕES AUXILIARES PARA PROCESSAMENTO
 # =====================================================================
 
-def limpar_texto_ia(texto):
-    if not texto: return ""
-    return re.sub(r' {2,}', ' ', str(texto)).strip()
 
-def injetar_nota_remissiva(texto, nota):
-    if nota and nota.strip():
-        n_sem_parenteses = nota.strip("()").strip()
-        n_fmt = f"({n_sem_parenteses})"
-        texto_puro = re.sub(r'<[^>]+>', '', texto if texto else '')
-        if n_sem_parenteses.lower() in texto_puro.lower(): return texto 
-        if texto:
-            texto_limpo = re.sub(r'(<br/?>|\s)+$', '', texto).strip()
-            return f'{texto_limpo} &nbsp;<span style="color: red;">{n_fmt}</span>'
-        return f'<span style="color: red;">{n_fmt}</span>'
-    return texto
 
 def corrigir_posicionamento_tabela(consolidacao: dict):
     """Garante que, para dispositivos com tabela e que foram alterados, a nova redação
@@ -748,52 +638,8 @@ def corrigir_posicionamento_tabela(consolidacao: dict):
                 disp["texto_pos_tabela_alterada"] = nova_redacao
     return consolidacao
 
-def resgatar_memoria():
-    memoria = ""
-    if supabase:
-        try:
-            res = supabase.table("memoria_de_correcoes").select("*").order("id", desc=True).limit(5).execute()
-            if res.data:
-                memoria = "\n\n⚠️ HISTÓRICO DE CORREÇÕES (Não repita os erros da IA):\n"
-                for m in res.data: memoria += f"- Erro: {m['texto_ia']}\n- Correção: {m['texto_corrigido']}\n\n"
-        except: pass
-    return memoria
 
-def _localizar_base_no_banco(tipo_ref, numero_ref):
-    if not supabase or not numero_ref or not str(numero_ref).strip():
-        return None
-    try:
-        numero_limpo = str(numero_ref).strip()
-        query = supabase.table("portarias_base").select("id, nome_padronizado, tipo_documento, numero_documento, documento_consolidado_json")
-        res = query.ilike("numero_documento", f"%{numero_limpo}%").execute()
-        candidatos = res.data or []
-        if not candidatos and tipo_ref:
-            res2 = query.ilike("nome_padronizado", f"%{numero_limpo}%").execute()
-            candidatos = res2.data or []
-        if not candidatos:
-            return None
-        if tipo_ref:
-            for c in candidatos:
-                if str(c.get('tipo_documento', '')).strip().lower() == str(tipo_ref).strip().lower():
-                    return c
-        return candidatos[0]
-    except Exception:
-        return None
 
-def _consultar_estado_e_historico(nome_padrao):
-    if not supabase or not nome_padrao:
-        return None, []
-    try:
-        res_bd = supabase.table("portarias_base").select("id, documento_consolidado_json").eq("nome_padronizado", nome_padrao).execute()
-        if not res_bd.data:
-            return None, []
-        base_id = res_bd.data[0]['id']
-        estado = res_bd.data[0].get("documento_consolidado_json")
-        res_alt = supabase.table("portarias_alteradoras").select("nome_padronizado").eq("portaria_base_id", base_id).execute()
-        ja_processadas = [r['nome_padronizado'] for r in (res_alt.data or []) if r.get('nome_padronizado')]
-        return (json.dumps(estado) if estado else None), ja_processadas
-    except Exception:
-        return None, []
 
 # =====================================================================
 # PROCESSAMENTO EM LOTES (normas extensas) — CORREÇÃO DO TRUNCAMENTO
@@ -1400,449 +1246,255 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
         "erros": erros_processamento,
     }
 
-# =====================================================================
-# EXPORTAÇÃO (HTML UNIVERSAL -> WEASYPRINT PDF -> DOCX AST)
-# =====================================================================
 
-def gerar_html_dinamico(consolidacao_dict, tipo_versao):
-    titulo_doc = f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}"
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <title>{titulo_doc}</title>
-        <style>
-            @page {{
-                size: A4;
-                margin: 2.5cm 2cm;
-                @bottom-center {{
-                    content: "Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial.";
-                    font-size: 9pt;
-                    font-style: italic;
-                    color: #333;
-                }}
-            }}
-            body {{ font-family: 'Times New Roman', Times, serif; font-size: 11pt; line-height: 1.5; text-align: justify; }}
-            .topo {{ text-align: center; color: #444; font-size: 10pt; font-weight: bold; margin-bottom: 20px; text-transform: uppercase; }}
-            .brasao {{ text-align: center; margin-bottom: 10px; }}
-            .brasao img {{ width: 45px; height: auto; display: block; margin: 0 auto; }}
-            .orgaos {{ text-align: center; font-weight: bold; margin-bottom: 25px; }}
-            .titulo {{ text-align: center; font-weight: bold; margin-bottom: 20px; }}
-            .ementa {{ text-align: justify; margin-left: 45%; margin-bottom: 25px; font-weight: normal; }}
-            .preambulo {{ text-align: justify; margin-bottom: 12px; text-indent: 0; }}
-            .dispositivo {{ text-align: justify; text-indent: 40px; margin-bottom: 12px; }}
-            .capitulo {{ text-align: center; font-weight: bold; margin-top: 20px; margin-bottom: 12px; text-transform: uppercase; }}
-            .assinatura {{ text-align: center; font-weight: bold; margin-top: 50px; margin-bottom: 20px; }}
-            table {{ width: 100%; border-collapse: collapse; margin-top: 15px; margin-bottom: 15px; }}
-            td, th {{ border: 1px solid black; padding: 6px; text-align: left; vertical-align: middle; }}
-            strike, s, del {{ text-decoration: line-through; }}
-            b, strong {{ font-weight: bold; }}
-            i, em {{ font-style: italic; }}
-            font[color="red"], span[style*="color: red"], span[style*="color:rgb(230"] {{ color: red !important; }}
-        </style>
-    </head>
-    <body>
-        <div class="topo">{titulo_doc}</div>
-    """
-    if os.path.exists("brasao.png"):
-        import base64
-        with open("brasao.png", "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode()
-            html += f"<div class='brasao'><img src='data:image/png;base64,{encoded_string}'/></div>"
 
-    html += f"""
-        <div class="orgaos">{limpar_texto_ia(consolidacao_dict.get("orgaos_emissores") or "").replace('<br/>', '<br>')}</div>
-        <div class="titulo">{limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or "").replace('<br/>', '<br>')}</div>
-        <div class="ementa">{limpar_texto_ia(consolidacao_dict.get("ementa") or "").replace('<br/>', '<br>')}</div>
-        <div class="preambulo">{limpar_texto_ia(consolidacao_dict.get("preambulo") or "").replace('<br/>', '<br>')}</div>
-    """
-    for item in consolidacao_dict.get("dispositivos", []):
-        t = (item.get("tipo") or "").lower()
-        t_prin = injetar_nota_remissiva(item.get(f"texto_principal_{tipo_versao}"), item.get("nota_remissiva") if not item.get("is_tabela") else "")
-        eh_capitulo_ou_anexo = "capitulo" in t or "anexo" in t
-        texto_puro = re.sub(r'<[^>]+>', '', t_prin or '')
-        if eh_capitulo_ou_anexo and len(texto_puro) <= 150:
-            # Título curto (ex.: "CAPÍTULO I", "ANEXO I"): mantém o destaque
-            # centralizado/negrito/maiúsculo de sempre.
-            html += f"<div class='capitulo'>{t_prin}</div>"
-            if not item.get("is_tabela"):
-                continue
-        elif eh_capitulo_ou_anexo:
-            # Bloco longo (ex.: corpo inteiro de um Anexo, não só o título):
-            # força tudo em negrito/maiúsculo/centralizado deixava o texto
-            # ilegível. Só a 1ª linha é o título; o resto vira parágrafo
-            # normal, preservando negrito/itálico/riscado originais.
-            partes_bloco = (t_prin or "").split("<br/>")
-            if partes_bloco:
-                html += f"<div class='capitulo'>{partes_bloco[0].strip()}</div>"
-                for p in partes_bloco[1:]:
-                    if p.strip():
-                        html += f"<div class='dispositivo' style='text-indent:0;'>{p.strip()}</div>"
-            if not item.get("is_tabela"):
-                continue
-        else:
-            if t_prin:
-                for p in t_prin.split("<br/>"):
-                    if p.strip():
-                        html += f"<div class='dispositivo'>{p.strip()}</div>"
-        if item.get("is_tabela"):
-            linhas = item.get(f"tabela_{tipo_versao}") or []
-            if linhas:
-                html += "<table>"
-                for linha in linhas:
-                    html += "<tr>"
-                    for celula in linha: html += f"<td>{editor_para_pdf(celula)}</td>"
-                    html += "</tr>"
-                html += "</table>"
-            t_pos = injetar_nota_remissiva(item.get(f"texto_pos_tabela_{tipo_versao}"), item.get("nota_remissiva"))
-            if t_pos: 
-                for p in t_pos.split("<br/>"):
-                    if p.strip():
-                        html += f"<div class='dispositivo'>{p.strip()}</div>"
-    html += f"<div class='assinatura'>{limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')}<br>{limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')}</div>"
-    html += "</body></html>"
-    return html
 
-def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
-    html_str = gerar_html_dinamico(consolidacao_dict, tipo_versao)
-    if not HAS_WEASYPRINT:
-        raise Exception("WeasyPrint não está disponível neste servidor.")
-    buffer = io.BytesIO()
-    WeasyHTML(string=html_str).write_pdf(buffer)
-    buffer.seek(0)
-    return buffer.getvalue()
 
-def aplicar_html_no_docx(p, texto_html, negrito_forcado=False, tamanho=11):
-    texto_html = texto_html.replace("&nbsp;", "\xa0")
-    tokens = re.split(r'(<[^>]+>)', texto_html)
-    is_bold = is_strike = is_red = is_italic = False
-    for token in tokens:
-        if not token: continue
-        t = token.lower()
-        if t.startswith('<b') and not t.startswith('<br'): is_bold = True
-        elif t == '</b>': is_bold = False
-        elif t.startswith('<i'): is_italic = True
-        elif t == '</i>': is_italic = False
-        elif t.startswith('<strike') or t.startswith('<s') and not t.startswith('<span'): is_strike = True
-        elif t == '</strike>' or t == '</s>': is_strike = False
-        elif t.startswith('<font') and ('red' in t or '#f00' in t or '#e6' in t): is_red = True
-        elif t.startswith('<span') and ('red' in t or '#f00' in t or '#e6' in t): is_red = True
-        elif t == '</font>' or t == '</span>': is_red = False
-        elif token.startswith('<'): pass
-        else:
-            token = unescape(token)
-            run = p.add_run(token)
-            run.font.name, run.font.size = 'Times New Roman', Pt(tamanho)
-            if is_bold or negrito_forcado: run.bold = True
-            if is_italic: run.italic = True
-            if is_strike: run.font.strike = True
-            if is_red: run.font.color.rgb = RGBColor(230, 0, 0)
 
-def gerar_docx_dinamico(consolidacao_dict, tipo_versao):
-    doc = docx.Document()
-    for section in doc.sections: section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Inches(1)
-    ph = doc.add_paragraph(); ph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    rh = ph.add_run(f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}")
-    rh.font.name, rh.font.size, rh.bold, rh.font.color.rgb = 'Times New Roman', Pt(10), True, RGBColor(68, 68, 68)
-    po = doc.add_paragraph(); po.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    ro = po.add_run(limpar_texto_ia(consolidacao_dict.get("orgaos_emissores") or "").replace("<br/>", "\n"))
-    ro.font.name, ro.font.size, ro.bold = 'Times New Roman', Pt(11), True
-    ptit = doc.add_paragraph(); ptit.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    rt = ptit.add_run(limpar_texto_ia(consolidacao_dict.get("titulo_portaria") or ""))
-    rt.font.name, rt.font.size, rt.bold = 'Times New Roman', Pt(11), True
 
-    def _render_docx_p(p_obj, texto_html, bold_all=False):
-        if not texto_html: return
-        for p_html in texto_html.split("<br/>"):
-            if not p_html.strip(): continue
-            if bold_all:
-                aplicar_html_no_docx(p_obj, p_html, negrito_forcado=True, tamanho=10)
-            else: 
-                aplicar_html_no_docx(p_obj, p_html)
-            p_obj.add_run("\n")
-
-    p_ementa = doc.add_paragraph(); p_ementa.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; p_ementa.paragraph_format.left_indent = Inches(3)
-    _render_docx_p(p_ementa, consolidacao_dict.get("ementa", ""))
-    p_preambulo = doc.add_paragraph(); p_preambulo.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; p_preambulo.paragraph_format.left_indent = Inches(0)
-    _render_docx_p(p_preambulo, consolidacao_dict.get("preambulo", ""))
-
-    for item in consolidacao_dict.get("dispositivos", []):
-        t = (item.get("tipo") or "").lower()
-        t_prin = injetar_nota_remissiva(item.get(f"texto_principal_{tipo_versao}"), item.get("nota_remissiva") if not item.get("is_tabela") else "")
-        eh_capitulo_ou_anexo = "capitulo" in t or "anexo" in t
-        texto_puro = re.sub(r'<[^>]+>', '', t_prin or '')
-        if eh_capitulo_ou_anexo and len(texto_puro) <= 150:
-            # Título curto: mantém o destaque centralizado/negrito de sempre.
-            if "anexo" in t: doc.add_page_break()
-            p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            _render_docx_p(p, t_prin, bold_all=True)
-            if not item.get("is_tabela"):
-                continue
-        elif eh_capitulo_ou_anexo:
-            # Bloco longo: só a 1ª linha é o título (centralizado/negrito); o
-            # resto vira parágrafo normal, preservando negrito/itálico/riscado
-            # originais (bold_all=True apagava essas tags e forçava tudo em
-            # negrito, deixando o corpo do Anexo desformatado).
-            if "anexo" in t: doc.add_page_break()
-            partes_bloco = (t_prin or "").split("<br/>")
-            if partes_bloco:
-                p_tit = doc.add_paragraph(); p_tit.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                aplicar_html_no_docx(p_tit, partes_bloco[0], negrito_forcado=True, tamanho=10)
-                corpo_restante = "<br/>".join(partes_bloco[1:]).strip()
-                if corpo_restante:
-                    p_corpo = doc.add_paragraph(); p_corpo.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                    _render_docx_p(p_corpo, corpo_restante)
-            if not item.get("is_tabela"):
-                continue
-        else:
-            if t_prin:
-                p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; p.paragraph_format.first_line_indent = Inches(0.4)
-                _render_docx_p(p, t_prin)
-        if item.get("is_tabela"):
-            linhas = item.get(f"tabela_{tipo_versao}") or []
-            if linhas:
-                tb = doc.add_table(rows=len(linhas), cols=len(linhas[0])); tb.style = 'Table Grid'
-                for r_idx, linha in enumerate(linhas):
-                    for c_idx, celula in enumerate(linha):
-                        _render_docx_p(tb.cell(r_idx, c_idx).paragraphs[0], celula.replace('\n', '<br/>'))
-            t_pos = injetar_nota_remissiva(item.get(f"texto_pos_tabela_{tipo_versao}"), item.get("nota_remissiva"))
-            if t_pos:
-                p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; p.paragraph_format.first_line_indent = Inches(0.4)
-                _render_docx_p(p, t_pos)
-
-    pa = doc.add_paragraph(); pa.alignment = WD_ALIGN_PARAGRAPH.CENTER; pa.paragraph_format.space_before = Pt(36)
-    ra = pa.add_run(f"{limpar_texto_ia(consolidacao_dict.get('assinatura_nome') or '')}\n{limpar_texto_ia(consolidacao_dict.get('assinatura_cargo') or '')}")
-    ra.font.name, ra.font.size, ra.bold = 'Times New Roman', Pt(11), True
-
-    p_nota = doc.add_paragraph(); p_nota.alignment = WD_ALIGN_PARAGRAPH.CENTER; p_nota.paragraph_format.space_before = Pt(30)
-    r_nota = p_nota.add_run("Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial.")
-    r_nota.font.name = 'Times New Roman'; r_nota.font.size = Pt(9); r_nota.italic = True
-
-    buffer = io.BytesIO(); doc.save(buffer); buffer.seek(0)
-    return buffer.getvalue()
-
-def salvar_no_supabase(cons, cons_original):
-    if not supabase: return False
-    try:
-        if cons_original:
-            def _registrar(campo, original, editado):
-                if original != editado and (original or editado):
-                    try: supabase.table("memoria_de_correcoes").insert({"texto_ia": json.dumps(original) if not isinstance(original, str) else original, "texto_corrigido": json.dumps(editado) if not isinstance(editado, str) else editado}).execute()
-                    except: pass
-
-            _registrar("ementa", cons_original.get('ementa'), cons.get('ementa'))
-            _registrar("preambulo", cons_original.get('preambulo'), cons.get('preambulo'))
-            for j, disp_editado in enumerate(cons.get("dispositivos", [])):
-                if j >= len(cons_original.get("dispositivos", [])): break
-                disp_original = cons_original["dispositivos"][j]
-                for campo in ["texto_principal_alterada", "texto_principal_consolidada", "tabela_alterada", "tabela_consolidada", "texto_pos_tabela_alterada", "texto_pos_tabela_consolidada", "nota_remissiva"]:
-                    _registrar(campo, disp_original.get(campo), disp_editado.get(campo))
-        
-        base = cons['norma_base']
-        alteradoras = cons.get('normas_alteradoras', [])
-        data_base_iso = converter_para_iso(base.get('data_assinatura'))
-        res_upsert = supabase.table("portarias_base").upsert({
-            "tipo_documento": base['tipo_documento'], "numero_documento": base['numero_documento'],
-            "orgao_emissor": base['orgao_emissor'], "data_assinatura": data_base_iso,
-            "nome_padronizado": base['nome_padronizado'], "titulo_original": cons.get("titulo_portaria"),
-            "orgaos_emissores": cons.get("orgaos_emissores"), "assinatura_nome": cons.get("assinatura_nome"),
-            "assinatura_cargo": cons.get("assinatura_cargo"), "documento_consolidado_json": cons,
-        }, on_conflict="nome_padronizado").execute()
-        if res_upsert.data:
-            base_id = res_upsert.data[0]['id']
-        else:
-            base_id = supabase.table("portarias_base").select("id").eq("nome_padronizado", base['nome_padronizado']).execute().data[0]['id']
-
-        for alt in alteradoras:
-            res_alt = supabase.table("portarias_alteradoras").select("id").eq("portaria_base_id", base_id).eq("nome_padronizado", alt['nome_padronizado']).execute()
-            if not res_alt.data:
-                data_alt_iso = converter_para_iso(alt.get('data_assinatura'))
-                supabase.table("portarias_alteradoras").insert({"portaria_base_id": base_id, "tipo_documento": alt['tipo_documento'], "numero_documento": alt['numero_documento'], "orgao_emissor": alt['orgao_emissor'], "data_assinatura": data_alt_iso, "nome_padronizado": alt['nome_padronizado'], "arquivo_nome_original": "Múltiplos Documentos"}).execute()
-        return True
-    except Exception as e:
-        st.error(f"❌ Não foi possível salvar no banco de dados: {e}")
-        return False
 
 # =====================================================================
 # FRONT-END
 # =====================================================================
-st.markdown("""
-Envie um ato base e seus derivativos (alteradores/revogadores) em PDF. O sistema aplica as alterações
-em ordem cronológica e gera as versões alterada e consolidada, com taxação das alterações e revogações.
-""")
+ss = st.session_state
+ss.setdefault("dados_processados", None)
+ss.setdefault("dados_originais_ia", None)
+ss.setdefault("exports_cons", {})
+ss.setdefault("uploader_cons_ver", 0)
+reg = conc.registro()
+sid = conc.id_sessao()
 
-provedor_escolhido = st.selectbox("🧠 Motor de IA (Hub Multi-IA)", list(PROVEDORES_IA.keys()), key="provedor_ia_cons")
-modo_processamento = st.radio(
-    "⚡ Modo de Processamento",
-    ["Equilibrado", "Rápido", "Máxima Qualidade"],
-    index=0,
-    horizontal=True,
-)
-cfg_provedor = PROVEDORES_IA[provedor_escolhido]
-api_key = obter_chave_provedor(provedor_escolhido)
-if not api_key:
-    api_key = st.text_input(f"Chave da API ({cfg_provedor['secret']} não encontrada nos secrets)", type="password", placeholder=f"Cole sua chave de {provedor_escolhido} aqui...")
-st.caption(f"Modelos utilizados (do mais capaz ao mais estável): {' → '.join(cfg_provedor['modelos'])}")
 
-st.markdown("### 📥 Upload de Arquivos Normativos")
-st.caption("Aceita Leis, Decretos, Resoluções, Enunciados, Portarias e demais atos normativos, em PDF.")
-arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF) — um ato original e todos os seus derivativos", type=["pdf"], accept_multiple_files=True, key="uploader_cons")
+def _hash_cons(c):
+    return hashlib.md5(json.dumps(c, sort_keys=True, default=str, ensure_ascii=False).encode()).hexdigest()
 
-if "dados_processados" not in st.session_state: st.session_state.dados_processados = None
-if "dados_originais_ia" not in st.session_state: st.session_state.dados_originais_ia = None
 
-if st.button("🚀 Iniciar Análise Autopilot", type="primary", use_container_width=True):
-    if not api_key: st.error("⚠️ Insira sua chave da API nas configurações.")
-    elif not arquivos_enviados: st.warning("⚠️ Envie os arquivos normativos primeiro.")
+def _liberar_travas():
+    for chave in list(ss.get("_travas_minhas", [])):
+        reg.liberar_trava(chave, sid)
+    ss["_travas_minhas"] = []
+
+
+dados = ss.dados_processados
+etapa = 3 if (dados and dados.get("consolidacoes_geradas")) else 0
+
+with st.container(border=True):
+    c_ia, c_modo = st.columns([1, 1.2])
+    with c_ia:
+        provedor_escolhido = st.selectbox("Motor de IA (Hub Multi-IA)", list(PROVEDORES_IA.keys()), key="provedor_ia_cons")
+    with c_modo:
+        modo_processamento = st.radio("Modo de processamento", ["Equilibrado", "Rápido", "Máxima Qualidade"], index=0, horizontal=True,
+                                      help="Rápido: menos raciocínio e OCR limitado. Máxima Qualidade: mais lento e mais caro.")
+    cfg_provedor = PROVEDORES_IA[provedor_escolhido]
+    api_key = obter_chave_provedor(provedor_escolhido)
+    if api_key:
+        st.markdown(ui.badge("Chave de API configurada nos Secrets", "ok", pulso=True) + f' <span style="color:#64748B;font-size:.82rem">Modelos: {escape(" → ".join(cfg_provedor["modelos"]))}</span>', unsafe_allow_html=True)
+    else:
+        api_key = st.text_input(f"Chave da API ({cfg_provedor['secret']} não encontrada nos secrets)", type="password", placeholder=f"Cole sua chave de {provedor_escolhido} aqui...")
+    arquivos_enviados = st.file_uploader("Arraste todos os documentos (PDF): um ato original e todos os seus derivativos", type=["pdf"],
+                                         accept_multiple_files=True, key=f"uploader_cons_{ss.uploader_cons_ver}",
+                                         help="Aceita Leis, Decretos, Resoluções, Enunciados, Portarias e demais atos normativos.")
+    iniciar = st.button("Iniciar análise Autopilot", type="primary", use_container_width=True, icon=":material/auto_awesome:", disabled=not arquivos_enviados)
+
+ui.fluxo(["Enviar arquivos", "Triagem por IA", "Cascata de alterações", "Revisar e exportar"], etapa if etapa else (1 if arquivos_enviados else 0))
+
+if iniciar:
+    if not api_key:
+        st.error("Insira sua chave da API.", icon=":material/key:")
     else:
         if modo_processamento == "Rápido":
-            thinking_level = "low"; dpi_ocr = 1.2; max_paginas_ocr = 10
+            thinking_level, dpi_ocr, max_paginas_ocr = "low", 1.2, 10
         elif modo_processamento == "Equilibrado":
-            thinking_level = "medium"; dpi_ocr = 1.5; max_paginas_ocr = 20
+            thinking_level, dpi_ocr, max_paginas_ocr = "medium", 1.5, 20
         else:
-            thinking_level = "high"; dpi_ocr = 1.5; max_paginas_ocr = None
+            thinking_level, dpi_ocr, max_paginas_ocr = "high", 1.5, None
 
-        with st.spinner("⚡ Executando OCR Estrutural e Consulta ao Histórico de Aprendizado..."):
+        _liberar_travas()
+        with st.status("Executando OCR estrutural e consultando o aprendizado da equipe...", expanded=True) as status:
             progresso = st.progress(0.0, text="Iniciando análise...")
             try:
-                st.session_state.dados_processados = None
-                st.session_state.dados_originais_ia = None
-                st.session_state.dados_processados = analisar_lote_arquivos(
-                    arquivos_enviados,
-                    api_key.strip(),
-                    provedor_escolhido,
-                    thinking_level=thinking_level,
-                    dpi_ocr=dpi_ocr,
-                    max_paginas_ocr=max_paginas_ocr,
-                    progresso=progresso
-                )
-                st.session_state.dados_originais_ia = copy.deepcopy(st.session_state.dados_processados)
-                progresso.progress(1.0, text="Análise concluída!")
-                if st.session_state.dados_processados.get("consolidacoes_geradas"):
-                    st.success("✨ Processamento concluído!")
-                else:
-                    st.warning("⚠️ O processamento terminou, mas nenhuma consolidação foi gerada. Veja os detalhes abaixo.")
+                ss.dados_processados = None
+                ss.dados_originais_ia = None
+                ss.exports_cons = {}
+                ss.dados_processados = analisar_lote_arquivos(arquivos_enviados, api_key.strip(), provedor_escolhido, thinking_level=thinking_level,
+                                                              dpi_ocr=dpi_ocr, max_paginas_ocr=max_paginas_ocr, progresso=progresso)
+                ss.dados_originais_ia = copy.deepcopy(ss.dados_processados)
+                n = len(ss.dados_processados.get("consolidacoes_geradas", []))
+                conc.auditar("analisar_consolidacao", f"{len(arquivos_enviados)} arquivo(s) → {n} consolidação(ões)")
+                status.update(label="Análise concluída" if n else "Concluído sem consolidações", state="complete", expanded=False)
             except Exception as e:
-                st.error(f"❌ Ocorreu um erro: {str(e)}")
-                with st.expander("🔍 Detalhes técnicos do erro"):
+                status.update(label="Falha na análise", state="error")
+                st.error(f"Ocorreu um erro: {e}", icon=":material/error:")
+                with st.expander("Detalhes técnicos do erro"):
                     st.code(traceback.format_exc())
             finally:
                 progresso.empty()
+        st.rerun()
 
-if st.session_state.dados_processados:
-    st.markdown("---")
-    dados = st.session_state.dados_processados
-    dados_originais = st.session_state.dados_originais_ia
+if dados:
+    dados_originais = ss.dados_originais_ia
+    consolidacoes = dados.get("consolidacoes_geradas", [])
+    ui.kpis([
+        ("Consolidações geradas", len(consolidacoes), "layers", "ok"),
+        ("Alterações aplicadas", sum(len(c.get("normas_alteradoras", [])) for c in consolidacoes), "merge", "info"),
+        ("Referências sem base", len(dados.get("referencias_pendentes", [])), "clock", "warn"),
+        ("Arquivos sem efeito", len(set(dados.get("arquivos_nao_alterados", []))), "file", ""),
+    ])
+    if consolidacoes:
+        st.success("Processamento concluído. Revise, exporte e salve cada consolidação abaixo.", icon=":material/check_circle:")
+    else:
+        st.warning("O processamento terminou, mas nenhuma consolidação foi gerada. Veja os detalhes abaixo.", icon=":material/warning:")
 
     for tipo_msg, texto_msg in dados.get("mensagens", []):
-        if tipo_msg == "warning": st.warning(texto_msg)
-        else: st.info(texto_msg)
+        (st.warning if tipo_msg == "warning" else st.info)(texto_msg)
     for texto_erro in dados.get("erros", []):
-        st.error(f"❌ {texto_erro}")
+        st.error(texto_erro, icon=":material/error:")
     if dados.get("arquivos_nao_classificados"):
-        st.warning("⚠️ A IA não classificou estes arquivos e eles não foram processados: " + ", ".join(dados["arquivos_nao_classificados"]))
-    if dados.get("arquivos_nao_alterados") and not dados.get("consolidacoes_geradas"):
+        st.warning("A IA não classificou estes arquivos e eles não foram processados: " + ", ".join(dados["arquivos_nao_classificados"]))
+    if dados.get("arquivos_nao_alterados") and not consolidacoes:
         st.info("Arquivos que não geraram consolidação: " + ", ".join(dict.fromkeys(dados["arquivos_nao_alterados"])))
-
     referencias_pendentes = dados.get("referencias_pendentes", [])
     if referencias_pendentes:
-        st.warning("⚠️ Alguns arquivos fazem referência a normas que não foram encontradas no lote nem no banco de dados. Para processar essas alterações, envie também o(s) ato(s) original(is) correspondente(s).")
+        st.warning("Alguns arquivos fazem referência a normas que não foram encontradas no lote nem no banco. Envie também o(s) ato(s) original(is) correspondente(s).")
         for ref in referencias_pendentes:
             ato_ref = f"{ref.get('ato_referenciado_tipo', 'Desconhecido')} {ref.get('ato_referenciado_numero', 'Desconhecido')}"
-            arquivos = ", ".join(ref.get("arquivos_alteradores", []))
-            st.markdown(f"- **Referência:** {ato_ref}  \n  **Alteradora(s):** {arquivos}")
+            ui.cartao(f'{ui.icone("clock", 17)} Referência: {escape(ato_ref)}', f"<p>Alteradora(s): {escape(', '.join(ref.get('arquivos_alteradores', [])))}</p>", "warn")
 
-    for i, cons in enumerate(dados.get("consolidacoes_geradas", [])):
-        nome_exibicao_base = cons['norma_base']['nome_padronizado']
-        nomes_alteradoras = [alt['nome_padronizado'] for alt in cons.get('normas_alteradoras', [])]
-        nome_exibicao_alt = " e ".join(nomes_alteradoras) if nomes_alteradoras else "Desconhecido"
-        
-        with st.expander(f"📁 **{nome_exibicao_base}** alterada por **{nome_exibicao_alt}**", expanded=True):
-            st.markdown("### 📝 Editor Visual de Documento")
+    minhas = []
+    for i, cons in enumerate(consolidacoes):
+        nome_base = cons['norma_base']['nome_padronizado']
+        nomes_alt = [alt['nome_padronizado'] for alt in cons.get('normas_alteradoras', [])]
+        nome_alt = " e ".join(nomes_alt) if nomes_alt else "Desconhecido"
 
-            cons['titulo_portaria'] = st.text_input("Título do Ato Normativo", cons.get('titulo_portaria', ''), key=f"titulo_{i}")
-            st.markdown("**Ementa**")
-            val_ementa = ia_para_editor(cons.get('ementa', ''))
-            ementa_editada = editor_rico(value=val_ementa, key=f"q_ementa_{i}")
-            if ementa_editada is not None: cons['ementa'] = editor_para_pdf(ementa_editada)
+        # ---- trava branda: avisa quando outra pessoa está com a mesma norma aberta (nunca bloqueia)
+        chave_trava = f"base:{nome_base}"
+        reg.adquirir_trava(chave_trava, sid, conc.usuario_atual())
+        minhas.append(chave_trava)
+        outro = reg.dono_da_trava(chave_trava, sid)
+        conc.batimento("consolidar", "consolidando", nome_base)
 
-            st.markdown("**Preâmbulo e Considerandos**")
-            val_preambulo = ia_para_editor(cons.get('preambulo', ''))
-            preambulo_editado = editor_rico(value=val_preambulo, key=f"q_preambulo_{i}")
-            if preambulo_editado is not None: cons['preambulo'] = editor_para_pdf(preambulo_editado)
+        with st.expander(f"{nome_base}  ·  alterada por {nome_alt}", expanded=True, icon=":material/folder_open:"):
+            if outro:
+                st.markdown(f'<div class="cn-aviso-trava">{ui.icone("users", 18)} {escape(outro["usuario"])} também está com esta norma aberta. '
+                            f'Ao salvar, o sistema confere se há alterações dele que você ainda não tem.</div>', unsafe_allow_html=True)
+            vista = st.radio("Vista", ["Editar", "Prévia", "Exportar e salvar"], horizontal=True, key=f"vista_{i}", label_visibility="collapsed")
 
-            st.markdown("#### Dispositivos (Artigos, Parágrafos, Incisos, Anexos)")
-            _n_disp = len(cons.get("dispositivos", []))
-            _editar_detalhado = True
-            if _n_disp > LIMITE_EDICAO_DETALHADA:
-                _editar_detalhado = st.checkbox(f"✏️ Habilitar edição detalhada dos {_n_disp} dispositivos (pode deixar a página lenta). As exportações já contêm o texto completo.", value=False, key=f"edit_det_{i}")
-            for j, disp in enumerate(cons.get("dispositivos", []) if _editar_detalhado else []):
-                st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j+1}**")
-                c_alt, c_cons = st.columns(2)
-                with c_alt:
-                    st.markdown("*Versão Alterada*")
-                    val_alt = ia_para_editor(disp.get('texto_principal_alterada', ''))
-                    alt_editada = editor_rico(value=val_alt, key=f"q_alt_{i}_{j}")
-                    if alt_editada is not None: disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
-                with c_cons:
-                    st.markdown("*Versão Consolidada*")
-                    val_cons = ia_para_editor(disp.get('texto_principal_consolidada', ''))
-                    cons_editada = editor_rico(value=val_cons, key=f"q_cons_{i}_{j}")
-                    if cons_editada is not None: disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
+            # ======================================================== EDITAR
+            if vista == "Editar":
+                cons['titulo_portaria'] = st.text_input("Título do ato normativo", cons.get('titulo_portaria', ''), key=f"titulo_{i}")
+                st.markdown("**Ementa**")
+                ementa_editada = editor_rico(value=ia_para_editor(cons.get('ementa', '')), key=f"q_ementa_{i}")
+                if ementa_editada is not None:
+                    cons['ementa'] = editor_para_pdf(ementa_editada)
+                st.markdown("**Preâmbulo e considerandos**")
+                preambulo_editado = editor_rico(value=ia_para_editor(cons.get('preambulo', '')), key=f"q_preambulo_{i}")
+                if preambulo_editado is not None:
+                    cons['preambulo'] = editor_para_pdf(preambulo_editado)
 
-                st.markdown("*Nota Remissiva (Injetada automaticamente no final)*")
-                nota_editada = st.text_input("Nota", value=disp.get('nota_remissiva', ''), key=f"nota_{i}_{j}", label_visibility="collapsed")
-                disp['nota_remissiva'] = nota_editada
-                st.markdown("---")
+                st.markdown("#### Dispositivos (artigos, parágrafos, incisos, anexos)")
+                _n_disp = len(cons.get("dispositivos", []))
+                _editar_detalhado = True
+                if _n_disp > LIMITE_EDICAO_DETALHADA:
+                    _editar_detalhado = st.checkbox(f"Habilitar edição detalhada dos {_n_disp} dispositivos (pode deixar a página lenta). As exportações já contêm o texto completo.",
+                                                    value=False, key=f"edit_det_{i}")
+                for j, disp in enumerate(cons.get("dispositivos", []) if _editar_detalhado else []):
+                    st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j + 1}**")
+                    c_alt, c_cons = st.columns(2)
+                    with c_alt:
+                        st.caption("Versão alterada")
+                        alt_editada = editor_rico(value=ia_para_editor(disp.get('texto_principal_alterada', '')), key=f"q_alt_{i}_{j}")
+                        if alt_editada is not None:
+                            disp['texto_principal_alterada'] = editor_para_pdf(alt_editada)
+                    with c_cons:
+                        st.caption("Versão consolidada")
+                        cons_editada = editor_rico(value=ia_para_editor(disp.get('texto_principal_consolidada', '')), key=f"q_cons_{i}_{j}")
+                        if cons_editada is not None:
+                            disp['texto_principal_consolidada'] = editor_para_pdf(cons_editada)
+                    disp['nota_remissiva'] = st.text_input("Nota remissiva (injetada automaticamente no final)", value=disp.get('nota_remissiva', ''), key=f"nota_{i}_{j}")
+                    if disp.get('is_tabela'):
+                        st.caption("Tabela / anexo: revise linha a linha")
+                        t_alt, t_cons = st.columns(2)
+                        with t_alt:
+                            tab_alt_edit = st.data_editor(disp.get('tabela_alterada') or [[""]], key=f"tab_alt_{i}_{j}", num_rows="dynamic", use_container_width=True)
+                            disp['tabela_alterada'] = tab_alt_edit if isinstance(tab_alt_edit, list) else disp.get('tabela_alterada')
+                            disp['texto_pos_tabela_alterada'] = st.text_area("Texto após a tabela (alterada)", value=disp.get('texto_pos_tabela_alterada') or "", key=f"pos_alt_{i}_{j}")
+                        with t_cons:
+                            tab_cons_edit = st.data_editor(disp.get('tabela_consolidada') or [[""]], key=f"tab_cons_{i}_{j}", num_rows="dynamic", use_container_width=True)
+                            disp['tabela_consolidada'] = tab_cons_edit if isinstance(tab_cons_edit, list) else disp.get('tabela_consolidada')
+                            disp['texto_pos_tabela_consolidada'] = st.text_area("Texto após a tabela (consolidada)", value=disp.get('texto_pos_tabela_consolidada') or "", key=f"pos_cons_{i}_{j}")
+                    st.divider()
 
-                if disp.get('is_tabela'):
-                    st.markdown("*Tabela / Anexo — revise linha a linha*")
-                    t_alt, t_cons = st.columns(2)
-                    with t_alt:
-                        tab_alt_edit = st.data_editor(disp.get('tabela_alterada') or [[""]], key=f"tab_alt_{i}_{j}", num_rows="dynamic", use_container_width=True)
-                        disp['tabela_alterada'] = tab_alt_edit if isinstance(tab_alt_edit, list) else disp.get('tabela_alterada')
-                        pos_alt = st.text_area("Texto após a tabela (Alterada)", value=disp.get('texto_pos_tabela_alterada') or "", key=f"pos_alt_{i}_{j}")
-                        disp['texto_pos_tabela_alterada'] = pos_alt
-                    with t_cons:
-                        tab_cons_edit = st.data_editor(disp.get('tabela_consolidada') or [[""]], key=f"tab_cons_{i}_{j}", num_rows="dynamic", use_container_width=True)
-                        disp['tabela_consolidada'] = tab_cons_edit if isinstance(tab_cons_edit, list) else disp.get('tabela_consolidada')
-                        pos_cons = st.text_area("Texto após a tabela (Consolidada)", value=disp.get('texto_pos_tabela_consolidada') or "", key=f"pos_cons_{i}_{j}")
-                        disp['texto_pos_tabela_consolidada'] = pos_cons
+            # ======================================================== PRÉVIA
+            elif vista == "Prévia":
+                qual = st.radio("Versão", ["Consolidada", "Alterada"], horizontal=True, key=f"prev_{i}")
+                try:
+                    corpo = exportacao.corpo_para_previa(cons, "consolidada" if qual == "Consolidada" else "alterada")
+                    st.markdown(f'<div class="cn-papel-barra"><i></i><i></i><i></i>&nbsp;{escape(nome_base)} · versão {qual.lower()}</div><div class="cn-papel">{corpo}</div>', unsafe_allow_html=True)
+                    st.caption("Em vermelho/taxado: trechos alterados ou revogados. A prévia é fiel ao conteúdo exportado, mas a paginação final é a do PDF.")
+                except Exception as e:
+                    st.error(f"Não foi possível montar a prévia: {e}")
 
-            st.markdown("### 📥 Opções de Exportação")
-            if st.button(f"💾 Salvar Cascata Inteira no Banco de Dados", key=f"btn_sup_{i}"):
-                cons_original = dados_originais.get("consolidacoes_geradas", [])[i] if dados_originais else None
-                if salvar_no_supabase(cons, cons_original): st.success(f"Banco atualizado!")
-            
-            c_html, c_pdf, c_docx = st.columns(3)
-            nome_arquivo_base = nome_exibicao_base.replace(' ', '_').replace('/', '-')
+            # ======================================================== EXPORTAR E SALVAR
+            else:
+                st.markdown("##### Salvar no banco de dados")
+                conflito = ss.get(f"conflito_{i}")
+                if conflito:
+                    st.warning("Outro usuário salvou alterações nesta norma depois que você iniciou a análise. Se você salvar agora, estas alterações "
+                               "deixarão de constar no texto consolidado: **" + "; ".join(conflito["faltando"]) + "**. "
+                               "O ideal é refazer a análise incluindo também esses atos.", icon=":material/merge_type:")
+                    forcar = st.checkbox("Entendo o risco: sobrescrever mesmo assim", key=f"forcar_{i}")
+                else:
+                    forcar = False
+                if st.button("Salvar cascata inteira no banco de dados", key=f"btn_sup_{i}", type="primary", icon=":material/cloud_upload:", use_container_width=True):
+                    cons_original = dados_originais.get("consolidacoes_geradas", [])[i] if dados_originais else None
+                    r = repo.salvar_consolidacao(cons, cons_original, sobrescrever=forcar, usuario=conc.usuario_atual())
+                    if r.ok:
+                        ss.pop(f"conflito_{i}", None)
+                        kpis_cache.clear()
+                        st.success("Banco atualizado!", icon=":material/check_circle:")
+                    elif r.conflito:
+                        ss[f"conflito_{i}"] = r.conflito
+                        st.rerun()
+                    else:
+                        st.error(f"Não foi possível salvar no banco de dados: {r.mensagem}", icon=":material/error:")
 
-            try:
-                html_alt = gerar_html_dinamico(cons, "alterada")
-                html_cons = gerar_html_dinamico(cons, "consolidada")
-                c_html.download_button("🌐 Baixar HTML (Alterada)", data=html_alt, file_name=f"{nome_arquivo_base}_Alt.html", mime="text/html", key=f"ha_{i}")
-                c_html.download_button("🌐 Baixar HTML (Consolidada)", data=html_cons, file_name=f"{nome_arquivo_base}_Cons.html", mime="text/html", key=f"hc_{i}")
-            except Exception as e:
-                c_html.error(f"Falha ao gerar HTML: {e}")
+                st.markdown("##### Arquivos para download")
+                h_atual = _hash_cons(cons)
+                chave_exp = f"exp_{i}"
+                pronto = ss.exports_cons.get(chave_exp)
+                if st.button("Preparar HTML, PDF e DOCX (alterada e consolidada)", key=f"prep_{i}", icon=":material/build:", use_container_width=True):
+                    arqs, falhas = {}, []
+                    with st.status("Gerando arquivos...", expanded=False) as stt:
+                        for fmt, fn in (("html", gerar_html_dinamico), ("pdf", gerar_pdf_dinamico), ("docx", gerar_docx_dinamico)):
+                            for tv in ("alterada", "consolidada"):
+                                try:
+                                    arqs[(fmt, tv)] = fn(cons, tv)
+                                except Exception as e:
+                                    falhas.append(f"{fmt.upper()} {tv}: {e}")
+                        stt.update(label="Arquivos prontos" if not falhas else "Arquivos gerados com falhas", state="complete" if not falhas else "error")
+                    ss.exports_cons[chave_exp] = {"hash": h_atual, "arqs": arqs, "falhas": falhas}
+                    pronto = ss.exports_cons[chave_exp]
+                if pronto:
+                    if pronto["hash"] != h_atual:
+                        st.info("O documento foi editado depois da última geração. Gere os arquivos novamente para refletir as edições.", icon=":material/info:")
+                    for f in pronto["falhas"]:
+                        st.error(f"Falha ao gerar {f}")
+                    nome_arq = nome_base.replace(' ', '_').replace('/', '-')
+                    mimes = {"html": "text/html", "pdf": "application/pdf", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+                    cols = st.columns(3)
+                    for col, fmt in zip(cols, ("html", "pdf", "docx")):
+                        for tv, suf in (("alterada", "Alt"), ("consolidada", "Cons")):
+                            dado = pronto["arqs"].get((fmt, tv))
+                            if dado is not None:
+                                col.download_button(f"{fmt.upper()} · {tv.capitalize()}", data=dado, file_name=f"{nome_arq}_{suf}.{fmt}", mime=mimes[fmt],
+                                                    key=f"dl_{fmt}_{tv}_{i}", use_container_width=True, icon=":material/download:")
 
-            try:
-                pdf_alt = gerar_pdf_dinamico(cons, "alterada")
-                pdf_cons = gerar_pdf_dinamico(cons, "consolidada")
-                c_pdf.download_button("📄 Baixar PDF (Alterada)", data=pdf_alt, file_name=f"{nome_arquivo_base}_Alt.pdf", mime="application/pdf", key=f"pa_{i}")
-                c_pdf.download_button("📄 Baixar PDF (Consolidada)", data=pdf_cons, file_name=f"{nome_arquivo_base}_Cons.pdf", mime="application/pdf", key=f"pc_{i}")
-            except Exception as e:
-                c_pdf.error(f"Falha ao gerar PDF: {e}")
+    ss["_travas_minhas"] = minhas
 
-            try:
-                docx_alt = gerar_docx_dinamico(cons, "alterada")
-                docx_cons = gerar_docx_dinamico(cons, "consolidada")
-                c_docx.download_button("📝 Baixar DOCX (Alterada)", data=docx_alt, file_name=f"{nome_arquivo_base}_Alt.docx", mime="application/vnd.openxmlformats", key=f"da_{i}")
-                c_docx.download_button("📝 Baixar DOCX (Consolidada)", data=docx_cons, file_name=f"{nome_arquivo_base}_Cons.docx", mime="application/vnd.openxmlformats", key=f"dc_{i}")
-            except Exception as e:
-                c_docx.error(f"Falha ao gerar DOCX: {e}")
-
-    if st.button("🔄 Nova Análise", type="secondary"):
-        st.session_state.dados_processados = None
-        st.session_state.dados_originais_ia = None
+    if st.button("Nova análise", type="secondary", icon=":material/restart_alt:"):
+        _liberar_travas()
+        ss.dados_processados = None
+        ss.dados_originais_ia = None
+        ss.exports_cons = {}
+        ss.uploader_cons_ver += 1
         st.rerun()

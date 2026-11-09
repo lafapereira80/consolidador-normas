@@ -1,0 +1,74 @@
+{
+  "E1_pendencia_duplicada": {
+    "original": {
+      "tentativas": 150,
+      "com_duplicata": 133
+    },
+    "novo": {
+      "tentativas": 150,
+      "com_duplicata": 0
+    }
+  },
+  "E2_leitura_duplicada": {
+    "original": {
+      "tentativas": 150,
+      "com_duplicata": 133
+    },
+    "novo": {
+      "tentativas": 150,
+      "com_duplicata": 0
+    }
+  },
+  "E3_atualizacao_perdida": {
+    "original": {
+      "tentativas": 100,
+      "banco_inconsistente": 100,
+      "alteracao_perdida_silenciosamente": 100,
+      "gravacoes_bloqueadas_por_conflito": 0
+    },
+    "novo": {
+      "tentativas": 100,
+      "banco_inconsistente": 0,
+      "alteracao_perdida_silenciosamente": 0,
+      "gravacoes_bloqueadas_por_conflito": 100
+    }
+  },
+  "E4_memoria_de_correcoes_duplicada": {
+    "original": {
+      "cliques_em_salvar": 3,
+      "linhas_em_memoria_de_correcoes": 6
+    },
+    "novo": {
+      "cliques_em_salvar": 3,
+      "linhas_em_memoria_de_correcoes": 1
+    }
+  },
+  "E5_forca_bruta_login": {
+    "original": {
+      "tentativas_aceitas_de_1000": 1000,
+      "observacao": "nenhum limite: senha pode ser testada indefinidamente"
+    },
+    "novo": {
+      "tentativas_aceitas_de_1000": 5,
+      "bloqueio_s": 60
+    }
+  },
+  "E6_chamadas_de_ia_simultaneas": {
+    "original": {
+      "pico_de_chamadas_simultaneas": 6,
+      "tempo_s": 0.15
+    },
+    "novo": {
+      "pico_de_chamadas_simultaneas": 3,
+      "tempo_s": 0.3
+    }
+  },
+  "E7_registro_compartilhado_sob_carga": {
+    "threads": 200,
+    "operacoes": 40000,
+    "excecoes": 0,
+    "sessoes_online": 200,
+    "travas_ativas": 1
+  },
+  "duracao_s": 30.5
+}

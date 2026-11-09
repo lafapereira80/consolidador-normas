@@ -1,4 +1,4 @@
-# app.py (página principal - Identificar e Cruzar) - CORRIGIDO
+# app.py - Página principal: login + "Identificar e Cruzar"
 import streamlit as st
 import os
 import re
@@ -6,12 +6,11 @@ import json
 import time
 import base64
 import threading
+from html import escape
 from typing import Optional, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
 
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
-from supabase import create_client, Client
 import fitz  # PyMuPDF
 from google import genai
 from google.genai import types
@@ -34,95 +33,108 @@ except ImportError:
     OpenAI = None
 
 from auth_utils import gerar_hash_senha, verificar_senha
-from menu_utils import renderizar_cabecalho, renderizar_menu
+from menu_utils import configurar_pagina, renderizar_cabecalho, renderizar_menu, processar_cookies
+from db_utils import obter_supabase, obter_repositorio, kpis_cache
+import concorrencia as conc
+import ui_theme as ui
 
-st.set_page_config(page_title="Autopilot Normativo", page_icon="⚖️", layout="wide", initial_sidebar_state="collapsed")
+configurar_pagina("Identificar e Cruzar", "⚖️")
 
-# PROTEÇÃO DE ACESSO (LOGIN)
-if "autenticado" not in st.session_state:
-    st.session_state.autenticado = False
+supabase = obter_supabase()
+repo = obter_repositorio()
 
-@st.cache_resource
-def init_supabase() -> Optional[Client]:
-    try:
-        url = st.secrets["supabase"]["url"]
-        key = st.secrets["supabase"]["key"]
-        return create_client(url, key)
-    except Exception:
-        return None
 
-supabase = init_supabase()
+def _com_vaga(fn, *a, **kw):
+    """Toda chamada de IA passa por um semáforo GLOBAL: 2+ usuários processando juntos não estouram a cota do provedor."""
+    with conc.vaga_ia():
+        return fn(*a, **kw)
 
-def verificar_login(username, password):
+
+# =====================================================================
+# LOGIN
+# =====================================================================
+def autenticar(usuario, senha):
+    """Retorna (ok, mensagem, papel, nome_canonico)."""
+    usuario = (usuario or "").strip()
+    if not usuario or not senha:
+        return False, "Informe usuário e senha.", None, None
+    reg = conc.registro()
+    espera = reg.segundos_bloqueado(usuario)
+    if espera:
+        return False, f"Muitas tentativas incorretas. Aguarde {espera}s para tentar novamente.", None, None
     if not supabase:
-        st.error("⚠️ Erro de conexão com o Banco de Dados.")
-        return False
+        return False, "Erro de conexão com o banco de dados.", None, None
     try:
-        res = supabase.table("usuarios").select("id, password_hash").eq("username", username).execute()
-        if res.data and len(res.data) > 0:
-            ok, precisa_migrar = verificar_senha(password, res.data[0]['password_hash'])
-            if ok and precisa_migrar:
+        res = supabase.table("usuarios").select("*").eq("username", usuario).execute()
+    except Exception as e:
+        return False, f"Erro ao verificar credenciais: {e}", None, None
+    if res.data:
+        row = res.data[0]
+        ok, precisa_migrar = verificar_senha(senha, row.get("password_hash"))
+        if ok:
+            if precisa_migrar:
                 try:
-                    supabase.table("usuarios").update({"password_hash": gerar_hash_senha(password)}).eq("id", res.data[0]['id']).execute()
+                    supabase.table("usuarios").update({"password_hash": gerar_hash_senha(senha)}).eq("id", row["id"]).execute()
                 except Exception:
                     pass
-            return ok
-    except Exception as e:
-        st.error(f"Erro ao verificar credenciais: {e}")
-    return False
+            nome = row.get("username") or usuario
+            papel_db = str(row.get("role") or row.get("papel") or "").lower()
+            papel = "admin" if (papel_db == "admin" or nome.lower() == "admin") else "usuario"
+            return True, "", papel, nome
+    bloqueio = reg.registrar_falha(usuario)
+    if bloqueio:
+        return False, f"Muitas tentativas incorretas. Acesso bloqueado por {bloqueio}s.", None, None
+    return False, "Usuário ou senha incorretos.", None, None
 
-if not st.session_state.autenticado:
-    st.markdown("""
-    <style>
-        div[data-testid="stAppViewContainer"] { display: flex; align-items: center; }
-        .st-key-login_card {
-            max-width: 420px;
-            margin: 4rem auto;
-            padding: 1.5rem 2rem;
-            background: #ffffff;
-            border-radius: 12px;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.12);
-        }
-        .st-key-login_card [data-testid="stForm"] { border: none; padding: 0; }
-        .login-title { text-align: center; color: #1e3c72; font-weight: 800; font-size: 1.8rem; margin-bottom: 0.3rem; }
-        .login-subtitle { text-align: center; color: #666; margin-bottom: 1.5rem; }
-    </style>
-    """, unsafe_allow_html=True)
 
-    _, col_login, _ = st.columns([1, 1.3, 1])
-    with col_login:
-        with st.container(border=True, key="login_card"):
-            st.markdown('<div class="login-title">⚖️ Autopilot Normativo</div>', unsafe_allow_html=True)
-            st.markdown('<div class="login-subtitle">Acesso Restrito ao Sistema</div>', unsafe_allow_html=True)
-
-            with st.form("form_login"):
-                usuario = st.text_input("Usuário", placeholder="Digite seu usuário")
-                senha = st.text_input("Senha", type="password", placeholder="Digite sua senha")
-                btn_login = st.form_submit_button("Entrar no Sistema", use_container_width=True)
-
-                if btn_login:
-                    if verificar_login(usuario, senha):
-                        st.session_state.autenticado = True
+conc.restaurar_sessao_por_cookie()
+if not st.session_state.get("autenticado", False):
+    processar_cookies()
+    with st.container(key="login_shell"):
+        col_e, col_d = st.columns([1.12, 0.88], gap="small")
+        with col_e:
+            with st.container(key="login_left"):
+                st.markdown(f"""
+{ui.marca("Normas e Atos")}
+<div class="cn-lg-titulo">Normas sempre <em>consolidadas</em>,<br>sem retrabalho.</div>
+<p class="cn-lg-sub">Leia atos em PDF, descubra o que eles alteram ou revogam e gere as versões alterada e consolidada com taxação automática.</p>
+<ul class="cn-lg-lista">
+  <li><span class="cn-ico-box">{ui.icone("search", 18)}</span>Identifica atos alteradores e cruza com o banco</li>
+  <li><span class="cn-ico-box">{ui.icone("merge", 18)}</span>Aplica alterações em ordem cronológica</li>
+  <li><span class="cn-ico-box">{ui.icone("shield", 18)}</span>Vários usuários trabalhando ao mesmo tempo, com segurança</li>
+</ul>
+<div class="cn-demo" aria-hidden="true">
+  <div class="t">Art. 4º · demonstração</div>
+  <span class="velho">Art. 4º O prazo de instrução é de trinta dias.</span>
+  <span class="novo">Art. 4º O prazo de instrução é de sessenta dias. <span class="nota">(Redação dada pelo Art. 2º da Portaria nº 30/PGJM)</span></span>
+</div>
+""", unsafe_allow_html=True)
+        with col_d:
+            with st.container(key="login_right"):
+                st.markdown('<div class="cn-lg-saud">Bem-vindo de volta</div><p>Acesse com seu usuário institucional.</p>', unsafe_allow_html=True)
+                with st.form("form_login", border=False):
+                    usuario = st.text_input("Usuário", placeholder="ex.: maria.silva", autocomplete="username")
+                    senha = st.text_input("Senha", type="password", placeholder="Sua senha", autocomplete="current-password")
+                    entrar = st.form_submit_button("Entrar no sistema", type="primary", use_container_width=True, icon=":material/login:")
+                if entrar:
+                    with st.spinner("Verificando credenciais..."):
+                        ok, msg, papel, nome = autenticar(usuario, senha)
+                    if ok:
+                        conc.iniciar_sessao(nome, papel)
                         st.rerun()
                     else:
-                        st.error("❌ Usuário ou senha incorretos.")
+                        st.error(msg, icon=":material/error:")
+                st.markdown(f'<div class="cn-seguro">{ui.icone("lock", 15)} Conexão protegida · senhas com PBKDF2 · sessões independentes por usuário</div>', unsafe_allow_html=True)
     st.stop()
 
-# APÓS LOGIN: CONTEÚDO DA PÁGINA IDENTIFICAR E CRUZAR
+processar_cookies()
 
-renderizar_cabecalho("🔎 Identificação e Cruzamento de Atos", css_extra="""
-    .card-achado {
-        border: 1px solid #d0d4dc; border-radius: 10px; padding: 14px 18px;
-        margin-bottom: 10px; background: #f8faff;
-    }
-    .card-achado.correlacionado { border-left: 5px solid #1e9c4f; }
-    .card-achado.pendente { border-left: 5px solid #d98c00; }
-""")
+# =====================================================================
+# APÓS LOGIN: IDENTIFICAR E CRUZAR
+# =====================================================================
 renderizar_menu("inicio")
-
-# ----------------- CONEXÃO COM BANCO -----------------
 if not supabase:
-    st.error("⚠️ Não foi possível conectar ao Supabase.")
+    st.error("Não foi possível conectar ao Supabase. Verifique os Secrets (supabase.url / supabase.key).", icon=":material/cloud_off:")
     st.stop()
 
 # ----------------- HUB MULTI-IA (mesmos provedores do Autopilot) -----------------
@@ -268,7 +280,7 @@ def _chamar_gemini(chave, itens, response_schema, modelos):
         cota_diaria_esgotada = False
         for tentativa in range(1, 4):
             try:
-                resp = client.models.generate_content(model=modelo, contents=contents, config=config)
+                resp = _com_vaga(client.models.generate_content, model=modelo, contents=contents, config=config)
                 _validar_resposta_gemini(resp)
                 dados = json.loads(resp.text)
                 return response_schema.model_validate(dados)
@@ -316,7 +328,7 @@ def _chamar_groq(chave, itens, response_schema, modelos):
     for modelo in modelos:
         for tentativa in range(1, 4):
             try:
-                resp = client.chat.completions.create(model=modelo, messages=mensagens, response_format={"type": "json_object"}, temperature=0.1)
+                resp = _com_vaga(client.chat.completions.create, model=modelo, messages=mensagens, response_format={"type": "json_object"}, temperature=0.1)
                 bruto = _extrair_json_bruto(resp.choices[0].message.content)
                 return response_schema.model_validate(json.loads(bruto))
             except Exception as e:
@@ -342,7 +354,7 @@ def _chamar_openrouter(chave, itens, response_schema, modelos):
     for modelo in modelos:
         for tentativa in range(1, 4):
             try:
-                resp = client.chat.completions.create(model=modelo, messages=mensagens, response_format={"type": "json_object"}, temperature=0.1)
+                resp = _com_vaga(client.chat.completions.create, model=modelo, messages=mensagens, response_format={"type": "json_object"}, temperature=0.1)
                 bruto = _extrair_json_bruto(resp.choices[0].message.content)
                 return response_schema.model_validate(json.loads(bruto))
             except Exception as e:
@@ -368,7 +380,7 @@ def _chamar_mistral(chave, itens, response_schema, modelos):
     for modelo in modelos:
         for tentativa in range(1, 4):
             try:
-                resp = client.chat.complete(model=modelo, messages=mensagens, response_format={"type": "json_object"}, temperature=0.1)
+                resp = _com_vaga(client.chat.complete, model=modelo, messages=mensagens, response_format={"type": "json_object"}, temperature=0.1)
                 bruto = _extrair_json_bruto(resp.choices[0].message.content)
                 return response_schema.model_validate(json.loads(bruto))
             except Exception as e:
@@ -416,21 +428,6 @@ def executar_com_fallback(chave, itens, response_schema, provedor):
                 continue
         raise Exception(f"{provedor} falhou e nenhum provedor alternativo configurado deu certo. Último erro: {ultimo_erro}")
 
-def converter_para_iso(data_str):
-    if not data_str:
-        return None
-    data_str = str(data_str).strip()
-    if re.match(r'^\d{4}-\d{2}-\d{2}$', data_str):
-        return data_str
-    match_br = re.match(r'^(\d{2})/(\d{2})/(\d{4})$', data_str)
-    if match_br:
-        d, m, a = match_br.groups()
-        return f"{a}-{m}-{d}"
-    try:
-        return datetime.strptime(data_str, "%d/%m/%Y").strftime("%Y-%m-%d")
-    except Exception:
-        return None
-
 # ----------------- EXTRAÇÃO DE CONTEÚDO DO PDF (mesma técnica do Autopilot) -----------------
 @st.cache_data(show_spinner=False, max_entries=20)
 def extrair_conteudo_cache(file_bytes, nome_arquivo):
@@ -477,128 +474,8 @@ class IdentificacaoAto(BaseModel):
     e_documento_alterador: bool
     atos_referenciados: List[AtoReferenciado] = Field(default_factory=list)
 
-# ----------------- CRUZAMENTO COM O BANCO -----------------
-def localizar_no_banco(numero_ref, tipo_ref=None):
-    numero_limpo = str(numero_ref or "").strip()
-    if not numero_limpo:
-        return None, None
-    try:
-        res = supabase.table("portarias_base").select(
-            "id, nome_padronizado, tipo_documento, numero_documento, data_assinatura"
-        ).ilike("numero_documento", f"%{numero_limpo}%").execute()
-        if res.data:
-            return "portarias_base", res.data[0]
-    except Exception:
-        pass
-    try:
-        res2 = supabase.table("atos_importados").select(
-            "id, nome_arquivo_original, tipo_documento, numero_documento, status"
-        ).ilike("numero_documento", f"%{numero_limpo}%").execute()
-        if res2.data:
-            return "atos_importados", res2.data[0]
-    except Exception:
-        pass
-    return None, None
 
-def buscar_dependentes_pendentes(numero_documento):
-    numero_limpo = str(numero_documento or "").strip()
-    if not numero_limpo:
-        return []
-    try:
-        res = supabase.table("atos_importados").select("*").eq("status", "pendente").ilike(
-            "ato_base_referenciado_numero", f"%{numero_limpo}%"
-        ).execute()
-        return res.data or []
-    except Exception:
-        return []
-
-def ja_existe_pendente(numero_documento, numero_ato_afetado):
-    try:
-        res = supabase.table("atos_importados").select("id").eq("status", "pendente").eq(
-            "numero_documento", numero_documento
-        ).eq("ato_base_referenciado_numero", numero_ato_afetado).execute()
-        return bool(res.data)
-    except Exception:
-        return False
-
-def ja_existe_leitura(numero_documento):
-    try:
-        res = supabase.table("atos_importados").select("id").eq(
-            "numero_documento", numero_documento
-        ).is_("ato_base_referenciado_numero", "null").execute()
-        return bool(res.data)
-    except Exception:
-        return False
-
-def extrair_data_referenciada(texto, numero_ref):
-    """Tenta extrair a data do ato referenciado a partir do texto."""
-    if not texto or not numero_ref:
-        return None
-    padrao = re.compile(rf'{re.escape(numero_ref)}.*?(?:de|DE)\s+(\d{{1,2}})\s+(?:de|DE)\s+(\w+)\s+(?:de|DE)\s+(\d{{4}})', re.IGNORECASE)
-    match = padrao.search(texto)
-    if match:
-        dia, mes_str, ano = match.groups()
-        meses = {
-            'janeiro': '01', 'fevereiro': '02', 'março': '03', 'abril': '04',
-            'maio': '05', 'junho': '06', 'julho': '07', 'agosto': '08',
-            'setembro': '09', 'outubro': '10', 'novembro': '11', 'dezembro': '12'
-        }
-        mes = meses.get(mes_str.lower())
-        if mes:
-            return f"{ano}-{mes}-{int(dia):02d}"
-    return None
-
-def salvar_pendencia(nome_arquivo, texto_integra, identificacao: dict, ref: dict):
-    if ja_existe_pendente(identificacao["numero_documento"], ref["numero_ato_afetado"]):
-        return False
-    try:
-        supabase.table("atos_importados").insert({
-            "nome_arquivo_original": nome_arquivo,
-            "texto_integra": texto_integra[:100000],
-            "tipo_documento": identificacao.get("tipo_documento"),
-            "numero_documento": identificacao.get("numero_documento"),
-            "data_assinatura": converter_para_iso(identificacao.get("data_assinatura")),
-            "orgao_emissor": identificacao.get("orgao_emissor"),
-            "ato_base_referenciado_tipo": ref.get("tipo_ato_afetado"),
-            "ato_base_referenciado_numero": ref.get("numero_ato_afetado"),
-            "status": "pendente",
-            "estrutura_json": identificacao,
-        }).execute()
-        return True
-    except Exception as e:
-        st.error(f"Erro ao salvar pendência no banco: {e}")
-        return False
-
-def salvar_leitura(nome_arquivo, texto_integra, identificacao: dict):
-    if ja_existe_leitura(identificacao.get("numero_documento")):
-        return False
-    try:
-        supabase.table("atos_importados").insert({
-            "nome_arquivo_original": nome_arquivo,
-            "texto_integra": texto_integra[:100000],
-            "tipo_documento": identificacao.get("tipo_documento"),
-            "numero_documento": identificacao.get("numero_documento"),
-            "data_assinatura": converter_para_iso(identificacao.get("data_assinatura")),
-            "orgao_emissor": identificacao.get("orgao_emissor"),
-            "ato_base_referenciado_tipo": None,
-            "ato_base_referenciado_numero": None,
-            "status": "identificado",
-            "estrutura_json": identificacao,
-        }).execute()
-        return True
-    except Exception as e:
-        st.error(f"Erro ao salvar leitura no banco: {e}")
-        return False
-
-def atualizar_status_pendencia(id_pendencia, novo_status):
-    try:
-        supabase.table("atos_importados").update({"status": novo_status}).eq("id", id_pendencia).execute()
-        return True
-    except Exception as e:
-        st.error(f"Erro ao atualizar status: {e}")
-        return False
-
-# ----------------- PROCESSAMENTO DE UM ARQUIVO -----------------
+# ----------------- PROCESSAMENTO DE UM ARQUIVO (banco via repositório thread-safe) -----------------
 def processar_arquivo(arquivo, api_key, provedor):
     file_bytes = arquivo.getvalue()
     itens = extrair_conteudo_cache(file_bytes, arquivo.name)
@@ -615,144 +492,160 @@ def processar_arquivo(arquivo, api_key, provedor):
     algum_pendente = False
     if identificacao.get("e_documento_alterador"):
         for ref in identificacao.get("atos_referenciados", []):
-            origem, registro = localizar_no_banco(ref.get("numero_ato_afetado"), ref.get("tipo_ato_afetado"))
+            origem, registro = repo.localizar_no_banco(ref.get("numero_ato_afetado"), ref.get("tipo_ato_afetado"))
             salvo_pendente = False
             if origem is None:
-                salvo_pendente = salvar_pendencia(arquivo.name, texto_integra, identificacao, ref)
+                salvo_pendente = repo.salvar_pendencia(arquivo.name, texto_integra, identificacao, ref)
                 algum_pendente = True
             achados.append({"ref": ref, "origem": origem, "registro": registro, "salvo_pendente": salvo_pendente})
 
     salvo_leitura = False
     if not algum_pendente:
-        salvo_leitura = salvar_leitura(arquivo.name, texto_integra, identificacao)
+        salvo_leitura = repo.salvar_leitura(arquivo.name, texto_integra, identificacao)
 
-    dependentes = buscar_dependentes_pendentes(identificacao.get("numero_documento"))
+    dependentes = repo.buscar_dependentes_pendentes(identificacao.get("numero_documento"))
+    return {"arquivo": arquivo.name, "identificacao": identificacao, "achados": achados, "dependentes": dependentes, "salvo_leitura": salvo_leitura}
 
-    return {
-        "arquivo": arquivo.name,
-        "identificacao": identificacao,
-        "achados": achados,
-        "dependentes": dependentes,
-        "salvo_leitura": salvo_leitura,
-    }
 
 # ----------------- FRONT-END -----------------
-st.markdown("""
-Envie um ou mais Atos normativos em PDF. O sistema identifica **tipo, número, órgão e data**,
-detecta se o documento **altera, acrescenta ou revoga** algum outro Ato e **cruza automaticamente**
-essa informação com o que já existe no banco de dados (Atos consolidados e pendências anteriores),
-avisando quando encontrar correlações para que você possa trabalhar nelas no Autopilot.
-""")
+ss = st.session_state
+ss.setdefault("resultados_identificacao", None)
+ss.setdefault("uploader_ver", 0)
 
-provedor_escolhido = st.selectbox("🧠 Motor de IA", list(PROVEDORES_IA.keys()), key="provedor_ia_identificar")
-cfg_provedor = PROVEDORES_IA[provedor_escolhido]
-api_key = obter_chave_provedor(provedor_escolhido)
-if not api_key:
-    api_key = st.text_input(f"Chave da API ({cfg_provedor['secret']} não encontrada nos secrets)", type="password", key="api_key_identificar")
+renderizar_cabecalho(
+    "Identificação e cruzamento de atos",
+    "Envie um ou mais atos em PDF. O sistema identifica tipo, número, órgão e data, detecta o que cada ato altera ou revoga "
+    "e cruza com o banco para avisar quando houver correlações a consolidar.",
+    etiqueta="Passo 1 · Leitura inteligente", icone_nome="search")
 
-arquivos_enviados = st.file_uploader("Arraste os Atos normativos (PDF) para identificar e cruzar", type=["pdf"], accept_multiple_files=True, key="uploader_identificar")
+k = kpis_cache()
+ui.kpis([
+    ("Normas consolidadas", k.get("normas"), "layers", "ok"),
+    ("Atos identificados", k.get("identificados"), "file", "info"),
+    ("Pendências abertas", k.get("pendentes"), "clock", "warn"),
+    ("Alterações vinculadas", k.get("alteradoras"), "link", "rosa"),
+])
 
-if st.button("🔎 Identificar e Cruzar", type="primary", use_container_width=True):
+resultados = ss.resultados_identificacao
+
+with st.container(border=True):
+    c_ia, c_chave = st.columns([1, 1.2], vertical_alignment="bottom")
+    with c_ia:
+        provedor_escolhido = st.selectbox("Motor de IA", list(PROVEDORES_IA.keys()), key="provedor_ia_identificar")
+    cfg_provedor = PROVEDORES_IA[provedor_escolhido]
+    api_key = obter_chave_provedor(provedor_escolhido)
+    with c_chave:
+        if api_key:
+            st.markdown(ui.badge("Chave de API configurada nos Secrets", "ok", pulso=True), unsafe_allow_html=True)
+        else:
+            api_key = st.text_input(f"Chave da API ({cfg_provedor['secret']} não encontrada nos secrets)", type="password", key="api_key_identificar")
+    arquivos_enviados = st.file_uploader("Arraste os atos normativos (PDF) para identificar e cruzar", type=["pdf"], accept_multiple_files=True,
+                                         key=f"uploader_identificar_{ss.uploader_ver}")
+    iniciar = st.button("Identificar e cruzar", type="primary", use_container_width=True, icon=":material/travel_explore:", disabled=not arquivos_enviados)
+
+ui.fluxo(["Enviar PDFs", "Leitura por IA", "Cruzamento com o banco", "Resultado"], 4 if resultados else (1 if arquivos_enviados else 0))
+
+if iniciar:
     if not api_key:
-        st.error("⚠️ Insira sua chave da API.")
-    elif not arquivos_enviados:
-        st.warning("⚠️ Envie ao menos um arquivo PDF.")
+        st.error("Insira sua chave da API.", icon=":material/key:")
     else:
         resultados = []
-        with st.spinner("⚡ Lendo documentos e cruzando com o banco de dados..."):
+        with st.status(f"Processando {len(arquivos_enviados)} arquivo(s)...", expanded=True) as status:
+            status.write("Lendo PDFs, extraindo texto e consultando a IA em paralelo.")
             with ThreadPoolExecutor(max_workers=min(4, len(arquivos_enviados))) as ex:
                 futuros = {submit_com_contexto(ex, processar_arquivo, arq, api_key, provedor_escolhido): arq.name for arq in arquivos_enviados}
                 for fut in as_completed(futuros):
                     nome = futuros[fut]
                     try:
                         resultados.append(fut.result())
+                        status.write(f"✓ {nome} lido e cruzado")
                     except Exception as e:
                         resultados.append({"arquivo": nome, "erro": str(e)})
-        st.session_state.resultados_identificacao = resultados
+                        status.write(f"✗ {nome} falhou")
+            status.update(label="Identificação concluída", state="complete", expanded=False)
+        ss.resultados_identificacao = resultados
+        conc.auditar("identificar", f"{len(resultados)} arquivo(s)")
+        st.rerun()
 
-if st.session_state.get("resultados_identificacao"):
-    st.markdown("---")
-    st.markdown("## 📋 Resultado da Identificação e Cruzamento")
-    tem_correlacao = False
-    for res in st.session_state.resultados_identificacao:
-        if "erro" not in res:
-            for achado in res.get("achados", []):
-                if achado.get("origem") is not None:
-                    tem_correlacao = True
-                    break
-        if tem_correlacao:
-            break
-    if tem_correlacao:
-        st.success("🔔 **Alerta!** Foram encontradas correlações com Atos já existentes no banco. Consolide-os na página 'Consolidar Norma'.")
+if resultados:
+    ok_res = [r for r in resultados if "erro" not in r]
+    n_alt = sum(1 for r in ok_res if r["identificacao"].get("e_documento_alterador"))
+    n_corr = sum(1 for r in ok_res for a in r.get("achados", []) if a.get("origem") is not None)
+    n_pend = sum(1 for r in ok_res for a in r.get("achados", []) if a.get("origem") is None)
+    st.markdown("### Resultado da identificação")
+    ui.kpis([
+        ("Arquivos lidos", len(ok_res), "file", "info"),
+        ("Atos alteradores", n_alt, "merge", ""),
+        ("Correlações encontradas", n_corr, "link", "ok"),
+        ("Novas pendências", n_pend, "clock", "warn"),
+    ])
+    if n_corr:
+        st.success("Foram encontradas correlações com atos já existentes no banco. Consolide-os na página **Consolidar**.", icon=":material/notifications_active:")
 
-    for res in st.session_state.resultados_identificacao:
+    for res in resultados:
         if "erro" in res:
-            st.error(f"❌ **{res['arquivo']}**: {res['erro']}")
+            st.error(f"**{res['arquivo']}**: {res['erro']}", icon=":material/error:")
             continue
-
         ident = res["identificacao"]
-        with st.expander(f"📄 {ident.get('nome_padronizado', res['arquivo'])}", expanded=True):
+        with st.expander(ident.get("nome_padronizado") or res["arquivo"], expanded=True, icon=":material/description:"):
             c1, c2, c3, c4 = st.columns(4)
-            c1.markdown(f"**Tipo:**\n{ident.get('tipo_documento', '—')}")
-            c2.markdown(f"**Número:**\n{ident.get('numero_documento', '—')}")
-            c3.markdown(f"**Órgão:**\n{ident.get('orgao_emissor', '—')}")
-            c4.markdown(f"**Data:**\n{ident.get('data_assinatura', '—')}")
+            c1.markdown(f"**Tipo**<br>{escape(str(ident.get('tipo_documento') or '—'))}", unsafe_allow_html=True)
+            c2.markdown(f"**Número**<br>{escape(str(ident.get('numero_documento') or '—'))}", unsafe_allow_html=True)
+            c3.markdown(f"**Órgão**<br>{escape(str(ident.get('orgao_emissor') or '—'))}", unsafe_allow_html=True)
+            c4.markdown(f"**Data**<br>{escape(str(ident.get('data_assinatura') or '—'))}", unsafe_allow_html=True)
             if ident.get("ementa"):
                 st.caption(f"Ementa: {ident['ementa']}")
-
             if res.get("salvo_leitura"):
-                st.caption("💾 Documento salvo no banco para consulta em cruzamentos futuros.")
+                st.markdown(ui.badge("Salvo no banco para cruzamentos futuros", "ok"), unsafe_allow_html=True)
             elif not any(a.get("salvo_pendente") for a in res.get("achados", [])):
-                st.caption("💾 Documento já constava no banco (leitura anterior).")
+                st.markdown(ui.badge("Já constava no banco", "info"), unsafe_allow_html=True)
 
             if not ident.get("e_documento_alterador"):
-                st.info("ℹ️ Este documento **não** altera nem revoga outro Ato — é um Ato base/original.")
+                ui.cartao(f'{ui.icone("info", 17)} Ato base / original', "<p>Este documento <b>não</b> altera nem revoga outro ato.</p>", "info")
             else:
-                st.markdown("#### 🔗 Atos referenciados (alterados/revogados por este documento)")
+                st.markdown("##### Atos referenciados (alterados ou revogados por este documento)")
                 if not res["achados"]:
                     st.warning("A IA identificou o documento como alterador, mas não conseguiu extrair o(s) ato(s) referenciado(s).")
                 for achado in res["achados"]:
                     ref = achado["ref"]
-                    op = ref.get("tipo_operacao", "altera")
-                    descricao_ref = f"{ref.get('tipo_ato_afetado', '')} Nº {ref.get('numero_ato_afetado', '')}".strip()
+                    op = escape(str(ref.get("tipo_operacao", "altera")).replace("_", " "))
+                    descricao_ref = escape(f"{ref.get('tipo_ato_afetado', '')} Nº {ref.get('numero_ato_afetado', '')}".strip())
+                    resumo = escape(str(ref.get("resumo_alteracao") or ""))
                     if achado["origem"] == "portarias_base":
                         reg = achado["registro"]
-                        st.markdown(f"""
-<div class="card-achado correlacionado">
-✅ <b>Correlacionado</b> — {op.replace('_', ' ')} <b>{descricao_ref}</b><br/>
-Ato base já consolidado no banco: <b>{reg.get('nome_padronizado')}</b><br/>
-{ref.get('resumo_alteracao', '')}<br/>
-<i>Envie este arquivo junto ao Ato base no Autopilot para gerar a nova versão consolidada.</i>
-</div>""", unsafe_allow_html=True)
+                        ui.cartao(f'{ui.icone("check", 17)} Correlacionado · {op} {descricao_ref}',
+                                  f"<p>Ato base já consolidado no banco: <b>{escape(str(reg.get('nome_padronizado')))}</b></p><p>{resumo}</p>",
+                                  "ok", "Envie este arquivo junto ao ato base em <b>Consolidar</b> para gerar a nova versão consolidada.")
                     elif achado["origem"] == "atos_importados":
                         reg = achado["registro"]
-                        st.markdown(f"""
-<div class="card-achado correlacionado">
-✅ <b>Correlacionado</b> — {op.replace('_', ' ')} <b>{descricao_ref}</b><br/>
-Já existe outro arquivo pendente no banco referenciando o mesmo Ato base: <b>{reg.get('nome_arquivo_original')}</b><br/>
-{ref.get('resumo_alteracao', '')}<br/>
-<i>Reúna os arquivos correlacionados e processe-os juntos no Autopilot.</i>
-</div>""", unsafe_allow_html=True)
+                        ui.cartao(f'{ui.icone("check", 17)} Correlacionado · {op} {descricao_ref}',
+                                  f"<p>Já existe outro arquivo no banco referenciando o mesmo ato base: <b>{escape(str(reg.get('nome_arquivo_original')))}</b></p><p>{resumo}</p>",
+                                  "ok", "Reúna os arquivos correlacionados e processe-os juntos em <b>Consolidar</b>.")
                     else:
                         status_txt = "salvo como pendência no banco" if achado["salvo_pendente"] else "já registrado como pendência"
-                        st.markdown(f"""
-<div class="card-achado pendente">
-⏳ <b>Pendente</b> — {op.replace('_', ' ')} <b>{descricao_ref}</b><br/>
-O Ato base ainda não foi encontrado no banco de dados ({status_txt}).<br/>
-{ref.get('resumo_alteracao', '')}<br/>
-<i>Assim que você enviar o Ato base correspondente, esta correlação será identificada automaticamente.</i>
-</div>""", unsafe_allow_html=True)
+                        ui.cartao(f'{ui.icone("clock", 17)} Pendente · {op} {descricao_ref}',
+                                  f"<p>O ato base ainda não foi encontrado no banco ({status_txt}).</p><p>{resumo}</p>",
+                                  "warn", "Assim que você enviar o ato base correspondente, esta correlação será identificada automaticamente.")
 
             if res["dependentes"]:
-                st.markdown("#### 📌 Arquivos pendentes que estavam esperando por este Ato")
+                st.markdown("##### Arquivos pendentes que esperavam por este ato")
                 for dep in res["dependentes"]:
-                    st.markdown(f"""
-<div class="card-achado correlacionado">
-✅ <b>{dep.get('nome_arquivo_original')}</b> ({dep.get('tipo_documento')} Nº {dep.get('numero_documento')})
-já estava aguardando este Ato como base.<br/>
-<i>Estes arquivos agora podem ser processados juntos no Autopilot.</i>
-</div>""", unsafe_allow_html=True)
+                    ui.cartao(f'{ui.icone("link", 17)} {escape(str(dep.get("nome_arquivo_original")))}',
+                              f"<p>{escape(str(dep.get('tipo_documento')))} Nº {escape(str(dep.get('numero_documento')))} já aguardava este ato como base.</p>",
+                              "ok", "Estes arquivos agora podem ser processados juntos em <b>Consolidar</b>.")
 
-    if st.button("🔄 Nova Identificação", type="secondary"):
-        st.session_state.resultados_identificacao = None
+    if st.button("Nova identificação", type="secondary", icon=":material/restart_alt:"):
+        ss.resultados_identificacao = None
+        ss.uploader_ver += 1
         st.rerun()
+
+with st.expander("Atividade recente da equipe", icon=":material/history:"):
+    eventos = list(conc.registro().auditoria)[:8]
+    if not eventos:
+        st.caption("Nenhuma atividade registrada desde o último reinício do servidor.")
+    for ev in eventos:
+        quando = time.strftime("%H:%M:%S", time.localtime(ev["quando"]))
+        st.markdown(f'{ui.avatar(ev["usuario"])} &nbsp; **{escape(ev["usuario"])}** · {escape(ev["acao"].replace("_", " "))} '
+                    f'<span style="color:#64748B">— {escape(ev["detalhe"])} · {quando}</span>', unsafe_allow_html=True)
+
+st.markdown('<div class="cn-rodape">Autopilot Normativo · Consolidação de Normas e Atos</div>', unsafe_allow_html=True)

@@ -1,437 +1,352 @@
-# pages/1_Historico.py (com seção de Atos Identificados)
-import streamlit as st
+# pages/1_Historico.py - Histórico e gerenciamento do banco de dados
 import json
 import os
 import re
-import io
-from supabase import create_client, Client
-from typing import Optional
-from collections import defaultdict
-from datetime import datetime
-
 import sys
+from datetime import datetime
+from html import escape
+
+import streamlit as st
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from menu_utils import configurar_pagina, exigir_login, renderizar_cabecalho, renderizar_menu
+from db_utils import obter_supabase, obter_repositorio
+import concorrencia as conc
+import ui_theme as ui
+import exportacao
 
-configurar_pagina("Histórico de Normas", "🗄️")
+configurar_pagina("Histórico", "🗄️")
 exigir_login("Você precisa fazer login na página principal para acessar o histórico.")
-renderizar_cabecalho("🗄️ Histórico e Gerenciamento de Banco de Dados", css_extra="""
-    .card-identificado {
-        border: 1px solid #d0d4dc;
-        border-radius: 10px;
-        padding: 14px 18px;
-        margin-bottom: 10px;
-        background: #f0f7ff;
-        border-left: 5px solid #2a5298;
-    }
-""")
 renderizar_menu("historico")
+renderizar_cabecalho("Histórico e banco de dados", "Normas consolidadas, atos identificados, pendências, versões salvas e o aprendizado da IA, num só lugar.",
+                     etiqueta="Arquivo", icone_nome="archive")
 
-# CONEXÃO COM BANCO
-@st.cache_resource
-def init_supabase() -> Optional[Client]:
+supabase = obter_supabase()
+repo = obter_repositorio()
+if not supabase:
+    st.error("Não foi possível conectar ao Supabase.", icon=":material/cloud_off:")
+    st.stop()
+
+MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro']
+
+
+# ----------------------------------------------------------------------------- carregadores (colunas leves, cache curto)
+# Antes: SELECT * (incluindo documento_consolidado_json e texto_integra de TODAS as linhas) + 1 consulta por item
+# a cada interação. Agora: 1 consulta por tabela, só com as colunas exibidas, cache de 10 s compartilhado.
+def _q(fn, padrao):
     try:
-        url = st.secrets["supabase"]["url"]
-        key = st.secrets["supabase"]["key"]
-        return create_client(url, key)
+        return fn().data or padrao
+    except Exception as e:
+        st.warning(f"Falha ao consultar o banco: {e}")
+        return padrao
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def carregar_bases():
+    return _q(lambda: supabase.table("portarias_base").select("id, nome_padronizado, tipo_documento, numero_documento, orgao_emissor, data_assinatura")
+              .order("data_assinatura", desc=True).execute(), [])
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def carregar_alteradoras():
+    return _q(lambda: supabase.table("portarias_alteradoras").select("id, portaria_base_id, nome_padronizado, data_assinatura")
+              .order("data_assinatura", desc=True).execute(), [])
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def carregar_atos():
+    return _q(lambda: supabase.table("atos_importados").select(
+        "id, nome_arquivo_original, tipo_documento, numero_documento, status, ato_base_referenciado_tipo, ato_base_referenciado_numero, estrutura_json, criado_em")
+        .order("criado_em", desc=True).execute(), [])
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def carregar_versoes():
+    try:
+        return supabase.table("versoes_documentos").select("id, portaria_base_id, tipo_versao, descricao, alteradoras_aplicadas, criado_em, portarias_base(nome_padronizado)") \
+            .order("criado_em", desc=True).execute().data or []
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def carregar_memoria():
+    return _q(lambda: supabase.table("memoria_de_correcoes").select("*").order("id", desc=True).limit(30).execute(), [])
+
+
+def invalidar():
+    for f in (carregar_bases, carregar_alteradoras, carregar_atos, carregar_versoes, carregar_memoria):
+        f.clear()
+
+
+def _json(v):
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except Exception:
+            return {}
+    return v or {}
+
+
+def data_extenso(iso):
+    try:
+        dt = datetime.strptime(str(iso)[:10], "%Y-%m-%d")
+        return f"{dt.day} de {MESES[dt.month - 1]} de {dt.year}"
     except Exception:
         return None
 
-supabase = init_supabase()
-if not supabase:
-    st.error("⚠️ Não foi possível conectar ao Supabase.")
-    st.stop()
 
-# --- BARRA DE BUSCA ---
-c_busca, c_vazio = st.columns([2, 1])
-with c_busca:
-    termo_busca = st.text_input("🔍 Buscar norma (nome, número ou órgão)...", placeholder="Ex: Portaria 221, PGJM...")
-
-st.markdown("---")
-
-# =====================================================================
-# NORMA BASE (PORTARIAS_BASE)
-# =====================================================================
-res_base = supabase.table("portarias_base").select("*").order("data_assinatura", desc=True).execute()
-portarias_base = res_base.data if res_base.data else []
-
-if termo_busca:
-    termo_lower = termo_busca.lower()
-    portarias_base = [
-        pb for pb in portarias_base 
-        if termo_lower in str(pb.get('nome_padronizado', '')).lower() 
-        or termo_lower in str(pb.get('numero_documento', '')).lower()
-        or termo_lower in str(pb.get('orgao_emissor', '')).lower()
-    ]
-
-if not portarias_base:
-    if termo_busca:
-        st.warning(f"Nenhum resultado encontrado para a busca: **{termo_busca}**.")
-    else:
-        st.info("Nenhuma norma encontrada no banco de dados.")
-else:
-    st.caption(f"Exibindo {len(portarias_base)} norma(s) encontrada(s).")
-    
-    for pb in portarias_base:
-        base_id = pb['id']
-        nome_padrao = pb.get('nome_padronizado', f"Norma ID {base_id}")
-        
-        with st.expander(f"📁 {nome_padrao} (Data: {pb.get('data_assinatura', 'N/A')})"):
-            c1, c2 = st.columns([4, 1])
-            with c1:
-                st.markdown(f"**Documento:** {pb.get('tipo_documento', '')} {pb.get('numero_documento', '')}")
-                st.markdown(f"**Órgão Emissor:** {pb.get('orgao_emissor', '')}")
-            
-            with c2:
-                if st.button(f"🗑️ Apagar Cascata Completa", key=f"del_base_{base_id}", type="primary"):
-                    try:
-                        supabase.table("portarias_alteradoras").delete().eq("portaria_base_id", base_id).execute()
-                        supabase.table("portarias_base").delete().eq("id", base_id).execute()
-                        st.success("Cascata apagada com sucesso!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro ao apagar: {e}")
-
-            res_alt = supabase.table("portarias_alteradoras").select("*").eq("portaria_base_id", base_id).order("data_assinatura", desc=True).execute()
-            alteradoras = res_alt.data if res_alt.data else []
-            
-            if alteradoras:
-                st.markdown("#### 🔗 Relacionamentos (Portarias Alteradoras)")
-                for pa in alteradoras:
-                    alt_id = pa['id']
-                    ca1, ca2 = st.columns([4, 1])
-                    with ca1:
-                        st.write(f"- {pa.get('nome_padronizado', '')} (Assinatura: {pa.get('data_assinatura', 'N/A')})")
-                    with ca2:
-                        if st.button("❌ Desvincular", key=f"del_alt_{alt_id}"):
-                            try:
-                                supabase.table("portarias_alteradoras").delete().eq("id", alt_id).execute()
-                                st.success("Relacionamento apagado com sucesso!")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Erro ao apagar relacionamento: {e}")
-            else:
-                st.info("Nenhuma portaria alteradora vinculada a esta norma base.")
-
-# =====================================================================
-# FUNÇÃO PARA EXTRAIR DATA DO TEXTO
-# =====================================================================
 def extrair_data_referenciada(texto, numero_ref):
     if not texto or not numero_ref:
         return None
     try:
         padrao = re.compile(rf'{re.escape(numero_ref)}.*?(?:de|DE)\s+(\d{{1,2}})\s+(?:de|DE)\s+(\w+)\s+(?:de|DE)\s+(\d{{4}})', re.IGNORECASE | re.DOTALL)
-        match = padrao.search(texto)
-        if match:
-            dia, mes_str, ano = match.groups()
-            meses = {
-                'janeiro': '01', 'fevereiro': '02', 'março': '03', 'abril': '04',
-                'maio': '05', 'junho': '06', 'julho': '07', 'agosto': '08',
-                'setembro': '09', 'outubro': '10', 'novembro': '11', 'dezembro': '12'
-            }
+        m = padrao.search(texto)
+        if m:
+            dia, mes_str, ano = m.groups()
+            meses = {n: f"{i + 1:02d}" for i, n in enumerate(MESES)}
             mes = meses.get(mes_str.lower())
             if mes:
                 return f"{ano}-{mes}-{int(dia):02d}"
-    except:
+    except Exception:
         pass
     return None
 
-# =====================================================================
-# SEÇÃO: ATOS IDENTIFICADOS (LIDOS) - NOVA
-# =====================================================================
-st.markdown("---")
-st.markdown("### 📄 Atos Identificados (Documentos Lidos)")
-st.caption("Documentos que já foram processados e identificados, mas que não geraram pendências (ou já foram resolvidos).")
 
-try:
-    res_ident = supabase.table("atos_importados").select("*").eq("status", "identificado").order("criado_em", desc=True).execute()
-    identificados = res_ident.data if res_ident.data else []
-    if not identificados:
-        st.info("Nenhum ato identificado ainda.")
-    else:
-        st.caption(f"Exibindo {len(identificados)} ato(s) identificado(s).")
-        for item in identificados:
-            estrutura = item.get('estrutura_json', {})
-            if isinstance(estrutura, str):
+# ----------------------------------------------------------------------------- ações
+def _checkbox_cb(pend_id):
+    concluido = st.session_state.get(f"chk_{pend_id}", False)
+    try:
+        supabase.table("atos_importados").update({"status": "concluido" if concluido else "pendente"}).eq("id", pend_id).execute()
+        conc.auditar("pendencia_concluida" if concluido else "pendencia_reaberta", str(pend_id))
+        invalidar()
+    except Exception as e:
+        st.session_state["_erro_hist"] = f"Erro ao atualizar: {e}"
+
+
+@st.dialog("Confirmar exclusão")
+def confirmar(titulo, acao, *args):
+    st.markdown(f"Tem certeza que deseja excluir **{escape(titulo)}**? Esta ação não pode ser desfeita.", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    if c1.button("Cancelar", use_container_width=True):
+        st.rerun()
+    if c2.button("Excluir", type="primary", use_container_width=True, icon=":material/delete:"):
+        try:
+            acao(*args)
+            invalidar()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Erro ao excluir: {e}")
+
+
+def _apagar_base(base_id, nome):
+    repo.apagar_cascata(base_id, nome, conc.usuario_atual())
+
+
+def _apagar_generico(tabela, _id, nome):
+    supabase.table(tabela).delete().eq("id", _id).execute()
+    conc.auditar(f"remover_{tabela}", nome)
+
+
+if msg := st.session_state.pop("_erro_hist", None):
+    st.error(msg)
+
+# ----------------------------------------------------------------------------- dados
+bases, alteradoras, atos = carregar_bases(), carregar_alteradoras(), carregar_atos()
+identificados = [a for a in atos if a.get("status") == "identificado"]
+pendencias = [a for a in atos if a.get("status") in ("pendente", "concluido")]
+abertas = [a for a in pendencias if a.get("status") == "pendente"]
+
+ui.kpis([
+    ("Normas consolidadas", len(bases), "layers", "ok"),
+    ("Alterações vinculadas", len(alteradoras), "link", "rosa"),
+    ("Atos identificados", len(identificados), "file", "info"),
+    ("Pendências abertas", len(abertas), "clock", "warn"),
+])
+
+c_busca, c_atual = st.columns([4, 1], vertical_alignment="bottom")
+termo = c_busca.text_input("Buscar", placeholder="Buscar por nome, número ou órgão... ex.: Portaria 221, PGJM", icon=":material/search:", label_visibility="collapsed")
+if c_atual.button("Atualizar", icon=":material/refresh:", use_container_width=True):
+    invalidar()
+    st.rerun()
+tl = (termo or "").lower().strip()
+
+tab_normas, tab_ident, tab_pend, tab_vers, tab_ia = st.tabs([
+    f":material/layers: Normas ({len(bases)})", f":material/description: Identificados ({len(identificados)})",
+    f":material/schedule: Pendências ({len(abertas)})", ":material/history: Versões", ":material/psychology: Aprendizado da IA"])
+
+# ============================================================== NORMAS
+with tab_normas:
+    filtradas = [b for b in bases if not tl or tl in str(b.get("nome_padronizado", "")).lower() or tl in str(b.get("numero_documento", "")).lower()
+                 or tl in str(b.get("orgao_emissor", "")).lower()]
+    por_base = {}
+    for a in alteradoras:
+        por_base.setdefault(a.get("portaria_base_id"), []).append(a)
+    if not filtradas:
+        ui.vazio("Nenhuma norma encontrada", f"Nada para “{termo}”." if tl else "As normas consolidadas aparecerão aqui.", "archive")
+    for pb in filtradas:
+        base_id = pb["id"]
+        alts = por_base.get(base_id, [])
+        em_edicao = conc.registro().dono_da_trava(f"base:{pb.get('nome_padronizado')}", conc.id_sessao())
+        titulo = f"{pb.get('nome_padronizado', f'Norma {base_id}')}"
+        with st.expander(titulo, icon=":material/folder:"):
+            if em_edicao:
+                st.markdown(f'<div class="cn-aviso-trava">{ui.icone("users", 18)} {escape(em_edicao["usuario"])} está com esta norma aberta em Consolidar agora.</div>', unsafe_allow_html=True)
+            c1, c2 = st.columns([4, 1.3])
+            c1.markdown(f"**Documento:** {escape(str(pb.get('tipo_documento', '')))} {escape(str(pb.get('numero_documento', '')))}  \n"
+                        f"**Órgão emissor:** {escape(str(pb.get('orgao_emissor', '')))}  \n**Assinatura:** {escape(str(pb.get('data_assinatura') or 'N/A'))}",
+                        unsafe_allow_html=True)
+            c1.markdown(ui.badge(f"{len(alts)} alteradora(s) aplicada(s)", "info" if alts else ""), unsafe_allow_html=True)
+            if c2.button("Apagar cascata", key=f"del_base_{base_id}", type="primary", icon=":material/delete_forever:", use_container_width=True):
+                confirmar(titulo, _apagar_base, base_id, titulo)
+            # exportação sob demanda do estado consolidado salvo (antes: nada era gerado aqui)
+            with c2.popover("Exportar", icon=":material/download:", use_container_width=True):
+                chave = f"exp_{base_id}"
+                if st.button("Preparar arquivos", key=f"prep_{base_id}", use_container_width=True):
+                    try:
+                        row = supabase.table("portarias_base").select("documento_consolidado_json").eq("id", base_id).execute().data[0]
+                        estado = _json(row.get("documento_consolidado_json"))
+                        st.session_state[chave] = {
+                            "html_cons": exportacao.gerar_html_dinamico(estado, "consolidada"),
+                            "html_alt": exportacao.gerar_html_dinamico(estado, "alterada"),
+                            "pdf_cons": exportacao.gerar_pdf_dinamico(estado, "consolidada") if exportacao.HAS_WEASYPRINT else None,
+                        }
+                    except Exception as e:
+                        st.error(f"Não foi possível gerar: {e}")
+                arq = st.session_state.get(chave)
+                if arq:
+                    nome_arq = re.sub(r"[^\w.-]+", "_", titulo)
+                    if arq.get("pdf_cons"):
+                        st.download_button("PDF consolidada", arq["pdf_cons"], file_name=f"{nome_arq}_Cons.pdf", mime="application/pdf", key=f"dl_pdf_{base_id}", use_container_width=True)
+                    st.download_button("HTML consolidada", arq["html_cons"], file_name=f"{nome_arq}_Cons.html", mime="text/html", key=f"dl_hc_{base_id}", use_container_width=True)
+                    st.download_button("HTML alterada", arq["html_alt"], file_name=f"{nome_arq}_Alt.html", mime="text/html", key=f"dl_ha_{base_id}", use_container_width=True)
+            if alts:
+                st.markdown("##### Relacionamentos (atos alteradores)")
+                for pa in alts:
+                    ca1, ca2 = st.columns([4, 1.3], vertical_alignment="center")
+                    ca1.markdown(f"{ui.icone('link', 15)} {escape(str(pa.get('nome_padronizado', '')))} "
+                                 f"<span style='color:#64748B'>· {escape(str(pa.get('data_assinatura') or 'N/A'))}</span>", unsafe_allow_html=True)
+                    if ca2.button("Desvincular", key=f"del_alt_{pa['id']}", icon=":material/link_off:", use_container_width=True):
+                        confirmar(pa.get("nome_padronizado", "vínculo"), _apagar_generico, "portarias_alteradoras", pa["id"], pa.get("nome_padronizado", ""))
+            else:
+                st.caption("Nenhum ato alterador vinculado a esta norma.")
+
+# ============================================================== IDENTIFICADOS
+with tab_ident:
+    ref_por_numero = {}
+    for p in abertas:
+        ref_por_numero.setdefault(str(p.get("ato_base_referenciado_numero") or "").strip().lower(), []).append(p)
+    itens = []
+    for it in identificados:
+        est = _json(it.get("estrutura_json"))
+        nome = est.get("nome_padronizado") or it.get("nome_arquivo_original", "Desconhecido")
+        if tl and tl not in nome.lower() and tl not in str(it.get("numero_documento", "")).lower():
+            continue
+        itens.append((it, est, nome))
+    if not itens:
+        ui.vazio("Nenhum ato identificado", "Os atos lidos em Identificar e Cruzar aparecem aqui.", "file")
+    for it, est, nome in itens:
+        numero = (est.get("numero_documento") or it.get("numero_documento") or "").strip()
+        refs = [p for k, ps in ref_por_numero.items() if numero and numero.lower() in k for p in ps]
+        with st.expander(nome, icon=":material/description:"):
+            c1, c2 = st.columns([4, 1.2])
+            c1.markdown(f"**Tipo:** {escape(str(est.get('tipo_documento', '')))} · **Número:** {escape(numero)} · **Data:** {escape(str(est.get('data_assinatura', '')))}  \n"
+                        f"**Arquivo:** {escape(str(it.get('nome_arquivo_original', 'N/A')))}", unsafe_allow_html=True)
+            if refs:
+                st.markdown(ui.badge(f"Referenciado por {len(refs)} pendência(s)", "warn"), unsafe_allow_html=True)
+                for p in refs:
+                    st.caption(f"• {p.get('nome_arquivo_original', 'N/A')}")
+            else:
+                st.markdown(ui.badge("Nenhuma pendência referencia este ato", "info"), unsafe_allow_html=True)
+            if c2.button("Remover", key=f"del_ident_{it['id']}", icon=":material/delete:", use_container_width=True):
+                confirmar(nome, _apagar_generico, "atos_importados", it["id"], nome)
+
+# ============================================================== PENDÊNCIAS
+with tab_pend:
+    st.caption("Atos que aguardam a norma base. Marque como concluído depois de consolidar.")
+    filtro = st.radio("Mostrar", ["Abertas", "Concluídas", "Todas"], horizontal=True, label_visibility="collapsed", key="filtro_pend")
+    lista = [p for p in pendencias if filtro == "Todas" or (filtro == "Abertas") == (p.get("status") == "pendente")]
+    if tl:
+        lista = [p for p in lista if tl in str(p.get("nome_arquivo_original", "")).lower() or tl in str(p.get("ato_base_referenciado_numero", "")).lower()]
+    if not lista:
+        ui.vazio("Nada por aqui", "Nenhuma derivação nesta visão.", "check")
+    for p in lista:
+        pend_id = p["id"]
+        tipo_ref, num_ref = p.get("ato_base_referenciado_tipo"), p.get("ato_base_referenciado_numero")
+        est = _json(p.get("estrutura_json"))
+        nome_deriv = est.get("nome_padronizado") or p.get("nome_arquivo_original", "Arquivo desconhecido")
+        # CORREÇÃO: a versão original não buscava tipo_documento e, por isso, NUNCA encontrava a norma base.
+        achada = None
+        if tipo_ref and num_ref:
+            for b in bases:
+                if str(num_ref).strip().lower() in str(b.get("numero_documento", "")).lower() and str(b.get("tipo_documento", "")).upper() == str(tipo_ref).upper():
+                    achada = b
+                    break
+        nome_base = achada["nome_padronizado"] if achada else (f"{tipo_ref} {num_ref}" if tipo_ref and num_ref else "Referência desconhecida")
+        concluido = p.get("status") == "concluido"
+        selo = ui.badge("Concluído", "ok") if concluido else (ui.badge("Base encontrada", "info", pulso=True) if achada else ui.badge("Base não encontrada", "warn"))
+        with st.expander(f"{nome_deriv}  →  {nome_base}", icon=":material/task_alt:" if concluido else ":material/schedule:"):
+            c1, c2, c3 = st.columns([3.2, 1.2, 1], vertical_alignment="center")
+            c1.markdown(f"{selo}<br>**Arquivo:** {escape(str(p.get('nome_arquivo_original', 'N/A')))}<br>"
+                        f"**Ato derivativo:** {escape(nome_deriv)}<br>**Ato base:** {escape(nome_base)}"
+                        + ("" if achada else " <i>(não encontrado no banco)</i>"), unsafe_allow_html=True)
+            if not achada and num_ref:
                 try:
-                    estrutura = json.loads(estrutura)
-                except:
-                    estrutura = {}
-            nome_padronizado = estrutura.get('nome_padronizado') or item.get('nome_arquivo_original', 'Desconhecido')
-            tipo = estrutura.get('tipo_documento', '')
-            numero = estrutura.get('numero_documento', '')
-            data = estrutura.get('data_assinatura', '')
-            
-            # Verifica se este ato é referenciado por alguma pendência
-            pendentes_referenciam = []
-            if numero:
-                try:
-                    res_pend_ref = supabase.table("atos_importados").select("id, nome_arquivo_original").eq("status", "pendente").ilike("ato_base_referenciado_numero", f"%{numero}%").execute()
-                    pendentes_referenciam = res_pend_ref.data or []
-                except:
-                    pass
-
-            with st.expander(f"📄 {nome_padronizado}", expanded=False):
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.markdown(f"**Tipo:** {tipo} **Número:** {numero} **Data:** {data}")
-                    st.markdown(f"**Arquivo original:** {item.get('nome_arquivo_original', 'N/A')}")
-                    if pendentes_referenciam:
-                        st.warning(f"⚠️ Este ato é referenciado por {len(pendentes_referenciam)} pendência(s):")
-                        for p in pendentes_referenciam:
-                            st.write(f"- {p.get('nome_arquivo_original', 'N/A')}")
-                    else:
-                        st.info("Nenhuma pendência referenciando este ato.")
-                with col2:
-                    if st.button("🗑️ Remover", key=f"del_ident_{item['id']}"):
-                        try:
-                            supabase.table("atos_importados").delete().eq("id", item['id']).execute()
-                            st.success("Removido com sucesso!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erro ao remover: {e}")
-except Exception as e:
-    st.warning(f"Não foi possível carregar os atos identificados: {e}")
-
-# =====================================================================
-# SEÇÃO: DERIVAÇÕES PENDENTES
-# =====================================================================
-st.markdown("---")
-st.markdown("### 📋 Derivações Pendentes")
-st.caption("Atos importados que aguardam a norma base. Use os checkboxes para marcar como concluídos após a consolidação.")
-
-try:
-    res_pend = supabase.table("atos_importados").select("*").eq("status", "pendente").order("criado_em", desc=True).execute()
-    pendencias = res_pend.data if res_pend.data else []
-    if not pendencias:
-        st.info("Nenhuma derivação pendente no momento.")
-    else:
-        st.caption(f"Exibindo {len(pendencias)} pendência(s).")
-        for p in pendencias:
-            pend_id = p['id']
-            tipo_ref = p.get('ato_base_referenciado_tipo')
-            num_ref = p.get('ato_base_referenciado_numero')
-            status_atual = p.get('status', 'pendente')
-
-            estrutura = p.get('estrutura_json', {})
-            if isinstance(estrutura, str):
-                try:
-                    estrutura = json.loads(estrutura)
-                except:
-                    estrutura = {}
-            nome_derivativo = estrutura.get('nome_padronizado')
-            if not nome_derivativo:
-                nome_derivativo = p.get('nome_arquivo_original', 'Arquivo desconhecido')
-
-            relacao_encontrada = False
-            nome_base = f"{tipo_ref} {num_ref}" if tipo_ref and num_ref else "Referência desconhecida"
-            data_base_banco = None
-            if tipo_ref and num_ref:
-                try:
-                    res_busca = supabase.table("portarias_base").select("nome_padronizado, data_assinatura").ilike("numero_documento", f"%{num_ref}%").execute()
-                    if res_busca.data:
-                        for reg in res_busca.data:
-                            if reg.get('tipo_documento', '').upper() == tipo_ref.upper():
-                                relacao_encontrada = True
-                                nome_base = reg.get('nome_padronizado', nome_base)
-                                data_base_banco = reg.get('data_assinatura')
-                                break
+                    texto = supabase.table("atos_importados").select("texto_integra").eq("id", pend_id).execute().data[0].get("texto_integra", "")
+                    d = data_extenso(extrair_data_referenciada(texto, num_ref))
+                    if d:
+                        c1.caption(f"Data do ato base extraída do texto: {d}")
                 except Exception:
                     pass
+            c2.checkbox("Concluído", value=concluido, key=f"chk_{pend_id}", on_change=_checkbox_cb, args=(pend_id,))
+            if c3.button("", key=f"del_pend_{pend_id}", icon=":material/delete:", help="Remover pendência", use_container_width=True):
+                confirmar(nome_deriv, _apagar_generico, "atos_importados", pend_id, nome_deriv)
 
-            data_ref = data_base_banco
-            if not data_ref and num_ref:
-                texto_integra = p.get('texto_integra', '')
-                if texto_integra:
-                    data_ref = extrair_data_referenciada(texto_integra, num_ref)
-
-            if relacao_encontrada:
-                titulo = f"{nome_derivativo} (Ato Derivativo) → {nome_base} (Ato Original)"
-                if data_base_banco:
-                    try:
-                        dt = datetime.strptime(data_base_banco, "%Y-%m-%d")
-                        meses = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro']
-                        data_fmt = f"{dt.day} de {meses[dt.month-1]} de {dt.year}"
-                        titulo += f", de {data_fmt}"
-                    except:
-                        pass
-            else:
-                titulo = f"{nome_derivativo} (Ato Derivativo) → {nome_base} (Ato Original não encontrado) ⚠️"
-                if data_ref:
-                    try:
-                        dt = datetime.strptime(data_ref, "%Y-%m-%d")
-                        meses = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro']
-                        data_fmt = f"{dt.day} de {meses[dt.month-1]} de {dt.year}"
-                        titulo = f"{nome_derivativo} (Ato Derivativo) → {nome_base}, de {data_fmt} (Ato Original não encontrado) ⚠️"
-                    except:
-                        pass
-
-            if status_atual == 'concluido':
-                icone = "✅"
-                titulo = f"{icone} {titulo}"
-            elif relacao_encontrada:
-                icone = "🟡"
-                titulo = f"{icone} {titulo}"
-            else:
-                icone = "⚪"
-                titulo = f"{icone} {titulo}"
-
-            with st.expander(titulo, expanded=False):
-                col1, col2, col3 = st.columns([3, 1, 0.5])
-                with col1:
-                    st.markdown(f"**Arquivo original:** {p.get('nome_arquivo_original', 'N/A')}")
-                    st.markdown(f"**Ato derivativo identificado:** {nome_derivativo}")
-                    if relacao_encontrada:
-                        st.markdown(f"**Ato base encontrado:** {nome_base} {f'(Data: {data_base_banco})' if data_base_banco else ''}")
-                    else:
-                        st.markdown(f"**Ato base referenciado:** {nome_base} (não encontrado no banco)")
-                        if data_ref:
-                            try:
-                                dt = datetime.strptime(data_ref, "%Y-%m-%d")
-                                meses = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro']
-                                data_fmt = f"{dt.day} de {meses[dt.month-1]} de {dt.year}"
-                                st.markdown(f"**Data extraída do texto:** {data_fmt}")
-                            except:
-                                pass
-                    st.caption(f"Status atual: {status_atual}")
-                with col2:
-                    novo_status = st.checkbox("Concluído", value=(status_atual == 'concluido'), key=f"chk_{pend_id}")
-                    if novo_status and status_atual != 'concluido':
-                        if supabase.table("atos_importados").update({"status": "concluido"}).eq("id", pend_id).execute():
-                            st.success("Marcado como concluído!")
-                            st.rerun()
-                    elif not novo_status and status_atual == 'concluido':
-                        if supabase.table("atos_importados").update({"status": "pendente"}).eq("id", pend_id).execute():
-                            st.success("Reaberto!")
-                            st.rerun()
-                with col3:
-                    if st.button("🗑️", key=f"del_pend_{pend_id}"):
-                        try:
-                            supabase.table("atos_importados").delete().eq("id", pend_id).execute()
-                            st.success("Pendência removida com sucesso!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erro ao remover pendência: {e}")
-
-except Exception as e:
-    st.warning(f"Não foi possível carregar as derivações pendentes: {e}")
-
-# =====================================================================
-# SEÇÃO: VERSÕES SALVAS (SNAPSHOTS)
-# =====================================================================
-st.markdown("---")
-st.markdown("### 📚 Versões Salvas")
-st.caption("Histórico de todas as versões (alterada e consolidada) geradas para cada norma. Permite resgatar qualquer combinação de alterações e exportar em PDF ou HTML.")
-
-try:
-    res_versoes = supabase.table("versoes_documentos").select("*, portarias_base(nome_padronizado)").order("criado_em", desc=True).execute()
-    versoes = res_versoes.data if res_versoes.data else []
+# ============================================================== VERSÕES
+with tab_vers:
+    versoes = carregar_versoes()
     if not versoes:
-        st.info("Nenhuma versão salva até o momento.")
-    else:
-        versoes_por_base = defaultdict(list)
-        for v in versoes:
-            base_id = v['portaria_base_id']
-            versoes_por_base[base_id].append(v)
-
-        for base_id, lista_versoes in versoes_por_base.items():
-            nome_base = lista_versoes[0]['portarias_base']['nome_padronizado'] if lista_versoes[0].get('portarias_base') else f"Base ID {base_id}"
-            with st.expander(f"📁 {nome_base}"):
-                st.markdown(f"**Total de versões salvas:** {len(lista_versoes)}")
-                for v in lista_versoes:
-                    descricao = v.get('descricao', '')
-                    alteradoras = v.get('alteradoras_aplicadas') or []
-                    alteradoras_str = ", ".join(alteradoras) if alteradoras else "Nenhuma"
-                    st.markdown(f"**Versão:** {v['tipo_versao'].upper()} - {descricao}")
-                    st.markdown(f"**Alteradoras aplicadas:** {alteradoras_str}")
-                    st.markdown(f"**Criada em:** {v['criado_em']}")
-
-                    col_pdf_alt, col_pdf_cons, col_html_alt, col_html_cons = st.columns(4)
-                    estado = v['estado_json']
+        ui.vazio("Nenhuma versão salva", "Quando houver versões em versoes_documentos, elas aparecem aqui. Os arquivos só são gerados quando você pede.", "history")
+    por_b = {}
+    for v in versoes:
+        por_b.setdefault(v["portaria_base_id"], []).append(v)
+    for bid, lst in por_b.items():
+        nome_b = (lst[0].get("portarias_base") or {}).get("nome_padronizado", f"Base {bid}")
+        with st.expander(f"{nome_b} · {len(lst)} versão(ões)", icon=":material/folder:"):
+            for v in lst:
+                st.markdown(f"**{escape(str(v['tipo_versao']).upper())}** — {escape(str(v.get('descricao', '')))}  \n"
+                            f"Alteradoras: {escape(', '.join(v.get('alteradoras_aplicadas') or []) or 'nenhuma')} · criada em {escape(str(v['criado_em']))}", unsafe_allow_html=True)
+                chave = f"ver_{v['id']}"
+                if st.button("Preparar arquivos", key=f"prepv_{v['id']}", icon=":material/build:"):
                     try:
-                        def gerar_html_dinamico(consolidacao_dict, tipo_versao):
-                            titulo_doc = f"Versão {'Alterada' if tipo_versao=='alterada' else 'Consolidada'}"
-                            html = f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{titulo_doc}</title><style>@page{{size:A4;margin:2.5cm 2cm;@bottom-center{{content:'Nota: Este documento possui caráter estritamente consultivo e informativo, não substituindo o texto original publicado no Boletim de Serviço Eletrônico (BSe) ou no Diário Oficial.';font-size:9pt;font-style:italic;color:#333;}}}}body{{font-family:'Times New Roman',serif;font-size:11pt;line-height:1.5;text-align:justify;}}.topo{{text-align:center;color:#444;font-size:10pt;font-weight:bold;margin-bottom:20px;text-transform:uppercase;}}.orgaos{{text-align:center;font-weight:bold;margin-bottom:25px;}}.titulo{{text-align:center;font-weight:bold;margin-bottom:20px;}}.ementa{{text-align:justify;margin-left:45%;margin-bottom:25px;font-weight:normal;}}.preambulo{{text-align:justify;margin-bottom:12px;text-indent:0;}}.dispositivo{{text-align:justify;text-indent:40px;margin-bottom:12px;}}.capitulo{{text-align:center;font-weight:bold;margin-top:20px;margin-bottom:12px;text-transform:uppercase;}}.assinatura{{text-align:center;font-weight:bold;margin-top:50px;margin-bottom:20px;}}table{{width:100%;border-collapse:collapse;margin-top:15px;margin-bottom:15px;}}td,th{{border:1px solid black;padding:6px;text-align:left;vertical-align:middle;}}strike,s,del{{text-decoration:line-through;}}b,strong{{font-weight:bold;}}i,em{{font-style:italic;}}font[color='red'],span[style*='color: red'],span[style*='color:rgb(230']{{color:red!important;}}</style></head><body><div class='topo'>{titulo_doc}</div><div class='orgaos'>{consolidacao_dict.get('orgaos_emissores','')}</div><div class='titulo'>{consolidacao_dict.get('titulo_portaria','')}</div><div class='ementa'>{consolidacao_dict.get('ementa','')}</div><div class='preambulo'>{consolidacao_dict.get('preambulo','')}</div>"
-                            for item in consolidacao_dict.get('dispositivos', []):
-                                t = (item.get('tipo') or '').lower()
-                                t_prin = item.get(f'texto_principal_{tipo_versao}', '')
-                                if 'capitulo' in t or 'anexo' in t:
-                                    html += f"<div class='capitulo'>{t_prin}</div>"
-                                    if not item.get('is_tabela'):
-                                        continue
-                                else:
-                                    if t_prin:
-                                        for p in t_prin.split('<br/>'):
-                                            if p.strip(): html += f"<div class='dispositivo'>{p.strip()}</div>"
-                                if item.get('is_tabela'):
-                                    linhas = item.get(f'tabela_{tipo_versao}') or []
-                                    if linhas:
-                                        html += "<table>"
-                                        for linha in linhas:
-                                            html += "<tr>"
-                                            for celula in linha:
-                                                html += f"<td>{celula}</td>"
-                                            html += "</tr>"
-                                        html += "</table>"
-                                    t_pos = item.get(f'texto_pos_tabela_{tipo_versao}')
-                                    if t_pos:
-                                        for p in t_pos.split('<br/>'):
-                                            if p.strip(): html += f"<div class='dispositivo'>{p.strip()}</div>"
-                            html += f"<div class='assinatura'>{consolidacao_dict.get('assinatura_nome','')}<br>{consolidacao_dict.get('assinatura_cargo','')}</div></body></html>"
-                            return html
-
-                        def gerar_pdf_dinamico(consolidacao_dict, tipo_versao):
-                            from weasyprint import HTML
-                            html_str = gerar_html_dinamico(consolidacao_dict, tipo_versao)
-                            buffer = io.BytesIO()
-                            HTML(string=html_str).write_pdf(buffer)
-                            buffer.seek(0)
-                            return buffer.getvalue()
-
-                        pdf_alt = gerar_pdf_dinamico(estado, "alterada")
-                        pdf_cons = gerar_pdf_dinamico(estado, "consolidada")
-                        html_alt = gerar_html_dinamico(estado, "alterada")
-                        html_cons = gerar_html_dinamico(estado, "consolidada")
-
-                        with col_pdf_alt:
-                            st.download_button("📄 PDF Alterada", pdf_alt, file_name=f"{descricao}_alterada.pdf", mime="application/pdf")
-                        with col_pdf_cons:
-                            st.download_button("📄 PDF Consolidada", pdf_cons, file_name=f"{descricao}_consolidada.pdf", mime="application/pdf")
-                        with col_html_alt:
-                            st.download_button("🌐 HTML Alterada", html_alt, file_name=f"{descricao}_alterada.html", mime="text/html")
-                        with col_html_cons:
-                            st.download_button("🌐 HTML Consolidada", html_cons, file_name=f"{descricao}_consolidada.html", mime="text/html")
+                        estado = _json(supabase.table("versoes_documentos").select("estado_json").eq("id", v["id"]).execute().data[0].get("estado_json"))
+                        st.session_state[chave] = {
+                            "pdf_alt": exportacao.gerar_pdf_dinamico(estado, "alterada"), "pdf_cons": exportacao.gerar_pdf_dinamico(estado, "consolidada"),
+                            "html_alt": exportacao.gerar_html_dinamico(estado, "alterada"), "html_cons": exportacao.gerar_html_dinamico(estado, "consolidada")}
                     except Exception as e:
                         st.error(f"Erro ao gerar arquivos para esta versão: {e}")
-                    st.markdown("---")
-except Exception as e:
-    st.warning(f"Não foi possível carregar as versões: {e}")
+                if st.session_state.get(chave):
+                    a = st.session_state[chave]
+                    d = re.sub(r"[^\w.-]+", "_", str(v.get("descricao") or v["id"]))
+                    cc = st.columns(4)
+                    cc[0].download_button("PDF alterada", a["pdf_alt"], file_name=f"{d}_alterada.pdf", mime="application/pdf", key=f"vpa{v['id']}")
+                    cc[1].download_button("PDF consolidada", a["pdf_cons"], file_name=f"{d}_consolidada.pdf", mime="application/pdf", key=f"vpc{v['id']}")
+                    cc[2].download_button("HTML alterada", a["html_alt"], file_name=f"{d}_alterada.html", mime="text/html", key=f"vha{v['id']}")
+                    cc[3].download_button("HTML consolidada", a["html_cons"], file_name=f"{d}_consolidada.html", mime="text/html", key=f"vhc{v['id']}")
+                st.markdown("---")
 
-st.markdown("---")
-st.markdown("### 🧠 Aprendizado da IA (correções registradas)")
-st.caption("Toda vez que você edita e salva um documento, a diferença entre o que a IA gerou e o que você corrigiu é guardada aqui e usada como referência nas próximas consolidações.")
-try:
-    res_mem = supabase.table("memoria_de_correcoes").select("*").order("id", desc=True).limit(30).execute()
-    memorias = res_mem.data if res_mem.data else []
-    if not memorias:
-        st.info("Nenhuma correção registrada ainda.")
-    else:
-        st.caption(f"Exibindo as {len(memorias)} correções mais recentes.")
-        for m in memorias:
-            with st.expander(f"Correção de {m.get('data_registro', 'N/A')}"):
-                cA, cB = st.columns(2)
-                with cA:
-                    st.markdown("**❌ Texto gerado pela IA**")
-                    st.code(m.get('texto_ia') or "", language=None)
-                with cB:
-                    st.markdown("**✅ Correção do usuário**")
-                    st.code(m.get('texto_corrigido') or "", language=None)
-                if st.button("🗑️ Remover este aprendizado", key=f"del_mem_{m['id']}"):
-                    try:
-                        supabase.table("memoria_de_correcoes").delete().eq("id", m['id']).execute()
-                        st.success("Removido.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro ao remover: {e}")
-except Exception as e:
-    st.warning(f"Não foi possível carregar o histórico de aprendizado: {e}")
+# ============================================================== APRENDIZADO
+with tab_ia:
+    st.caption("Toda vez que alguém edita e salva um documento, a diferença entre o que a IA gerou e a correção é guardada aqui e usada nas próximas consolidações (compartilhado por toda a equipe).")
+    mem = carregar_memoria()
+    if not mem:
+        ui.vazio("Nenhuma correção registrada", "As correções aparecem depois que alguém salva um documento editado.", "sparkles")
+    for m in mem:
+        with st.expander(f"Correção #{m.get('id')} · {str(m.get('data_registro') or m.get('created_at') or '')[:10]}", icon=":material/psychology:"):
+            cA, cB = st.columns(2)
+            cA.markdown("**Texto gerado pela IA**")
+            cA.code(m.get("texto_ia") or "", language=None)
+            cB.markdown("**Correção do usuário**")
+            cB.code(m.get("texto_corrigido") or "", language=None)
+            if st.button("Remover este aprendizado", key=f"del_mem_{m['id']}", icon=":material/delete:"):
+                confirmar(f"correção #{m['id']}", _apagar_generico, "memoria_de_correcoes", m["id"], f"correção {m['id']}")

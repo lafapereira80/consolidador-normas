@@ -1,157 +1,151 @@
-import streamlit as st
-import time
-import sys
+# pages/usuarios.py - Gerenciamento de usuários (somente administradores)
 import os
-from supabase import create_client, Client
-from typing import Optional
+import re
+import sys
+import time
+from html import escape
+
+import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from auth_utils import gerar_hash_senha
+from menu_utils import configurar_pagina, exigir_login, renderizar_cabecalho, renderizar_menu
+from db_utils import obter_supabase
+import concorrencia as conc
+import ui_theme as ui
 
-# Esconde a barra lateral desde o carregamento
-st.set_page_config(page_title="Gerenciar Usuários", page_icon="👥", layout="wide", initial_sidebar_state="collapsed")
+configurar_pagina("Usuários", "👥")
+exigir_login("Você precisa fazer login para acessar o painel de usuários.", somente_admin=True)
+renderizar_menu("usuarios")
+renderizar_cabecalho("Gerenciamento de usuários", "Crie contas, redefina senhas e acompanhe quem está online. Somente administradores veem esta página.",
+                     etiqueta="Administração", icone_nome="users")
 
-# PROTEÇÃO DE ACESSO
-if "autenticado" not in st.session_state or not st.session_state.autenticado:
-    st.warning("⚠️ Acesso negado. Você precisa fazer login na página principal para acessar o painel de usuários.")
-    st.page_link("app.py", label="Ir para a Tela de Login", icon="🔒")
-    st.stop()
-
-# BLOQUEIO DO MENU LATERAL E ESTILOS
-st.markdown("""
-<style>
-    [data-testid="stSidebar"] { display: none !important; }
-    [data-testid="collapsedControl"] { display: none !important; }
-    .main-header {
-        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-        padding: 20px 20px;
-        border-radius: 12px;
-        color: white;
-        text-align: center;
-        margin-bottom: 25px;
-    }
-    .main-header h1 { color: #00FF87; font-weight: 800; font-size: 2.2rem; margin-bottom: 0px; }
-</style>
-<div class="main-header">
-    <h1>👥 Gerenciamento de Usuários</h1>
-</div>
-""", unsafe_allow_html=True)
-
-# --- MENU DE NAVEGAÇÃO SUPERIOR FIXO ---
-col_home, col_hist, col_logout, col_vazio = st.columns([1.5, 1.5, 1, 4])
-
-with col_home:
-    st.page_link("app.py", label="Início (Upload)", icon="⬅️")
-
-with col_hist:
-    hist_path = "pages/1_Historico.py"
-    if os.path.exists("pages"):
-        for f in os.listdir("pages"):
-            if "historico" in f.lower() and f.endswith(".py"):
-                hist_path = f"pages/{f}"
-                break
-    try:
-        st.page_link(hist_path, label="Histórico", icon="🗄️")
-    except:
-        st.markdown('<a href="historico" target="_top" style="display: block; text-align: center; background-color: #f0f2f6; border: 1px solid #d0d4dc; color: #31333F !important; padding: 0.5rem; border-radius: 0.5rem; text-decoration: none; font-weight: 500;">🗄️ Histórico</a>', unsafe_allow_html=True)
-
-with col_logout:
-    if st.button("Sair", key="btn_sair_usr", type="secondary", use_container_width=True):
-        st.session_state.autenticado = False
-        st.rerun()
-
-st.markdown("---")
-
-# CONEXÃO COM BANCO DE DADOS
-@st.cache_resource
-def init_supabase() -> Optional[Client]:
-    try:
-        url = st.secrets["supabase"]["url"]
-        key = st.secrets["supabase"]["key"]
-        return create_client(url, key)
-    except Exception:
-        return None
-
-supabase = init_supabase()
-
+supabase = obter_supabase()
 if not supabase:
-    st.error("⚠️ Não foi possível conectar ao Supabase.")
+    st.error("Não foi possível conectar ao Supabase.", icon=":material/cloud_off:")
     st.stop()
 
-tab_lista, tab_novo = st.tabs(["📋 Lista de Usuários", "➕ Cadastrar Novo Usuário"])
+MIN_SENHA = 8
+RE_LOGIN = re.compile(r"^[A-Za-z0-9._-]{3,40}$")
 
-# --- ABA 1: LISTAGEM E EDIÇÃO ---
-with tab_lista:
-    st.markdown("### Usuários Cadastrados no Sistema")
+
+def carregar():
     try:
-        res = supabase.table("usuarios").select("*").order("id").execute()
-        usuarios = res.data if res.data else []
-    except Exception as e:
-        st.error(f"Erro ao carregar usuários: {e}")
-        usuarios = []
+        res = supabase.table("usuarios").select("id, username, created_at").order("id").execute()
+        return res.data or []
+    except Exception:
+        try:  # esquema sem created_at
+            return supabase.table("usuarios").select("id, username").order("id").execute().data or []
+        except Exception as e:
+            st.error(f"Erro ao carregar usuários: {e}")
+            return []
 
+
+@st.dialog("Excluir usuário")
+def confirmar_exclusao(uid, nome):
+    st.markdown(f"Excluir **{escape(nome)}** permanentemente? Todos os acessos dessa conta serão encerrados.", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    if c1.button("Cancelar", use_container_width=True):
+        st.rerun()
+    if c2.button("Excluir", type="primary", use_container_width=True, icon=":material/delete:"):
+        try:
+            supabase.table("usuarios").delete().eq("id", uid).execute()
+            conc.registro().revogar_usuario(nome)
+            conc.auditar("excluir_usuario", nome)
+            st.session_state["_msg_usr"] = f"Usuário '{nome}' excluído."
+            st.rerun()
+        except Exception as e:
+            st.error(f"Erro ao excluir: {e}")
+
+
+usuarios = carregar()
+online = {p["usuario"].lower() for p in conc.registro().online() if p.get("usuario")}
+ui.kpis([
+    ("Usuários cadastrados", len(usuarios), "users", "info"),
+    ("Online agora", len(conc.registro().usuarios_online()), "activity", "ok"),
+    ("Sessões ativas", len(conc.registro().online()), "user", ""),
+])
+if msg := st.session_state.pop("_msg_usr", None):
+    st.toast(msg, icon=":material/check_circle:")
+
+tab_lista, tab_novo, tab_ativ = st.tabs([":material/list: Usuários", ":material/person_add: Novo usuário", ":material/history: Atividade e sessões"])
+
+with tab_lista:
     if not usuarios:
-        st.info("Nenhum usuário encontrado.")
-    else:
-        for usr in usuarios:
-            user_id = usr['id']
-            username = usr['username']
-            data_criacao = usr.get('created_at', 'N/A')
-            if data_criacao != 'N/A':
-                data_criacao = data_criacao[:10]
-
-            with st.expander(f"👤 {username} (Criado em: {data_criacao})"):
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("**🔑 Redefinir Senha**")
-                    with st.form(key=f"form_senha_{user_id}"):
-                        nova_senha = st.text_input("Nova Senha", type="password", key=f"ns_{user_id}")
-                        if st.form_submit_button("Atualizar Senha", type="primary"):
-                            if nova_senha.strip():
-                                hash_novo = gerar_hash_senha(nova_senha)
-                                try:
-                                    supabase.table("usuarios").update({"password_hash": hash_novo}).eq("id", user_id).execute()
-                                    st.success(f"Senha de '{username}' atualizada com sucesso!")
-                                except Exception as e:
-                                    st.error(f"Erro ao atualizar: {e}")
-                            else:
-                                st.warning("A senha não pode ficar em branco.")
-                with c2:
-                    st.markdown("**🗑️ Excluir Conta**")
-                    if username.lower() == 'admin':
-                        st.info("⚠️ O usuário 'admin' principal está protegido contra exclusão para garantir seu acesso contínuo ao sistema.")
-                    else:
-                        if st.button(f"Excluir '{username}'", key=f"del_usr_{user_id}"):
+        ui.vazio("Nenhum usuário encontrado", "Cadastre o primeiro na aba Novo usuário.", "users")
+    for usr in usuarios:
+        uid, nome = usr["id"], usr["username"]
+        criado = str(usr.get("created_at") or "")[:10] or "—"
+        eh_admin_alvo = nome.lower() == "admin"
+        eu = nome.lower() == conc.usuario_atual().lower()
+        selos = (ui.badge("Online", "ok", pulso=True) if nome.lower() in online else ui.badge("Offline")) \
+            + (" " + ui.badge("Administrador", "info") if eh_admin_alvo else "") + (" " + ui.badge("Você", "warn") if eu else "")
+        with st.container(border=True):
+            c_info, c_senha, c_del = st.columns([3, 2.2, 1.2], vertical_alignment="center")
+            c_info.markdown(f'<div class="cn-usr">{ui.avatar(nome)}<div><b style="font-size:1.05rem">{escape(nome)}</b> &nbsp;{selos}<br>'
+                            f'<span style="color:#475569;font-size:.82rem">Criado em {escape(criado)}</span></div></div>', unsafe_allow_html=True)
+            with c_senha:
+                with st.popover("Redefinir senha", icon=":material/key:", use_container_width=True):
+                    ns = st.text_input("Nova senha", type="password", key=f"ns_{uid}")
+                    ui.barra_forca(ns)
+                    if st.button("Atualizar senha", key=f"upd_{uid}", type="primary", use_container_width=True):
+                        if len(ns) < MIN_SENHA:
+                            st.warning(f"A senha precisa ter ao menos {MIN_SENHA} caracteres.")
+                        else:
                             try:
-                                supabase.table("usuarios").delete().eq("id", user_id).execute()
-                                st.success(f"Usuário '{username}' apagado permanentemente!")
-                                time.sleep(1.5)
-                                st.rerun()
+                                supabase.table("usuarios").update({"password_hash": gerar_hash_senha(ns)}).eq("id", uid).execute()
+                                conc.registro().revogar_usuario(nome)
+                                conc.auditar("redefinir_senha", nome)
+                                st.success("Senha atualizada. Logins persistentes dessa conta foram encerrados.")
                             except Exception as e:
-                                st.error(f"Erro ao excluir: {e}")
+                                st.error(f"Erro ao atualizar: {e}")
+            with c_del:
+                if eh_admin_alvo or eu:
+                    st.caption("Protegido" if eh_admin_alvo else "Sua conta")
+                elif st.button("Excluir", key=f"del_usr_{uid}", icon=":material/delete:", use_container_width=True):
+                    confirmar_exclusao(uid, nome)
 
-# --- ABA 2: CRIAÇÃO ---
 with tab_novo:
-    st.markdown("### ➕ Criar Nova Conta de Acesso")
-    with st.form("form_novo_usuario"):
-        novo_login = st.text_input("Nome de Usuário (Login)", placeholder="Ex: joao.silva")
-        nova_senha_input = st.text_input("Senha de Acesso", type="password", placeholder="Digite uma senha segura")
-        btn_criar = st.form_submit_button("Cadastrar Usuário", type="primary", use_container_width=True)
-
-        if btn_criar:
-            if not novo_login.strip() or not nova_senha_input.strip():
-                st.warning("Preencha todos os campos corretamente.")
+    with st.container(border=True):
+        novo_login = st.text_input("Nome de usuário (login)", placeholder="ex.: joao.silva", key="novo_login", help="3 a 40 caracteres: letras, números, ponto, hífen e sublinhado.")
+        nova_senha = st.text_input("Senha de acesso", type="password", placeholder=f"Mínimo de {MIN_SENHA} caracteres", key="nova_senha_in")
+        ui.barra_forca(nova_senha)
+        if st.button("Cadastrar usuário", type="primary", use_container_width=True, icon=":material/person_add:"):
+            login = (novo_login or "").strip()
+            if not RE_LOGIN.match(login):
+                st.warning("Login inválido: use 3 a 40 caracteres (letras, números, ponto, hífen ou sublinhado).")
+            elif len(nova_senha) < MIN_SENHA:
+                st.warning(f"A senha precisa ter ao menos {MIN_SENHA} caracteres.")
+            elif login.lower() in {u["username"].lower() for u in carregar()}:
+                st.error(f"O nome de usuário '{login}' já está em uso.")
             else:
-                hash_criado = gerar_hash_senha(nova_senha_input)
                 try:
-                    supabase.table("usuarios").insert({
-                        "username": novo_login.strip(),
-                        "password_hash": hash_criado
-                    }).execute()
-                    st.success(f"✅ Usuário '{novo_login}' criado com sucesso! Ele já pode acessar o sistema.")
+                    supabase.table("usuarios").insert({"username": login, "password_hash": gerar_hash_senha(nova_senha)}).execute()
+                    conc.auditar("criar_usuario", login)
+                    st.success(f"Usuário '{login}' criado. Ele já pode acessar o sistema.")
+                    time.sleep(1.2)
+                    st.rerun()
                 except Exception as e:
-                    mensagem_erro = str(e).lower()
-                    if "duplicate key" in mensagem_erro or "unique constraint" in mensagem_erro:
-                        st.error(f"❌ O nome de usuário '{novo_login}' já está em uso.")
-                    else:
-                        st.error(f"❌ Ocorreu um erro interno: {e}")
+                    m = str(e).lower()
+                    st.error(f"O nome de usuário '{login}' já está em uso." if ("duplicate" in m or "unique" in m) else f"Erro interno: {e}")
+
+with tab_ativ:
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("##### Sessões online")
+        sess = conc.registro().online()
+        if not sess:
+            st.caption("Nenhuma sessão ativa.")
+        for p in sess:
+            from menu_utils import ROTULOS
+            st.markdown(f'<div class="cn-chip" style="margin:.2rem 0">{ui.avatar(p.get("usuario") or "?")}<span class="cn-dot"></span>'
+                        f'<span><b>{escape(p.get("usuario") or "?")}</b> · {escape(ROTULOS.get(p.get("pagina"), p.get("pagina") or ""))}</span></div>', unsafe_allow_html=True)
+    with c2:
+        st.markdown("##### Trilha de atividade")
+        evs = list(conc.registro().auditoria)[:40]
+        if not evs:
+            st.caption("Sem eventos desde o último reinício do servidor.")
+        for ev in evs:
+            q = time.strftime("%d/%m %H:%M:%S", time.localtime(ev["quando"]))
+            st.markdown(f'<span style="font-size:.86rem"><b>{escape(ev["usuario"])}</b> · {escape(ev["acao"].replace("_", " "))} '
+                        f'<span style="color:#64748B">{escape(ev["detalhe"])} · {q}</span></span>', unsafe_allow_html=True)

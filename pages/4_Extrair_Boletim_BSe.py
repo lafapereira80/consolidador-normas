@@ -1,9 +1,12 @@
+# pages/4_Extrair_Boletim_BSe.py - Extração de atos do Boletim de Serviço Eletrônico (BSe)
 import streamlit as st
 import fitz  # PyMuPDF
 import re
 import os
 import io
 import base64
+import hashlib
+from html import escape
 from typing import List, Dict, Optional
 
 try:
@@ -21,16 +24,20 @@ except ImportError:
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from menu_utils import configurar_pagina, exigir_login, renderizar_cabecalho, renderizar_menu
+import concorrencia as conc
+import ui_theme as ui
+import exportacao
 
-configurar_pagina("Extrair do Boletim de Serviço", "📋")
+configurar_pagina("Extrair BSe", "📋")
 exigir_login()
-renderizar_cabecalho("📋 Extração de Atos do Boletim de Serviço (BSe)")
 renderizar_menu("bse")
+renderizar_cabecalho("Extração de atos do Boletim (BSe)", "Envie o Boletim de Serviço Eletrônico em PDF. Os atos são separados com parágrafos, alinhamentos e tabelas, "
+                     "e você edita um a um antes de gerar o PDF formatado.", etiqueta="Boletim de Serviço", icone_nome="news")
 
 # --- BARRA DE FERRAMENTAS DO EDITOR RICO ---
 QUILL_TOOLBAR = [
     ["bold", "italic", "underline", "strike"],
-    [{"align": []}],  
+    [{"align": []}],
     [{"color": []}, {"background": []}],
     [{"list": "ordered"}, {"list": "bullet"}],
     ["clean"],
@@ -75,10 +82,11 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
                                 sobrepoe = True
                                 break
                         if not sobrepoe: tabelas_validas.append(tb)
-        except Exception: pass
         except TypeError:
+            # versões antigas do PyMuPDF não aceitam 'strategy'. (Na versão original este ramo era inalcançável.)
             tf_default = page.find_tables()
             if tf_default.tables: tabelas_validas.extend(tf_default.tables)
+        except Exception: pass
 
         for tabela in tabelas_validas:
             rect = fitz.Rect(tabela.bbox)
@@ -335,55 +343,105 @@ def gerar_pdf_fiel_sei(html_conteudo: str, autoridade_nome: str, autoridade_carg
     return buffer.getvalue()
 
 # --- INTERFACE PRINCIPAL ---
-st.markdown("Envie o arquivo do **Boletim de Serviço Eletrônico (PDF)**. O sistema extrairá os Atos normativos identificando **parágrafos, alinhamentos e tabelas**, permitindo edição antes de gerar o PDF.")
-arquivo_bse = st.file_uploader("Selecione o Boletim de Serviço (PDF)", type=["pdf"], key="uploader_bse")
+ss = st.session_state
+ss.setdefault("bse_ver", 0)
+ss.setdefault("bse_edicoes", {})      # id do ato -> {"html","nome","cargo","nota"}  (sobrevive à troca de ato)
+ss.setdefault("bse_pdfs", {})         # id do ato -> (hash_das_entradas, bytes)
 
-if arquivo_bse is not None:
-    with st.spinner("⚡ Analisando o Boletim de Serviço (processando tabelas, parágrafos e assinaturas)..."):
-        atos = processar_boletim_pdf(arquivo_bse.getvalue())
+with st.container(border=True):
+    arquivo_bse = st.file_uploader("Selecione o Boletim de Serviço (PDF)", type=["pdf"], key=f"uploader_bse_{ss.bse_ver}")
 
-    st.success(f"✅ Análise concluída! Identificados **{len(atos)}** atos normativos no Boletim de Serviço.")
-    st.markdown("---")
-    st.markdown("### 📜 Atos Encontrados (Clique para expandir e editar)")
+ui.fluxo(["Enviar boletim", "Separar atos", "Editar", "Gerar PDF"], 2 if arquivo_bse else 0)
 
-    if not atos:
-        st.warning("Nenhum ato normativo no padrão reconhecido foi identificado automaticamente.")
+if arquivo_bse is None:
+    ui.vazio("Envie um boletim para começar", "Cada ato normativo encontrado vira um item editável, com tabelas preservadas.", "news")
+    st.stop()
+
+with st.spinner("Analisando o boletim (parágrafos, tabelas e assinaturas)..."):
+    atos = processar_boletim_pdf(arquivo_bse.getvalue())
+
+if not atos:
+    st.warning("Nenhum ato normativo no padrão reconhecido foi identificado automaticamente.", icon=":material/search_off:")
+    st.stop()
+
+n_tab = sum(1 for a in atos if "<table" in a["corpo_html"].lower())
+n_ass = sum(1 for a in atos if a["nome_autoridade"])
+ui.kpis([("Atos encontrados", len(atos), "file", "info"), ("Com tabelas", n_tab, "layers", "warn"), ("Signatário detectado", n_ass, "check", "ok"),
+         ("Editados nesta sessão", len(ss.bse_edicoes), "sparkles", "rosa")])
+
+rotulos = {a["id"]: f"{a['id']:02d} · {a['titulo']}" for a in atos}
+ids = [a["id"] for a in atos]
+ss.setdefault("bse_sel", ids[0])
+if ss.bse_sel not in ids:
+    ss.bse_sel = ids[0]
+
+
+def _nav(delta):
+    i = ids.index(ss.bse_sel)
+    ss.bse_sel = ids[(i + delta) % len(ids)]
+
+
+c_sel, c_prev, c_next = st.columns([6, 1, 1], vertical_alignment="bottom")
+c_sel.selectbox("Ato para editar (digite para filtrar)", ids, format_func=lambda i: rotulos[i], key="bse_sel")
+c_prev.button("", icon=":material/chevron_left:", on_click=_nav, args=(-1,), use_container_width=True, help="Ato anterior")
+c_next.button("", icon=":material/chevron_right:", on_click=_nav, args=(1,), use_container_width=True, help="Próximo ato")
+
+ato = next(a for a in atos if a["id"] == ss.bse_sel)
+ed = ss.bse_edicoes.get(ato["id"], {})
+tem_tabela = "<table" in ato["corpo_html"].lower()
+
+# PERFORMANCE: só o ato selecionado renderiza editor (antes: um editor Quill + um PDF WeasyPrint POR ATO a cada interação).
+if tem_tabela:
+    st.warning("Tabela detectada neste ato: o modo **Código-fonte HTML** vem selecionado para proteger a formatação.", icon=":material/table:")
+modo = st.radio("Modo de edição", ["Visual (texto rico)", "Código-fonte HTML (preserva tabelas)"], horizontal=True,
+                index=1 if tem_tabela else 0, key=f"modo_{ato['id']}")
+visual = modo.startswith("Visual") and HAS_QUILL
+
+chave_sel = (ato["id"], visual)
+if ss.get("_bse_chave") != chave_sel:       # mudou de ato/modo: fixa o valor inicial do editor
+    ss["_bse_chave"] = chave_sel
+    ss["_bse_ini"] = ed.get("html", ato["corpo_html"])
+    ss["_bse_nonce"] = ss.get("_bse_nonce", 0) + 1
+
+tab_ed, tab_pv = st.tabs([":material/edit: Editar", ":material/visibility: Prévia"])
+with tab_ed:
+    if visual:
+        html_ed = st_quill(value=ss["_bse_ini"], html=True, toolbar=QUILL_TOOLBAR, key=f"quill_{ato['id']}_{ss['_bse_nonce']}")
+        if html_ed is None:
+            html_ed = ss["_bse_ini"]
     else:
-        for ato in atos:
-            with st.expander(f"📄 {ato['titulo']}", expanded=False):
-                tem_tabela = "<table" in ato['corpo_html'].lower()
-                if tem_tabela:
-                    st.warning("⚠️ **Tabela Detectada neste Ato!** O modo 'Código-Fonte HTML' foi selecionado por padrão para proteger a formatação.")
-                
-                modo_edicao = st.radio("Modo de Edição:", ["Visual (Texto Rico)", "Código-Fonte HTML (Preserva Tabelas)"], key=f"modo_{ato['id']}", horizontal=True, index=1 if tem_tabela else 0)
-                
-                if modo_edicao == "Visual (Texto Rico)" and HAS_QUILL:
-                    conteudo_editado_html = st_quill(value=ato['corpo_html'], html=True, toolbar=QUILL_TOOLBAR, key=f"quill_editor_{ato['id']}")
-                else:
-                    conteudo_editado_html = st.text_area("Edite o HTML diretamente", value=ato['corpo_html'], height=350, key=f"ta_{ato['id']}")
-                    with st.expander("👁️ Pré-visualização da Impressão (HTML Renderezado)"):
-                        st.markdown(conteudo_editado_html, unsafe_allow_html=True)
+        html_ed = st.text_area("HTML do ato", value=ss["_bse_ini"], height=360, key=f"ta_{ato['id']}_{ss['_bse_nonce']}")
 
-                st.markdown("#### Dados da Assinatura e Publicação")
-                col_nome, col_cargo = st.columns(2)
-                with col_nome:
-                    nome_editado = st.text_input("Signatário (Nome)", value=ato["nome_autoridade"], key=f"nome_{ato['id']}")
-                with col_cargo:
-                    cargo_editado = st.text_input("Cargo", value=ato["cargo_autoridade"], key=f"cargo_{ato['id']}")
-                
-                nota_editada = st.text_input("Nota de Publicação (Opcional)", value=ato['nota_publicacao'], key=f"nota_{ato['id']}")
-                st.markdown("<br/>", unsafe_allow_html=True)
-                
-                if conteudo_editado_html:
-                    try:
-                        pdf_individual = gerar_pdf_fiel_sei(conteudo_editado_html, nome_editado, cargo_editado, nota_editada)
-                        st.download_button(
-                            label="📄 Gerar e Baixar este Ato em PDF Formatado",
-                            data=pdf_individual,
-                            file_name=f"{ato['titulo'].replace('/', '_').replace(' ', '_')}.pdf",
-                            mime="application/pdf",
-                            type="primary",
-                            key=f"btn_dl_{ato['id']}"
-                        )
-                    except Exception as e:
-                        st.error(f"Erro ao gerar PDF do ato: {e}")
+    st.markdown("##### Assinatura e publicação")
+    c1, c2 = st.columns(2)
+    nome_ed = c1.text_input("Signatário (nome)", value=ed.get("nome", ato["nome_autoridade"]), key=f"nome_{ato['id']}")
+    cargo_ed = c2.text_input("Cargo", value=ed.get("cargo", ato["cargo_autoridade"]), key=f"cargo_{ato['id']}")
+    nota_ed = st.text_input("Nota de publicação (opcional)", value=ed.get("nota", ato["nota_publicacao"]), key=f"nota_{ato['id']}")
+    ss.bse_edicoes[ato["id"]] = {"html": html_ed, "nome": nome_ed, "cargo": cargo_ed, "nota": nota_ed}
+
+with tab_pv:
+    st.markdown(f'<div class="cn-papel-barra"><i></i><i></i><i></i>&nbsp;{escape(ato["titulo"])}</div><div class="cn-papel">{exportacao.sanitizar(html_ed)}'
+                f'<div class="cn-assinatura"><b>{escape(nome_ed or "")}</b><br>{escape(cargo_ed or "")}</div></div>', unsafe_allow_html=True)
+
+st.markdown("---")
+assinatura = hashlib.sha256("|".join([html_ed or "", nome_ed or "", cargo_ed or "", nota_ed or ""]).encode()).hexdigest()
+c_g, c_d = st.columns(2)
+if c_g.button("Gerar PDF formatado deste ato", type="primary", icon=":material/picture_as_pdf:", use_container_width=True):
+    try:
+        with st.spinner("Gerando PDF..."):
+            ss.bse_pdfs[ato["id"]] = (assinatura, gerar_pdf_fiel_sei(html_ed, nome_ed, cargo_ed, nota_ed))
+        conc.auditar("bse_pdf", ato["titulo"])
+    except Exception as e:
+        st.error(f"Erro ao gerar PDF do ato: {e}")
+pronto = ss.bse_pdfs.get(ato["id"])
+if pronto and pronto[0] == assinatura:
+    c_d.download_button("Baixar PDF", data=pronto[1], file_name=f"{ato['titulo'].replace('/', '_').replace(' ', '_')}.pdf", mime="application/pdf",
+                        icon=":material/download:", use_container_width=True, key=f"btn_dl_{ato['id']}")
+elif pronto:
+    c_d.caption("O ato foi editado depois do último PDF. Gere novamente.")
+
+if st.button("Novo boletim", icon=":material/restart_alt:"):
+    for k in ("bse_edicoes", "bse_pdfs", "bse_sel", "_bse_chave"):
+        ss.pop(k, None)
+    ss.bse_ver += 1
+    st.rerun()
