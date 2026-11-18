@@ -16,12 +16,7 @@ renderizar_menu("diagnostico")
 renderizar_cabecalho("Diagnóstico do sistema", "Testa cada chave e modelo configurados nos Secrets, o acesso às tabelas do Supabase e mostra o estado do servidor com vários usuários. As chaves não são exibidas.",
                      etiqueta="Saúde do ambiente", icone_nome="activity")
 
-PROVEDORES = {
-    "Google Gemini": ("gemini", "GEMINI_API_KEY", ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]),
-    "Groq": ("groq", "GROQ_API_KEY", ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]),
-    "OpenRouter": ("openrouter", "OPENROUTER_API_KEY", ["deepseek/deepseek-v4-flash", "qwen/qwen3.5-plus-20260420", "meta-llama/llama-4-maverick"]),
-    "Mistral AI": ("mistral", "MISTRAL_API_KEY", ["mistral-small-latest", "open-mistral-nemo"]),
-}
+from ia_config import DIAGNOSTICO as PROVEDORES
 PROMPT = 'Responda somente com o JSON {"ok": true}'
 
 

@@ -1,12 +1,12 @@
 streamlit>=1.48
 PyMuPDF
-google-genai
-pydantic
+google-genai>=1.50
+pydantic>=2
 requests
 python-docx
 supabase
 weasyprint
-groq
-mistralai
-openai
+groq>=0.30
+mistralai>=1.9
+openai>=1.100
 streamlit-quill

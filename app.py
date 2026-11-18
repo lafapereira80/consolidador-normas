@@ -138,28 +138,7 @@ if not supabase:
     st.stop()
 
 # ----------------- HUB MULTI-IA (mesmos provedores do Autopilot) -----------------
-PROVEDORES_IA = {
-    "Google Gemini": {
-        "motor": "gemini",
-        "modelos": ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-        "secret": "GEMINI_API_KEY",
-    },
-    "Groq (Llama / GPT-OSS)": {
-        "motor": "groq",
-        "modelos": ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
-        "secret": "GROQ_API_KEY",
-    },
-    "OpenRouter (Qwen / DeepSeek / Llama)": {
-        "motor": "openrouter",
-        "modelos": ["deepseek/deepseek-v4-flash", "qwen/qwen3.5-plus-20260420", "meta-llama/llama-4-maverick"],
-        "secret": "OPENROUTER_API_KEY",
-    },
-    "Mistral AI (Small / Nemo)": {
-        "motor": "mistral",
-        "modelos": ["mistral-small-latest", "open-mistral-nemo"],
-        "secret": "MISTRAL_API_KEY",
-    },
-}
+from ia_config import PROVEDORES_IA
 
 def submit_com_contexto(executor, fn, *args, **kwargs):
     ctx = get_script_run_ctx()
@@ -320,6 +299,8 @@ def _montar_mensagens_openai_like(itens, response_schema):
     ]
 
 def _chamar_groq(chave, itens, response_schema, modelos):
+    if not PROVEDORES_IA["Groq (GPT-OSS)"].get("visao", True) and _itens_para_texto_e_imagens(itens)[1]:
+        raise Exception("Groq (GPT-OSS) não processa imagens (modelos somente texto); usando outro provedor.")
     if Groq is None:
         raise Exception("Biblioteca 'groq' não instalada no servidor.")
     client = Groq(api_key=chave)

@@ -1,7 +1,5 @@
 # pages/3_Consolidar_Norma.py - Consolidação de normas (Autopilot)
 import streamlit as st
-import tempfile
-import io
 import json
 import os
 import re
@@ -12,7 +10,6 @@ import unicodedata
 import base64
 import traceback
 from html import escape, unescape
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
@@ -44,12 +41,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from menu_utils import configurar_pagina, exigir_login, renderizar_cabecalho, renderizar_menu
 from db_utils import obter_supabase, obter_repositorio, kpis_cache
-from repositorio import converter_para_iso
 import concorrencia as conc
 import ui_theme as ui
 import exportacao
-from exportacao import (QuillParser, editor_para_pdf, limpar_texto_ia, injetar_nota_remissiva, gerar_html_dinamico,
-                        gerar_pdf_dinamico, gerar_docx_dinamico, HAS_WEASYPRINT)
+from exportacao import editor_para_pdf, gerar_html_dinamico, gerar_pdf_dinamico, gerar_docx_dinamico
 
 configurar_pagina("Consolidar Norma", "⚙️")
 exigir_login()
@@ -84,28 +79,7 @@ def _consultar_estado_e_historico(nome_padrao):
 
 
 # ----------------- HUB MULTI-IA (mesmo do app.py) -----------------
-PROVEDORES_IA = {
-    "Google Gemini": {
-        "motor": "gemini",
-        "modelos": ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-        "secret": "GEMINI_API_KEY",
-    },
-    "Groq (Llama / GPT-OSS)": {
-        "motor": "groq",
-        "modelos": ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
-        "secret": "GROQ_API_KEY",
-    },
-    "OpenRouter (Qwen / DeepSeek / Llama)": {
-        "motor": "openrouter",
-        "modelos": ["deepseek/deepseek-v4-flash", "qwen/qwen3.5-plus-20260420", "meta-llama/llama-4-maverick"],
-        "secret": "OPENROUTER_API_KEY",
-    },
-    "Mistral AI (Small / Nemo)": {
-        "motor": "mistral",
-        "modelos": ["mistral-small-latest", "open-mistral-nemo"],
-        "secret": "MISTRAL_API_KEY",
-    },
-}
+from ia_config import PROVEDORES_IA
 
 def submit_com_contexto(executor, fn, *args, **kwargs):
     ctx = get_script_run_ctx()
@@ -324,6 +298,8 @@ def _montar_mensagens_openai_like(itens, response_schema):
     return mensagens
 
 def _chamar_groq(chave, itens, response_schema, modelos):
+    if not PROVEDORES_IA["Groq (GPT-OSS)"].get("visao", True) and _itens_para_texto_e_imagens(itens)[1]:
+        raise Exception("Groq (GPT-OSS) não processa imagens (modelos somente texto); usando outro provedor.")
     if Groq is None: raise Exception("Biblioteca 'groq' não instalada no servidor.")
     client = Groq(api_key=chave)
     mensagens = _montar_mensagens_openai_like(itens, response_schema)
