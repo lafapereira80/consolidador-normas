@@ -217,17 +217,23 @@ class Repositorio:
             return None
         try:
             numero_limpo = str(numero_ref).strip()
-            query = self.sb.table("portarias_base").select("id, nome_padronizado, tipo_documento, numero_documento, documento_consolidado_json")
-            candidatos = query.ilike("numero_documento", f"%{numero_limpo}%").execute().data or []
+            # Busca LEVE (sem o JSON consolidado, que é grande) e só baixa o JSON do candidato escolhido.
+            query = self.sb.table("portarias_base").select("id, nome_padronizado, tipo_documento, numero_documento")
+            candidatos = query.ilike("numero_documento", f"%{numero_limpo}%").limit(20).execute().data or []
             if not candidatos and tipo_ref:
-                candidatos = query.ilike("nome_padronizado", f"%{numero_limpo}%").execute().data or []
+                candidatos = query.ilike("nome_padronizado", f"%{numero_limpo}%").limit(20).execute().data or []
             if not candidatos:
                 return None
+            escolhido = candidatos[0]
             if tipo_ref:
                 for c in candidatos:
                     if str(c.get('tipo_documento', '')).strip().lower() == str(tipo_ref).strip().lower():
-                        return c
-            return candidatos[0]
+                        escolhido = c
+                        break
+            completo = self.sb.table("portarias_base").select("documento_consolidado_json").eq("id", escolhido["id"]).limit(1).execute().data or []
+            escolhido = dict(escolhido)
+            escolhido["documento_consolidado_json"] = completo[0].get("documento_consolidado_json") if completo else None
+            return escolhido
         except Exception:
             return None
 

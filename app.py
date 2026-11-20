@@ -417,25 +417,42 @@ def extrair_conteudo_cache(file_bytes, nome_arquivo):
 def extrair_conteudo_multimodal(file_bytes, nome_arquivo):
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
-        html_text = f"CONTEÚDO DO ARQUIVO {nome_arquivo}:\n\n"
+        html_partes = [f"CONTEÚDO DO ARQUIVO {nome_arquivo}:\n\n"]
         caracteres_uteis = 0
         for page_num, page in enumerate(doc):
-            html_text += f"=== PÁGINA {page_num + 1} ===\n"
             page_text = page.get_text()
-            html_text += page_text + "\n"
+            html_partes.append(f"=== PÁGINA {page_num + 1} ===\n{page_text}\n")
             caracteres_uteis += len(page_text.strip())
+        html_text = "".join(html_partes)
         if caracteres_uteis < 30 * max(doc.page_count, 1):
             partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO. Leia visualmente:"]
             for page_num, page in enumerate(doc):
                 if page_num >= 15:
                     partes.append("[Nota: apenas as primeiras 15 páginas foram convertidas em imagem.]")
                     break
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.4, 1.4))
-                partes.append({"tipo": "imagem", "mime": "image/jpeg", "dados": pix.tobytes("jpg", jpg_quality=75)})
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.4, 1.4), colorspace=fitz.csGRAY, alpha=False)
+                partes.append({"tipo": "imagem", "mime": "image/jpeg", "dados": pix.tobytes("jpg", jpg_quality=70)})
             return partes
         return [html_text]
     except Exception as e:
         return [f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"]
+
+# Identificação só precisa de tipo/número/órgão/data e do(s) ato(s) citado(s): início + fim do documento bastam.
+# (Antes o PDF INTEIRO era enviado à IA; o texto íntegro continua sendo salvo no banco normalmente.)
+_ID_CHARS_INICIO, _ID_CHARS_FIM = 7000, 2500
+
+def _itens_para_identificacao(itens):
+    saida = []
+    imagens = [it for it in itens if isinstance(it, dict) and it.get("tipo") == "imagem"]
+    if imagens:
+        saida.extend(it for it in itens if isinstance(it, str))
+        saida.extend(imagens[:2] + (imagens[-1:] if len(imagens) > 2 else []))
+        return saida
+    for it in itens:
+        if isinstance(it, str) and len(it) > _ID_CHARS_INICIO + _ID_CHARS_FIM:
+            it = it[:_ID_CHARS_INICIO] + "\n[... trecho intermediário omitido ...]\n" + it[-_ID_CHARS_FIM:]
+        saida.append(it)
+    return saida
 
 # ----------------- ESTRUTURAS PYDANTIC -----------------
 class AtoReferenciado(BaseModel):
@@ -461,7 +478,7 @@ def processar_arquivo(arquivo, api_key, provedor):
     file_bytes = arquivo.getvalue()
     itens = extrair_conteudo_cache(file_bytes, arquivo.name)
     prompt = [f"Identifique os metadados deste documento e detecte se ele altera/acrescenta/revoga outro ato. ARQUIVO: {arquivo.name}"]
-    prompt.extend(itens)
+    prompt.extend(_itens_para_identificacao(itens))
     resultado = executar_com_fallback(api_key.strip(), prompt, IdentificacaoAto, provedor)
     identificacao = resultado.model_dump()
 
