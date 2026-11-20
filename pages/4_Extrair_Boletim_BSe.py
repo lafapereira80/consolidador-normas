@@ -61,11 +61,14 @@ def extrair_texto_boletim_estruturado(pdf_bytes: bytes) -> str:
         tabelas_validas = []
         
         try:
-            tf_lines = page.find_tables(strategy="lines")
-            if tf_lines.tables: tabelas_validas.extend(tf_lines.tables)
-                
-            tf_text = page.find_tables(strategy="text")
-            if tf_text.tables:
+            # find_tables é a operação mais cara do PyMuPDF: só vale rodar em páginas com traços vetoriais (strategy="lines")
+            # e a estratégia "text" (ainda mais cara e propensa a falsos positivos) só quando as linhas não acharam nada.
+            tem_graficos = len(page.get_cdrawings()) > 0
+            tf_lines = page.find_tables(strategy="lines") if tem_graficos else None
+            if tf_lines is not None and tf_lines.tables: tabelas_validas.extend(tf_lines.tables)
+
+            tf_text = page.find_tables(strategy="text") if not tabelas_validas else None
+            if tf_text is not None and tf_text.tables:
                 for tb in tf_text.tables:
                     if tb.col_count > 1 and tb.row_count > 1:
                         linhas = tb.extract()

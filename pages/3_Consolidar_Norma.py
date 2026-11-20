@@ -12,6 +12,7 @@ import traceback
 from html import escape, unescape
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import random
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from google import genai
 from google.genai import types
@@ -44,6 +45,7 @@ from db_utils import obter_supabase, obter_repositorio, kpis_cache
 import concorrencia as conc
 import ui_theme as ui
 import exportacao
+from pdf_extrator import criar_pool, extrair_conteudo as _extrair_pdf
 from exportacao import editor_para_pdf, gerar_html_dinamico, gerar_pdf_dinamico, gerar_docx_dinamico
 
 configurar_pagina("Consolidar Norma", "⚙️")
@@ -59,6 +61,31 @@ renderizar_cabecalho("Consolidação de normas", "Envie um ato base e seus deriv
                      "alterada e consolidada, com taxação das alterações e revogações.", etiqueta="Autopilot", icone_nome="merge")
 
 
+_TIMEOUT_IA_S = 180
+_clientes_ia, _clientes_lock = {}, threading.Lock()
+
+def _cliente(chave_cache, fabrica):
+    """Reaproveita o cliente HTTP (conexão keep-alive) em vez de criar um novo a cada chamada."""
+    with _clientes_lock:
+        if chave_cache not in _clientes_ia:
+            _clientes_ia[chave_cache] = fabrica()
+        return _clientes_ia[chave_cache]
+
+def _espera(tentativa):
+    """Backoff exponencial com jitter (evita todas as threads baterem no limite ao mesmo tempo)."""
+    return min(2 ** tentativa + random.random() * 1.5, 15)
+
+@st.cache_resource(show_spinner=False)
+def _pool_pdf():
+    try:
+        return criar_pool()
+    except Exception:
+        return None
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _memoria_cache():
+    return repo.resgatar_memoria()
+
 def _com_vaga(fn, *a, **kw):
     """Toda chamada de IA passa por um semáforo GLOBAL (todos os usuários e abas compartilham a cota do provedor)."""
     with conc.vaga_ia():
@@ -67,7 +94,7 @@ def _com_vaga(fn, *a, **kw):
 
 # Acesso ao banco via repositório thread-safe (mesmos nomes usados pelo restante do código)
 def resgatar_memoria():
-    return repo.resgatar_memoria()
+    return _memoria_cache()
 
 
 def _localizar_base_no_banco(tipo_ref, numero_ref):
@@ -225,6 +252,23 @@ def _itens_para_texto_e_imagens(itens):
             textos.append(it)
     return "\n\n".join(textos), imagens
 
+TRIAGEM_CHARS_INICIO = 4500
+TRIAGEM_CHARS_FIM = 1500
+
+def _resumo_triagem(nome, partes):
+    """A triagem só precisa de tipo/número/órgão/data/ato citado: início + fim do ato (assinatura). Antes eram enviados
+    TODOS os PDFs inteiros (dezenas de milhares de tokens) só para classificar."""
+    texto, imagens = _itens_para_texto_e_imagens(partes)
+    saida = []
+    if imagens:
+        sel = imagens[:2] + ([imagens[-1]] if len(imagens) > 2 else [])
+        saida.append(f"ARQUIVO {nome} (escaneado; páginas iniciais e final):")
+        saida.extend({"tipo": "imagem", "mime": m, "dados": d} for m, d in sel)
+        return saida
+    if len(texto) > TRIAGEM_CHARS_INICIO + TRIAGEM_CHARS_FIM:
+        texto = texto[:TRIAGEM_CHARS_INICIO] + "\n[... trecho intermediário omitido ...]\n" + texto[-TRIAGEM_CHARS_FIM:]
+    return [texto]
+
 def _itens_para_parts_gemini(itens):
     partes = []
     for it in itens:
@@ -235,7 +279,7 @@ def _itens_para_parts_gemini(itens):
     return partes
 
 def _chamar_gemini(chave, itens, response_schema, thinking_level, modelos):
-    client = genai.Client(api_key=chave)
+    client = _cliente(("gemini", chave), lambda: genai.Client(api_key=chave, http_options=types.HttpOptions(timeout=_TIMEOUT_IA_S * 1000)))
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=response_schema,
@@ -261,7 +305,7 @@ def _chamar_gemini(chave, itens, response_schema, thinking_level, modelos):
                     break
                 elif "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str or "503" in erro_str or "UNAVAILABLE" in erro_str:
                     if tentativa < 3:
-                        tempo_espera = min(tentativa * 3, 10)
+                        tempo_espera = _espera(tentativa)
                         st.toast(f"⚡ Fila no Google ({modelo}). Tentativa {tentativa}/3...", icon="⏳")
                         time.sleep(tempo_espera)
                         continue
@@ -301,7 +345,7 @@ def _chamar_groq(chave, itens, response_schema, modelos):
     if not PROVEDORES_IA["Groq (GPT-OSS)"].get("visao", True) and _itens_para_texto_e_imagens(itens)[1]:
         raise Exception("Groq (GPT-OSS) não processa imagens (modelos somente texto); usando outro provedor.")
     if Groq is None: raise Exception("Biblioteca 'groq' não instalada no servidor.")
-    client = Groq(api_key=chave)
+    client = _cliente(("groq", chave), lambda: Groq(api_key=chave, timeout=_TIMEOUT_IA_S, max_retries=0))
     mensagens = _montar_mensagens_openai_like(itens, response_schema)
     ultimo_erro = None
     for modelo in modelos:
@@ -318,7 +362,7 @@ def _chamar_groq(chave, itens, response_schema, modelos):
                 erro_str = str(e).upper()
                 if "429" in erro_str or "RATE_LIMIT" in erro_str or "503" in erro_str:
                     if tentativa < 3:
-                        tempo_espera = min(tentativa * 3, 10)
+                        tempo_espera = _espera(tentativa)
                         st.toast(f"⚡ Fila na Groq ({modelo}). Tentativa {tentativa}/3...", icon="⏳")
                         time.sleep(tempo_espera)
                         continue
@@ -332,7 +376,7 @@ def _chamar_groq(chave, itens, response_schema, modelos):
 
 def _chamar_openrouter(chave, itens, response_schema, modelos):
     if OpenAI is None: raise Exception("Biblioteca 'openai' não instalada no servidor.")
-    client = OpenAI(api_key=chave, base_url="https://openrouter.ai/api/v1")
+    client = _cliente(("openrouter", chave), lambda: OpenAI(api_key=chave, base_url="https://openrouter.ai/api/v1", timeout=_TIMEOUT_IA_S, max_retries=0))
     mensagens = _montar_mensagens_openai_like(itens, response_schema)
     ultimo_erro = None
     for modelo in modelos:
@@ -349,7 +393,7 @@ def _chamar_openrouter(chave, itens, response_schema, modelos):
                 erro_str = str(e).upper()
                 if "429" in erro_str or "RATE_LIMIT" in erro_str or "503" in erro_str:
                     if tentativa < 3:
-                        tempo_espera = min(tentativa * 3, 10)
+                        tempo_espera = _espera(tentativa)
                         st.toast(f"⚡ Fila no OpenRouter ({modelo}). Tentativa {tentativa}/3...", icon="⏳")
                         time.sleep(tempo_espera)
                         continue
@@ -363,7 +407,7 @@ def _chamar_openrouter(chave, itens, response_schema, modelos):
 
 def _chamar_mistral(chave, itens, response_schema, modelos):
     if Mistral is None: raise Exception("Biblioteca 'mistralai' não instalada no servidor.")
-    client = Mistral(api_key=chave)
+    client = _cliente(("mistral", chave), lambda: Mistral(api_key=chave, timeout_ms=_TIMEOUT_IA_S * 1000))
     mensagens = _montar_mensagens_openai_like(itens, response_schema)
     ultimo_erro = None
     for modelo in modelos:
@@ -380,7 +424,7 @@ def _chamar_mistral(chave, itens, response_schema, modelos):
                 erro_str = str(e).upper()
                 if "429" in erro_str or "CAPACITY" in erro_str or "503" in erro_str:
                     if tentativa < 3:
-                        tempo_espera = min(tentativa * 3, 10)
+                        tempo_espera = _espera(tentativa)
                         st.toast(f"⚡ Fila na Mistral ({modelo}). Tentativa {tentativa}/3...", icon="⏳")
                         time.sleep(tempo_espera)
                         continue
@@ -431,100 +475,18 @@ def executar_com_fallback(chave, itens, response_schema, provedor, thinking_leve
     return _RespCompat(resultado)
 
 
-@st.cache_data(show_spinner=False, max_entries=20)
+@st.cache_data(show_spinner=False, max_entries=30)
+def _extrair_cache(hash_arquivo, nome_arquivo, dpi_ocr, max_paginas_ocr, _file_bytes):
+    # _file_bytes (com underscore) não entra no hash do cache: a chave é o sha1 calculado uma única vez.
+    return _extrair_pdf(_file_bytes, nome_arquivo, dpi_ocr, max_paginas_ocr, pool=_pool_pdf())
+
 def extrair_conteudo_cache(file_bytes, nome_arquivo, dpi_ocr=1.5, max_paginas_ocr=None):
-    return extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr, max_paginas_ocr)
+    return _extrair_cache(hashlib.sha1(file_bytes).hexdigest(), nome_arquivo, dpi_ocr, max_paginas_ocr, file_bytes)
 
 _RE_RODAPE_SEI = re.compile(r'\(\d+\)\s*SEI\s+[\d./-]+\s*/\s*pg\.\s*\d+', re.IGNORECASE)
 
 def extrair_conteudo_multimodal(file_bytes, nome_arquivo, dpi_ocr=1.5, max_paginas_ocr=None):
-    if nome_arquivo.lower().endswith(".docx"): return [f"ARQUIVO DOCX: {nome_arquivo}"]
-    try:
-        doc = fitz.open(stream=file_bytes, filetype="pdf")
-        html_text = f"CONTEÚDO DO ARQUIVO {nome_arquivo}:\n\n"
-        caracteres_uteis = 0
-        for page_num, page in enumerate(doc):
-            html_text += f"=== PÁGINA {page_num + 1} ===\n"
-            page_text = page.get_text()
-            if re.search(r'ANEXO\s+[IVXLC]+', page_text, re.IGNORECASE):
-                html_text += "[ANEXO]\n"
-            blocks = page.get_text("dict", sort=True).get("blocks", [])
-            # Rodapé de sistema (ex.: "- Portaria PGJM 7 (1022365) SEI ... / pg. 2"): era misturado ao texto e
-            # às células das tabelas. Agora é descartado e usado como limite inferior da busca de tabelas.
-            rodape_y0 = None
-            for b in blocks:
-                if b.get('type') != 0: continue
-                for l in b.get("lines", []):
-                    txt_l = "".join(s.get("text", "") for s in l.get("spans", []))
-                    if _RE_RODAPE_SEI.search(txt_l):
-                        y = l.get("bbox", (0, 0, 0, 0))[1]
-                        rodape_y0 = y if rodape_y0 is None else min(rodape_y0, y)
-            tabelas_bbox = []
-            tabelas_itens = []  # (y0, texto) — inseridas na posição real da página
-            try:
-                try:
-                    if rodape_y0 is not None:
-                        tab_finder = page.find_tables(clip=fitz.Rect(page.rect.x0, page.rect.y0, page.rect.x1, rodape_y0))
-                    else:
-                        tab_finder = page.find_tables()
-                except TypeError:
-                    tab_finder = page.find_tables()
-                for tabela in tab_finder.tables:
-                    linhas = tabela.extract()
-                    if not linhas: continue
-                    caracteres_uteis += sum(len(str(c or "")) for linha in linhas for c in linha)
-                    rect_tab = fitz.Rect(tabela.bbox)
-                    tabelas_bbox.append(rect_tab)
-                    txt_tab = "[TABELA]\n"
-                    for linha in linhas:
-                        txt_tab += " | ".join((str(c).strip() if c is not None else "") for c in linha) + "\n"
-                    txt_tab += "[/TABELA]\n<br/>\n"
-                    tabelas_itens.append((rect_tab.y0, txt_tab))
-            except Exception:
-                pass
-            itens_texto = []
-            for b in blocks:
-                if b.get('type') != 0: continue
-                bloco_rect = fitz.Rect(b.get("bbox", (0, 0, 0, 0)))
-                if any(bloco_rect.intersects(tb) for tb in tabelas_bbox):
-                    continue
-                bloco_linhas = ""
-                for l in b.get("lines", []):
-                    txt_l = "".join(s.get("text", "") for s in l.get("spans", []))
-                    if _RE_RODAPE_SEI.search(txt_l):
-                        continue
-                    linha_span = ""
-                    for s in l.get("spans", []):
-                        texto = s.get("text", "")
-                        if not texto: continue
-                        caracteres_uteis += len(texto.strip())
-                        flags = s.get("flags", 0)
-                        if flags & 2**4: texto = f"<b>{texto}</b>"
-                        if flags & 2**1: texto = f"<i>{texto}</i>"
-                        linha_span += texto
-                    if linha_span.strip(): bloco_linhas += linha_span + " "
-                if bloco_linhas.strip():
-                    itens_texto.append((bloco_rect.y0, bloco_linhas.strip() + "<br/>\n"))
-            tabelas_itens.sort(key=lambda x: x[0])
-            ti = 0
-            for y0, txt in itens_texto:
-                while ti < len(tabelas_itens) and tabelas_itens[ti][0] <= y0:
-                    html_text += tabelas_itens[ti][1]; ti += 1
-                html_text += txt
-            while ti < len(tabelas_itens):
-                html_text += tabelas_itens[ti][1]; ti += 1
-            html_text += "<br/>\n"
-        if caracteres_uteis < 30 * max(doc.page_count, 1):
-            partes = [f"ARQUIVO {nome_arquivo} É UM DOCUMENTO ESCANEADO. Leia o conteúdo visualmente, inclusive tabelas:"]
-            for page_num, page in enumerate(doc):
-                if max_paginas_ocr is not None and page_num >= max_paginas_ocr:
-                    partes.append(f"[Nota: apenas as primeiras {max_paginas_ocr} páginas foram convertidas em imagem por limite do modo de processamento.]")
-                    break
-                pix = page.get_pixmap(matrix=fitz.Matrix(dpi_ocr, dpi_ocr))
-                partes.append({"tipo": "imagem", "mime": "image/jpeg", "dados": pix.tobytes("jpg", jpg_quality=78)})
-            return partes
-        return [html_text]
-    except Exception as e: return [f"Erro ao extrair PDF {nome_arquivo}: {str(e)}"]
+    return extrair_conteudo_cache(file_bytes, nome_arquivo, dpi_ocr, max_paginas_ocr)
 
 # ----------------- ESTRUTURAS PYDANTIC -----------------
 class ArquivoClassificado(BaseModel):
@@ -913,6 +875,46 @@ def _conteudo_alteradora(itens, limite=LIMITE_CHARS_ALTERADORA_LOTE):
             saida.append(it)
     return saida
 
+class IdxAfetados(BaseModel):
+    idx_afetados: List[int] = Field(default_factory=list, description="IDX dos dispositivos do ato base que o ato alterador altera, revoga ou após os quais acrescenta texto.")
+
+_TIPOS_FILHOS = ("paragrafo", "inciso", "alinea")
+
+def _indice_estado(estado):
+    return "\n".join(f"[IDX {i}] {d.get('tipo')}: {_plano(d.get('texto_principal_consolidada'))[:110]}" for i, d in enumerate(estado))
+
+def _expandir_para_artigo(estado, afetados):
+    """Cada IDX afetado puxa o artigo inteiro (caput, parágrafos, incisos e alíneas): a IA vê o contexto completo."""
+    n, res = len(estado), set()
+    for i in afetados:
+        if not isinstance(i, int) or not (0 <= i < n): continue
+        a = i
+        while a > 0 and estado[a].get("tipo") in _TIPOS_FILHOS: a -= 1
+        b = a + 1
+        while b < n and estado[b].get("tipo") in _TIPOS_FILHOS: b += 1
+        res.update(range(a, b))
+    return sorted(res)
+
+def _localizar_afetados(key, provedor, nome_alt, itens_alt, estado):
+    """UMA chamada barata (thinking baixo) devolve quais dispositivos o ato alterador toca. Só esses vão para os lotes,
+    em vez de reenviar o ato alterador inteiro a cada lote do ato base inteiro. Retorna None => varrer tudo (fallback)."""
+    conteudo = [f"ATO ALTERADOR/REVOGADOR ({nome_alt}):"] + _conteudo_alteradora(itens_alt)
+    conteudo.append("ÍNDICE DO ATO BASE (IDX, tipo e início do texto vigente):\n" + _indice_estado(estado))
+    conteudo.append("Liste em 'idx_afetados' TODOS os IDX do ato base que o ato alterador altera, revoga (total ou parcialmente), renumera, "
+                    "ou após os quais acrescenta dispositivos (neste caso inclua o IDX do dispositivo imediatamente anterior ao acréscimo). "
+                    "Considere também anexos e tabelas. Na dúvida, INCLUA. Não explique.")
+    try:
+        resp = executar_com_fallback(key, conteudo, IdxAfetados, provedor, "low")
+        ids = json.loads(resp.text).get("idx_afetados") or []
+        expandidos = _expandir_para_artigo(estado, ids)
+        return expandidos or None
+    except Exception:
+        return None
+
+def _lotes_de_indices(estado, indices):
+    sub_lotes = _montar_lotes([estado[i] for i in indices])
+    return [[indices[k] for k in lote] for lote in sub_lotes]
+
 def _chamar_lote(key, provedor, thinking_level, nome_alt, itens_alt, estado, indices, n_lote, total_lotes, memoria):
     prompt = f"""
 LOTE {n_lote} DE {total_lotes}. Os dispositivos abaixo estão numerados com [IDX n] e representam o ESTADO ATUAL do ato base
@@ -928,14 +930,21 @@ Se um dispositivo já possuía ALTERADA_ATUAL, preserve esse histórico e acresc
     conteudo = [f"ATO ALTERADOR/REVOGADOR ({nome_alt}):"] + _conteudo_alteradora(itens_alt)
     conteudo.append("DISPOSITIVOS DO LOTE:\n" + _dump_lote(estado, indices))
     conteudo.append(prompt)
-    resp = executar_com_fallback(key, conteudo, ResultadoLote, provedor, thinking_level)
+    nivel = "medium" if thinking_level == "high" else thinking_level
+    resp = executar_com_fallback(key, conteudo, ResultadoLote, provedor, nivel)
     return json.loads(resp.text).get("alteracoes", [])
 
 def _aplicar_alteracoes_pontuais(key, provedor, thinking_level, nome_alt, itens_alt, estado, memoria, mensagens):
     lotes = _montar_lotes(estado)
+    total_original = len(lotes)
+    if thinking_level != "high" and len(lotes) > 1:
+        afetados_pre = _localizar_afetados(key, provedor, nome_alt, itens_alt, estado)
+        if afetados_pre and len(afetados_pre) < 0.7 * len(estado):
+            lotes = _lotes_de_indices(estado, afetados_pre)
+            mensagens.append(("info", f"⚡ '{nome_alt}': pré-seleção localizou {len(afetados_pre)} de {len(estado)} dispositivos relevantes ({len(lotes)} lote(s) em vez de {total_original})."))
     resultados = {}
-    workers = 1 if thinking_level == "low" else 2
-    with ThreadPoolExecutor(max_workers=min(workers, len(lotes))) as ex:
+    workers = 2 if thinking_level == "low" else 3
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(lotes)))) as ex:
         futs = {}
         for n, indices in enumerate(lotes, 1):
             f = submit_com_contexto(ex, _chamar_lote, key, provedor, thinking_level, nome_alt, itens_alt, estado, indices, n, len(lotes), memoria)
@@ -993,14 +1002,27 @@ def _processar_cascata_lotes(key, provedor, arquivo_base, alteradoras, textos_ex
         }
         mensagens.append(("info", f"📚 Ato base segmentado de forma determinística em {len(estado)} dispositivos (texto original preservado integralmente)."))
     nome_base = (cons.get("norma_base") or {}).get("nome_padronizado") or arquivo_base.get("nome_padronizado_identificado", "")
-    for alt in alteradoras:
+
+    def _planejar(alt):
+        # O plano (metadados + revogação integral) de cada alteradora é independente do estado: roda todos em paralelo.
         itens_alt = textos_extraidos[alt['nome_arquivo_upload']]
         txt_alt = _texto_unico(itens_alt)
         head = (txt_alt or "")[:LIMITE_CHARS_PLANO] if txt_alt else None
         conteudo_plano = [f"ATO BASE ALVO: {nome_base}. Analise o ato alterador abaixo e identifique seus metadados e se ele REVOGA INTEGRALMENTE o ato base."]
         conteudo_plano += [head] if head else _conteudo_alteradora(itens_alt, LIMITE_CHARS_PLANO)
         resp_plano = executar_com_fallback(key, conteudo_plano, PlanoAlteracao, provedor, low)
-        plano = json.loads(resp_plano.text)
+        return json.loads(resp_plano.text), head
+
+    planos = {}
+    if alteradoras:
+        with ThreadPoolExecutor(max_workers=min(3, len(alteradoras))) as ex_p:
+            futs_p = {submit_com_contexto(ex_p, _planejar, a): a['nome_arquivo_upload'] for a in alteradoras}
+            for fp, nome_up in futs_p.items():
+                planos[nome_up] = fp.result()
+
+    for alt in alteradoras:
+        itens_alt = textos_extraidos[alt['nome_arquivo_upload']]
+        plano, head = planos[alt['nome_arquivo_upload']]
         meta = plano["metadados"]
         if meta.get("nome_padronizado") and not any(n.get("nome_padronizado") == meta["nome_padronizado"] for n in cons["normas_alteradoras"]):
             cons["normas_alteradoras"].append(meta)
@@ -1115,7 +1137,7 @@ def _processar_cascata_grupo(key, provedor, arquivo_base, arquivos_alteradores, 
 def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi_ocr=1.5, max_paginas_ocr=None, progresso=None):
     memoria_aprendida = resgatar_memoria()
     textos_extraidos = {}
-    max_workers_extração = 2 if thinking_level == "low" else 4
+    max_workers_extração = 6
     with ThreadPoolExecutor(max_workers=min(max_workers_extração, max(1, len(arquivos)))) as ex:
         futuros = {submit_com_contexto(ex, extrair_conteudo_cache, arq.getvalue(), arq.name, dpi_ocr, max_paginas_ocr): arq.name for arq in arquivos}
         total_arquivos = len(arquivos)
@@ -1125,7 +1147,7 @@ def analisar_lote_arquivos(arquivos, key, provedor, thinking_level="medium", dpi
                 progresso.progress((idx + 1) / (total_arquivos * 2), text=f"Extraindo conteúdo de {futuros[fut]}...")
 
     contents_triagem = [f"Analise os documentos. Agrupe cada ato original com seus derivativos presentes neste lote. Se uma Alteradora citar um ato original que NÃO está entre os arquivos deste lote, preencha ato_base_referenciado_tipo/numero com o que ela declara alterar/revogar, para localização posterior no banco de dados. ARQUIVOS: {', '.join(textos_extraidos.keys())}"]
-    for partes in textos_extraidos.values(): contents_triagem.extend(partes)
+    for nome_t, partes in textos_extraidos.items(): contents_triagem.extend(_resumo_triagem(nome_t, partes))
     if progresso:
         progresso.progress(0.5, text="Classificando documentos...")
     resp_triagem = executar_com_fallback(key, contents_triagem, TriagemDocumentos, provedor, thinking_level="low")
@@ -1368,12 +1390,16 @@ if dados:
                     cons['preambulo'] = editor_para_pdf(preambulo_editado)
 
                 st.markdown("#### Dispositivos (artigos, parágrafos, incisos, anexos)")
-                _n_disp = len(cons.get("dispositivos", []))
-                _editar_detalhado = True
-                if _n_disp > LIMITE_EDICAO_DETALHADA:
-                    _editar_detalhado = st.checkbox(f"Habilitar edição detalhada dos {_n_disp} dispositivos (pode deixar a página lenta). As exportações já contêm o texto completo.",
-                                                    value=False, key=f"edit_det_{i}")
-                for j, disp in enumerate(cons.get("dispositivos", []) if _editar_detalhado else []):
+                _disps = cons.get("dispositivos", [])
+                _sel = []
+                if _disps:
+                    # Um dispositivo por vez: antes cada um criava 2 editores Quill (iframes) + data_editors na MESMA página,
+                    # o que travava o navegador e re-renderizava tudo a cada clique. As exportações sempre usam o texto completo.
+                    _rot = lambda k, _d=_disps: f"{k + 1} · {str(_d[k].get('tipo', '')).upper()} · {_plano(_d[k].get('texto_principal_consolidada'))[:70]}"
+                    _jsel = st.selectbox(f"Dispositivo a editar ({len(_disps)} no total; um por vez para a página ficar leve)", list(range(len(_disps))),
+                                         format_func=_rot, key=f"sel_disp_{i}")
+                    _sel = [(_jsel, _disps[_jsel])]
+                for j, disp in _sel:
                     st.markdown(f"**{disp.get('tipo', 'Dispositivo').upper()} {j + 1}**")
                     c_alt, c_cons = st.columns(2)
                     with c_alt:
@@ -1404,7 +1430,14 @@ if dados:
             elif vista == "Prévia":
                 qual = st.radio("Versão", ["Consolidada", "Alterada"], horizontal=True, key=f"prev_{i}")
                 try:
-                    corpo = exportacao.corpo_para_previa(cons, "consolidada" if qual == "Consolidada" else "alterada")
+                    _hprev = _hash_cons(cons)
+                    _cache_prev = ss.setdefault("previas_cons", {})
+                    _ent = _cache_prev.get((i, qual))
+                    if _ent and _ent[0] == _hprev:
+                        corpo = _ent[1]
+                    else:
+                        corpo = exportacao.corpo_para_previa(cons, "consolidada" if qual == "Consolidada" else "alterada")
+                        _cache_prev[(i, qual)] = (_hprev, corpo)
                     st.markdown(f'<div class="cn-papel-barra"><i></i><i></i><i></i>&nbsp;{escape(nome_base)} · versão {qual.lower()}</div><div class="cn-papel">{corpo}</div>', unsafe_allow_html=True)
                     st.caption("Em vermelho/taxado: trechos alterados ou revogados. A prévia é fiel ao conteúdo exportado, mas a paginação final é a do PDF.")
                 except Exception as e:
@@ -1438,11 +1471,17 @@ if dados:
                 h_atual = _hash_cons(cons)
                 chave_exp = f"exp_{i}"
                 pronto = ss.exports_cons.get(chave_exp)
-                if st.button("Preparar HTML, PDF e DOCX (alterada e consolidada)", key=f"prep_{i}", icon=":material/build:", use_container_width=True):
-                    arqs, falhas = {}, []
+                fmts_sel = st.multiselect("Formatos", ["HTML", "DOCX", "PDF"], default=["HTML", "DOCX", "PDF"], key=f"fmts_{i}",
+                                          help="Gere só o que precisar: o PDF é o formato mais demorado. Formatos já gerados (sem edições novas) são reaproveitados.")
+                if st.button("Preparar arquivos (alterada e consolidada)", key=f"prep_{i}", icon=":material/build:", use_container_width=True, disabled=not fmts_sel):
+                    _fn_fmt = {"HTML": ("html", gerar_html_dinamico), "PDF": ("pdf", gerar_pdf_dinamico), "DOCX": ("docx", gerar_docx_dinamico)}
+                    arqs = dict(pronto["arqs"]) if (pronto and pronto["hash"] == h_atual) else {}
+                    falhas = []
                     with st.status("Gerando arquivos...", expanded=False) as stt:
-                        for fmt, fn in (("html", gerar_html_dinamico), ("pdf", gerar_pdf_dinamico), ("docx", gerar_docx_dinamico)):
+                        for nome_fmt in fmts_sel:
+                            fmt, fn = _fn_fmt[nome_fmt]
                             for tv in ("alterada", "consolidada"):
+                                if (fmt, tv) in arqs: continue
                                 try:
                                     arqs[(fmt, tv)] = fn(cons, tv)
                                 except Exception as e:
